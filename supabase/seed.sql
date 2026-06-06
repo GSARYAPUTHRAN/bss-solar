@@ -2,20 +2,24 @@
 -- BSS Solar - Local demo seed
 -- Runs automatically on `supabase start` (first time) and `supabase db reset`.
 --
--- Demo credentials:
---   Admin       -> admin@bsssolar.test / Admin@12345
---   Coordinator -> coord@bsssolar.test / Coord@12345
+-- Demo credentials (password for all staff: Coord@12345 / Admin@12345):
+--   Admin        -> admin@bsssolar.test
+--   Coordinator  -> coord@bsssolar.test   (Rahul Menon)
+--   Coordinator  -> priya@bsssolar.test   (Priya Suresh)
+--   Coordinator  -> arun@bsssolar.test    (Arun Krishnan)
+--   Coordinator  -> sneha@bsssolar.test    (Sneha Das)
 --
 -- NOTE: For local development only. Never run this against production.
 -- ============================================================================
 
--- Fixed UUIDs so the data is stable across resets
+-- Fixed UUIDs
 -- admin       : 00000000-0000-0000-0000-000000000001
--- coordinator : 00000000-0000-0000-0000-000000000002
+-- coord rahul : 00000000-0000-0000-0000-000000000002
+-- coord priya : 00000000-0000-0000-0000-000000000003
+-- coord arun  : 00000000-0000-0000-0000-000000000004
+-- coord sneha : 00000000-0000-0000-0000-000000000005
 
 -- ---------- Auth users ----------
--- Inserting into auth.users fires the handle_new_user() trigger,
--- which auto-creates a matching row in public.profiles (role = coordinator).
 insert into auth.users (
   instance_id, id, aud, role, email, encrypted_password,
   email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
@@ -43,9 +47,42 @@ insert into auth.users (
     '{"provider":"email","providers":["email"]}',
     '{"full_name":"Rahul Menon"}',
     now(), now(), '', '', '', ''
+  ),
+  (
+    '00000000-0000-0000-0000-000000000000',
+    '00000000-0000-0000-0000-000000000003',
+    'authenticated', 'authenticated',
+    'priya@bsssolar.test',
+    crypt('Coord@12345', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{"full_name":"Priya Suresh"}',
+    now(), now(), '', '', '', ''
+  ),
+  (
+    '00000000-0000-0000-0000-000000000000',
+    '00000000-0000-0000-0000-000000000004',
+    'authenticated', 'authenticated',
+    'arun@bsssolar.test',
+    crypt('Coord@12345', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{"full_name":"Arun Krishnan"}',
+    now(), now(), '', '', '', ''
+  ),
+  (
+    '00000000-0000-0000-0000-000000000000',
+    '00000000-0000-0000-0000-000000000005',
+    'authenticated', 'authenticated',
+    'sneha@bsssolar.test',
+    crypt('Coord@12345', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{"full_name":"Sneha Das"}',
+    now(), now(), '', '', '', ''
   );
 
--- ---------- Auth identities (required for email/password sign-in) ----------
+-- ---------- Auth identities ----------
 insert into auth.identities (
   provider_id, user_id, identity_data, provider,
   last_sign_in_at, created_at, updated_at
@@ -61,67 +98,154 @@ insert into auth.identities (
     '00000000-0000-0000-0000-000000000002',
     '{"sub":"00000000-0000-0000-0000-000000000002","email":"coord@bsssolar.test"}',
     'email', now(), now(), now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000003',
+    '00000000-0000-0000-0000-000000000003',
+    '{"sub":"00000000-0000-0000-0000-000000000003","email":"priya@bsssolar.test"}',
+    'email', now(), now(), now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000004',
+    '00000000-0000-0000-0000-000000000004',
+    '{"sub":"00000000-0000-0000-0000-000000000004","email":"arun@bsssolar.test"}',
+    'email', now(), now(), now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000005',
+    '00000000-0000-0000-0000-000000000005',
+    '{"sub":"00000000-0000-0000-0000-000000000005","email":"sneha@bsssolar.test"}',
+    'email', now(), now(), now()
   );
 
--- ---------- Promote the admin + set phones ----------
+-- ---------- Profiles ----------
 update public.profiles
-  set role = 'admin', phone = '+91 90000 00001'
+  set role = 'admin', phone = '+91 471 2439322'
   where id = '00000000-0000-0000-0000-000000000001';
 
-update public.profiles
-  set phone = '+91 90000 00002'
-  where id = '00000000-0000-0000-0000-000000000002';
+update public.profiles set phone = '+91 98470 10001' where id = '00000000-0000-0000-0000-000000000002';
+update public.profiles set phone = '+91 98470 10002' where id = '00000000-0000-0000-0000-000000000003';
+update public.profiles set phone = '+91 98470 10003' where id = '00000000-0000-0000-0000-000000000004';
+update public.profiles set phone = '+91 98470 10004' where id = '00000000-0000-0000-0000-000000000005';
 
--- ---------- Sample Work Orders ----------
--- WO1: approved (will become a project below)
+-- ---------- Work Orders ----------
 insert into public.work_orders (
   id, coordinator_id, client_name, client_phone, address,
   plant_capacity, advance_amount, total_cost, order_date, status
 ) values
-  (
-    '10000000-0000-0000-0000-000000000001',
-    '00000000-0000-0000-0000-000000000002',
-    'Anand Kumar', '+91 98470 11111', 'Vytilla, Kochi, Kerala',
-    '3kW', 20000, 195000, current_date - 30, 'approved'
-  ),
-  (
-    '10000000-0000-0000-0000-000000000002',
-    '00000000-0000-0000-0000-000000000002',
-    'Meera Nair', '+91 98470 22222', 'Kowdiar, Thiruvananthapuram, Kerala',
-    '5kW', 30000, 310000, current_date - 10, 'pending'
-  ),
-  (
-    '10000000-0000-0000-0000-000000000003',
-    '00000000-0000-0000-0000-000000000002',
-    'Joseph Thomas', '+91 98470 33333', 'Thrissur Round, Kerala',
-    '8kW', 50000, 480000, current_date - 3, 'pending'
-  );
+  -- Rahul
+  ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002',
+   'Anand Kumar', '+91 98470 11111', 'Vytilla, Kochi, Kerala',
+   '3kW', 20000, 195000, current_date - 30, 'approved'),
+  ('10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000002',
+   'Meera Nair', '+91 98470 22222', 'Kowdiar, Thiruvananthapuram, Kerala',
+   '5kW', 30000, 310000, current_date - 10, 'pending'),
+  ('10000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000002',
+   'Joseph Thomas', '+91 98470 33333', 'Thrissur Round, Kerala',
+   '8kW', 50000, 480000, current_date - 3, 'pending'),
+  ('10000000-0000-0000-0000-000000000004', '00000000-0000-0000-0000-000000000002',
+   'Vijay Menon', '+91 98470 44444', 'Aluva, Ernakulam, Kerala',
+   '5kW', 25000, 285000, current_date - 18, 'approved'),
+  ('10000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000002',
+   'Mary Jose', '+91 98470 55555', 'Pala, Kottayam, Kerala',
+   '5kW', 40000, 320000, current_date - 90, 'approved'),
+  -- Priya
+  ('10000000-0000-0000-0000-000000000006', '00000000-0000-0000-0000-000000000003',
+   'Sajan Mathew', '+91 98470 66666', 'Kakkanad, Kochi, Kerala',
+   '3kW', 15000, 175000, current_date - 14, 'approved'),
+  ('10000000-0000-0000-0000-000000000007', '00000000-0000-0000-0000-000000000003',
+   'Lakshmi Devi', '+91 98470 77777', 'Kazhakootam, Thiruvananthapuram, Kerala',
+   '8kW', 60000, 520000, current_date - 22, 'approved'),
+  ('10000000-0000-0000-0000-000000000008', '00000000-0000-0000-0000-000000000003',
+   'Ramesh Pillai', '+91 98470 88888', 'Attingal, Kerala',
+   '2kW', 10000, 125000, current_date - 5, 'pending'),
+  -- Arun
+  ('10000000-0000-0000-0000-000000000009', '00000000-0000-0000-0000-000000000004',
+   'George Varghese', '+91 98470 99999', 'Angamaly, Kerala',
+   '5kW', 35000, 295000, current_date - 40, 'approved'),
+  ('10000000-0000-0000-0000-000000000010', '00000000-0000-0000-0000-000000000004',
+   'Deepa Pillai', '+91 98470 10101', 'Perumbavoor, Kerala',
+   '10kW', 80000, 650000, current_date - 55, 'approved'),
+  ('10000000-0000-0000-0000-000000000011', '00000000-0000-0000-0000-000000000004',
+   'Sunil Kumar', '+91 98470 20202', 'Muvattupuzha, Kerala',
+   '3kW', 18000, 188000, current_date - 7, 'rejected'),
+  -- Sneha
+  ('10000000-0000-0000-0000-000000000012', '00000000-0000-0000-0000-000000000005',
+   'Rajesh Babu', '+91 98470 30303', 'Neyyattinkara, Kerala',
+   '3kW', 22000, 198000, current_date - 48, 'approved'),
+  ('10000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000005',
+   'Asha Mohan', '+91 98470 40404', 'Varkala, Kerala',
+   '5kW', 28000, 305000, current_date - 12, 'pending');
 
--- ---------- Sample Project for the approved WO ----------
--- Inserting a project fires seed_project_milestones() -> 9 milestones created.
+-- ---------- Projects (trigger seeds 9 milestones each) ----------
 insert into public.projects (
-  id, work_order_id, coordinator_id, current_stage, started_at
+  id, work_order_id, coordinator_id, current_stage, is_completed, started_at, completed_at
 ) values
-  (
-    '20000000-0000-0000-0000-000000000001',
-    '10000000-0000-0000-0000-000000000001',
-    '00000000-0000-0000-0000-000000000002',
-    'material_dispatch',
-    now() - interval '25 days'
-  );
+  ('20000000-0000-0000-0000-000000000001', '10000000-0000-0000-0000-000000000001',
+   '00000000-0000-0000-0000-000000000002', 'material_dispatch', false, now() - interval '25 days', null),
+  ('20000000-0000-0000-0000-000000000002', '10000000-0000-0000-0000-000000000004',
+   '00000000-0000-0000-0000-000000000002', 'structure_fabrication', false, now() - interval '15 days', null),
+  ('20000000-0000-0000-0000-000000000003', '10000000-0000-0000-0000-000000000006',
+   '00000000-0000-0000-0000-000000000003', 'site_feasibility_survey', false, now() - interval '12 days', null),
+  ('20000000-0000-0000-0000-000000000004', '10000000-0000-0000-0000-000000000007',
+   '00000000-0000-0000-0000-000000000003', 'kseb_portal_registration', false, now() - interval '20 days', null),
+  ('20000000-0000-0000-0000-000000000005', '10000000-0000-0000-0000-000000000009',
+   '00000000-0000-0000-0000-000000000004', 'panel_installation', false, now() - interval '35 days', null),
+  ('20000000-0000-0000-0000-000000000006', '10000000-0000-0000-0000-000000000010',
+   '00000000-0000-0000-0000-000000000004', 'wcr_submitted', false, now() - interval '50 days', null),
+  ('20000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000012',
+   '00000000-0000-0000-0000-000000000005', 'kseb_inspection_meter', false, now() - interval '42 days', null),
+  ('20000000-0000-0000-0000-000000000008', '10000000-0000-0000-0000-000000000005',
+   '00000000-0000-0000-0000-000000000002', 'plant_commissioning', true, now() - interval '85 days', now() - interval '5 days');
 
--- Mark early milestones as done / in-progress to make the tracker look realistic
-update public.project_milestones
-  set status = 'completed', completed_at = now() - interval '20 days'
-  where project_id = '20000000-0000-0000-0000-000000000001'
-    and sort_order <= 3;
+-- ---------- Milestone progress per project ----------
+-- Helper: complete sort_orders 1..(n-1), set sort_order n in_progress
 
-update public.project_milestones
-  set status = 'in_progress'
-  where project_id = '20000000-0000-0000-0000-000000000001'
-    and sort_order = 4;
+-- P1: material_dispatch (sort 4)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '22 days'
+  where project_id = '20000000-0000-0000-0000-000000000001' and sort_order < 4;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000001' and sort_order = 4;
 
--- ---------- Sample Service Ticket on the project ----------
+-- P2: structure_fabrication (sort 5)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '12 days'
+  where project_id = '20000000-0000-0000-0000-000000000002' and sort_order < 5;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000002' and sort_order = 5;
+
+-- P3: site_feasibility_survey (sort 1)
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000003' and sort_order = 1;
+
+-- P4: kseb_portal_registration (sort 2)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '18 days'
+  where project_id = '20000000-0000-0000-0000-000000000004' and sort_order < 2;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000004' and sort_order = 2;
+
+-- P5: panel_installation (sort 6)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '28 days'
+  where project_id = '20000000-0000-0000-0000-000000000005' and sort_order < 6;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000005' and sort_order = 6;
+
+-- P6: wcr_submitted (sort 7)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '40 days'
+  where project_id = '20000000-0000-0000-0000-000000000006' and sort_order < 7;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000006' and sort_order = 7;
+
+-- P7: kseb_inspection_meter (sort 8)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '35 days'
+  where project_id = '20000000-0000-0000-0000-000000000007' and sort_order < 8;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000007' and sort_order = 8;
+
+-- P8: plant_commissioning — fully commissioned
+update public.project_milestones set status = 'completed', completed_at = now() - interval '5 days'
+  where project_id = '20000000-0000-0000-0000-000000000008';
+
+-- ---------- Service Tickets ----------
 insert into public.service_tickets (
   id, project_id, ticket_no, ticket_type, status, assigned_to,
   scheduled_date, service_date,
@@ -150,5 +274,55 @@ insert into public.service_tickets (
     'Minor dust accumulation on panels; loose DC connector',
     'Cleaned panels, re-terminated DC connector, tightened structure bolts',
     1500, 350, 0, 1850,
+    '00000000-0000-0000-0000-000000000001'
+  ),
+  (
+    '30000000-0000-0000-0000-000000000002',
+    '20000000-0000-0000-0000-000000000005',
+    'BSS-2606-1002', 'adhoc', 'in_progress',
+    '00000000-0000-0000-0000-000000000004',
+    current_date - 1, null,
+    '5kW', 'Microtek', 'MSUN-5000', 'SN-5KW-00456',
+    '200AH', 'Luminous', 4, 1,
+    '540W', 'Waaree', 10, 5400, 2,
+    '[]'::jsonb, '[]'::jsonb,
+    null, null, null,
+    'Inverter showing fault code E05 after recent rains',
+    null, null,
+    0, 0, 0, 0,
+    '00000000-0000-0000-0000-000000000001'
+  ),
+  (
+    '30000000-0000-0000-0000-000000000003',
+    '20000000-0000-0000-0000-000000000008',
+    'BSS-2606-1003', 'routine_6m', 'completed',
+    '00000000-0000-0000-0000-000000000002',
+    current_date - 30, current_date - 30,
+    '5kW', 'Su-Kam', 'Shark 5000', 'SN-5KW-00789',
+    '150AH', 'Exide', 4, 1,
+    '545W', 'Adani', 10, 5450, 2,
+    '[{"string":1,"voltage":"390","ampere":"8.1"},{"string":2,"voltage":"388","ampere":"7.9"}]'::jsonb,
+    '[{"mppt":1,"in_volt":"395","out_volt":"230","in_ampere":"8.0","out_ampere":"14.2"}]'::jsonb,
+    '27.1', '12.5', 'Normal',
+    'Post-commissioning 6-month check',
+    'None',
+    'All parameters within range; plant commissioned successfully',
+    1200, 0, 500, 1700,
+    '00000000-0000-0000-0000-000000000001'
+  ),
+  (
+    '30000000-0000-0000-0000-000000000004',
+    '20000000-0000-0000-0000-000000000007',
+    'BSS-2606-1004', 'routine_6m', 'scheduled',
+    '00000000-0000-0000-0000-000000000005',
+    current_date + 7, null,
+    '3kW', 'Luminous', 'NXG-3000', 'SN-3KW-00234',
+    '150AH', 'Exide', 2, 1,
+    '545W', 'Adani', 6, 3270, 1,
+    '[]'::jsonb, '[]'::jsonb,
+    null, null, null,
+    'Scheduled routine check before KSEB meter inspection',
+    null, null,
+    0, 0, 0, 0,
     '00000000-0000-0000-0000-000000000001'
   );

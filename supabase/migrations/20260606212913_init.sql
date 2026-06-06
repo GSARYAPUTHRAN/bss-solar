@@ -17,7 +17,8 @@ create type project_stage as enum (
   'kseb_portal_registration',
   'kseb_feasibility_clearance',
   'material_dispatch',
-  'structure_fabrication_installation',
+  'structure_fabrication',
+  'panel_installation',
   'wcr_submitted',
   'kseb_inspection_meter',
   'plant_commissioning'
@@ -97,7 +98,7 @@ create table project_milestones (
 );
 create index idx_milestones_project on project_milestones(project_id);
 
--- Auto-seed the 8 milestones when a project is created
+-- Auto-seed the 9 milestones when a project is created
 create or replace function seed_project_milestones()
 returns trigger language plpgsql as $$
 begin
@@ -106,10 +107,11 @@ begin
     (new.id, 'kseb_portal_registration', 2),
     (new.id, 'kseb_feasibility_clearance', 3),
     (new.id, 'material_dispatch', 4),
-    (new.id, 'structure_fabrication_installation', 5),
-    (new.id, 'wcr_submitted', 6),
-    (new.id, 'kseb_inspection_meter', 7),
-    (new.id, 'plant_commissioning', 8);
+    (new.id, 'structure_fabrication', 5),
+    (new.id, 'panel_installation', 6),
+    (new.id, 'wcr_submitted', 7),
+    (new.id, 'kseb_inspection_meter', 8),
+    (new.id, 'plant_commissioning', 9);
   return new;
 end; $$;
 create trigger on_project_created

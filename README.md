@@ -49,7 +49,10 @@ Open http://localhost:3000 and sign in with the demo accounts:
 | Role        | Email                  | Password     |
 | ----------- | ---------------------- | ------------ |
 | Admin       | `admin@bsssolar.test`  | `Admin@12345` |
-| Coordinator | `coord@bsssolar.test`  | `Coord@12345` |
+| Coordinator | `coord@bsssolar.test`  | `Coord@12345` (Rahul Menon) |
+| Coordinator | `priya@bsssolar.test`  | `Coord@12345` (Priya Suresh) |
+| Coordinator | `arun@bsssolar.test`   | `Coord@12345` (Arun Krishnan) |
+| Coordinator | `sneha@bsssolar.test`  | `Coord@12345` (Sneha Das) |
 
 Reset demo data anytime:
 
