@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Section, FormActions } from "@/components/layout";
 import { FormSelect } from "@/components/form-select";
 import { updateTicket } from "@/app/(app)/tickets/actions";
 import { formatCurrency } from "@/lib/format";
@@ -106,12 +106,10 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
       />
       <input type="hidden" name="mppt_readings" value={JSON.stringify(mppt)} />
 
-      {/* Service info */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Service Information</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <Section
+        title="Service Information"
+        contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+      >
           <div className="space-y-1.5">
             <Label className="text-xs">Ticket type</Label>
             <FormSelect
@@ -144,15 +142,12 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
             type="date"
             defaultValue={ticket.service_date}
           />
-        </CardContent>
-      </Card>
+      </Section>
 
-      {/* System Details */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">System Details</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <Section
+        title="System Details"
+        contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+      >
           <Text name="sys_capacity" label="Capacity" defaultValue={ticket.sys_capacity} />
           <Text
             name="sys_loading_capacity"
@@ -166,15 +161,12 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
             label="Serial No."
             defaultValue={ticket.sys_serial_no}
           />
-        </CardContent>
-      </Card>
+      </Section>
 
-      {/* Battery Details */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Battery Details</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <Section
+        title="Battery Details"
+        contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+      >
           <Text
             name="bat_capacity_ah"
             label="Capacity / AH"
@@ -194,15 +186,12 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
             type="number"
             defaultValue={ticket.bat_bank_nos}
           />
-        </CardContent>
-      </Card>
+      </Section>
 
-      {/* SPV Details */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">SPV (Solar Panel) Details</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <Section
+        title="SPV (Solar Panel) Details"
+        contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
+      >
           <Text
             name="spv_module_capacity"
             label="Module Capacity"
@@ -228,15 +217,9 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
             type="number"
             defaultValue={ticket.spv_no_of_strings}
           />
-        </CardContent>
-      </Card>
+      </Section>
 
-      {/* Post-Service Status */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Post-Service Status</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
+      <Section title="Post-Service Status" contentClassName="space-y-5">
           <div>
             <p className="mb-2 text-sm font-medium">SPV String Readings</p>
             <div className="space-y-2">
@@ -313,15 +296,9 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
               defaultValue={ticket.battery_water_level}
             />
           </div>
-        </CardContent>
-      </Card>
+      </Section>
 
-      {/* Resolution */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Resolution</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <Section title="Resolution" contentClassName="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="nature_of_complaint" className="text-xs">
               Nature of Complaint
@@ -355,15 +332,12 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
               defaultValue={ticket.action_taken ?? ""}
             />
           </div>
-        </CardContent>
-      </Card>
+      </Section>
 
-      {/* Financials */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Financials</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <Section
+        title="Financials"
+        contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+      >
           <div className="space-y-1.5">
             <Label htmlFor="service_charge" className="text-xs">
               Service Charge
@@ -405,16 +379,15 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Total</Label>
-            <div className="flex h-9 items-center rounded-md border bg-muted px-3 text-sm font-semibold">
+            <div className="flex h-9 items-center rounded-md border bg-primary/5 px-3 text-sm font-semibold text-primary">
               {formatCurrency(total)}
             </div>
           </div>
-        </CardContent>
-      </Card>
+      </Section>
 
-      <div className="flex justify-end gap-2">
+      <FormActions>
         <Button type="submit">Save Service Sheet</Button>
-      </div>
+      </FormActions>
     </form>
   );
 }

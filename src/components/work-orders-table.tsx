@@ -1,35 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowUpDown, Search } from "lucide-react";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { DataTable } from "@/components/data-table";
+import type { ColumnDef, FilterDef } from "@/components/data-table";
 import { WorkOrderStatusBadge } from "@/components/status-badges";
+import { WORK_ORDER_STATUS, statusOptions } from "@/lib/domain/status";
 import { formatCurrency, formatDate } from "@/lib/format";
-import { WORK_ORDER_STATUS_LABELS } from "@/lib/constants";
-import type { WorkOrder, WorkOrderStatus } from "@/lib/types";
-
-interface Coordinator {
-  id: string;
-  full_name: string;
-}
+import type { Coordinator } from "@/server/data";
+import type { WorkOrder } from "@/lib/types";
 
 export function WorkOrdersTable({
   workOrders,
@@ -40,147 +17,93 @@ export function WorkOrdersTable({
   coordinators: Coordinator[];
   isAdmin: boolean;
 }) {
-  const [search, setSearch] = useState("");
-  const [status, setStatus] = useState<string>("all");
-  const [coordinator, setCoordinator] = useState<string>("all");
-  const [sortAsc, setSortAsc] = useState(false);
+  const columns: ColumnDef<WorkOrder>[] = [
+    {
+      id: "client",
+      header: "Client",
+      cell: (w) => (
+        <>
+          <span className="font-medium hover:underline">{w.client_name}</span>
+          <div className="text-xs text-muted-foreground">
+            {w.client_phone ?? "—"}
+          </div>
+        </>
+      ),
+    },
+    {
+      id: "coordinator",
+      header: "Coordinator",
+      hidden: !isAdmin,
+      cell: (w) => w.coordinator?.full_name ?? "—",
+    },
+    { id: "capacity", header: "Capacity", cell: (w) => w.plant_capacity },
+    {
+      id: "advance",
+      header: "Advance",
+      className: "text-right",
+      headerClassName: "text-right",
+      cell: (w) => formatCurrency(w.advance_amount),
+    },
+    {
+      id: "total",
+      header: "Total",
+      className: "text-right",
+      headerClassName: "text-right",
+      cell: (w) => formatCurrency(w.total_cost),
+    },
+    {
+      id: "order_date",
+      header: "Order Date",
+      sortable: true,
+      sortAccessor: (w) => new Date(w.order_date).getTime(),
+      cell: (w) => formatDate(w.order_date),
+    },
+    {
+      id: "status",
+      header: "Status",
+      cell: (w) => <WorkOrderStatusBadge status={w.status} />,
+    },
+  ];
 
-  const filtered = useMemo(() => {
-    let rows = [...workOrders];
-    const q = search.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter(
-        (w) =>
+  const filters: FilterDef<WorkOrder>[] = [
+    {
+      id: "status",
+      placeholder: "Status",
+      options: [
+        { value: "all", label: "All statuses" },
+        ...statusOptions(WORK_ORDER_STATUS),
+      ],
+      predicate: (w, v) => w.status === v,
+    },
+    {
+      id: "coordinator",
+      placeholder: "Coordinator",
+      widthClass: "sm:w-52",
+      hidden: !isAdmin,
+      options: [
+        { value: "all", label: "All coordinators" },
+        ...coordinators.map((c) => ({ value: c.id, label: c.full_name })),
+      ],
+      predicate: (w, v) => w.coordinator_id === v,
+    },
+  ];
+
+  return (
+    <DataTable
+      data={workOrders}
+      columns={columns}
+      filters={filters}
+      search={{
+        placeholder: "Search client, phone, address…",
+        predicate: (w, q) =>
           w.client_name.toLowerCase().includes(q) ||
           (w.client_phone ?? "").toLowerCase().includes(q) ||
           (w.address ?? "").toLowerCase().includes(q),
-      );
-    }
-    if (status !== "all") rows = rows.filter((w) => w.status === status);
-    if (coordinator !== "all")
-      rows = rows.filter((w) => w.coordinator_id === coordinator);
-
-    rows.sort((a, b) => {
-      const da = new Date(a.order_date).getTime();
-      const db = new Date(b.order_date).getTime();
-      return sortAsc ? da - db : db - da;
-    });
-    return rows;
-  }, [workOrders, search, status, coordinator, sortAsc]);
-
-  return (
-    <Card className="p-4">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
-          <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search client, phone, address…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8"
-          />
-        </div>
-        <Select value={status} onValueChange={setStatus}>
-          <SelectTrigger className="w-full sm:w-44">
-            <SelectValue placeholder="Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All statuses</SelectItem>
-            {(
-              Object.keys(WORK_ORDER_STATUS_LABELS) as WorkOrderStatus[]
-            ).map((s) => (
-              <SelectItem key={s} value={s}>
-                {WORK_ORDER_STATUS_LABELS[s]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {isAdmin && (
-          <Select value={coordinator} onValueChange={setCoordinator}>
-            <SelectTrigger className="w-full sm:w-52">
-              <SelectValue placeholder="Coordinator" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All coordinators</SelectItem>
-              {coordinators.map((c) => (
-                <SelectItem key={c.id} value={c.id}>
-                  {c.full_name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-      </div>
-
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Client</TableHead>
-              {isAdmin && <TableHead>Coordinator</TableHead>}
-              <TableHead>Capacity</TableHead>
-              <TableHead className="text-right">Advance</TableHead>
-              <TableHead className="text-right">Total</TableHead>
-              <TableHead>
-                <button
-                  type="button"
-                  onClick={() => setSortAsc((s) => !s)}
-                  className="flex items-center gap-1 hover:text-foreground"
-                >
-                  Order Date <ArrowUpDown className="h-3.5 w-3.5" />
-                </button>
-              </TableHead>
-              <TableHead>Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filtered.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={isAdmin ? 7 : 6}
-                  className="h-24 text-center text-muted-foreground"
-                >
-                  No work orders found.
-                </TableCell>
-              </TableRow>
-            ) : (
-              filtered.map((w) => (
-                <TableRow key={w.id} className="cursor-pointer">
-                  <TableCell>
-                    <Link
-                      href={`/work-orders/${w.id}`}
-                      className="font-medium hover:underline"
-                    >
-                      {w.client_name}
-                    </Link>
-                    <div className="text-xs text-muted-foreground">
-                      {w.client_phone ?? "—"}
-                    </div>
-                  </TableCell>
-                  {isAdmin && (
-                    <TableCell>{w.coordinator?.full_name ?? "—"}</TableCell>
-                  )}
-                  <TableCell>{w.plant_capacity}</TableCell>
-                  <TableCell className="text-right">
-                    {formatCurrency(w.advance_amount)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {formatCurrency(w.total_cost)}
-                  </TableCell>
-                  <TableCell>{formatDate(w.order_date)}</TableCell>
-                  <TableCell>
-                    <WorkOrderStatusBadge status={w.status} />
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-
-      <p className="mt-3 text-xs text-muted-foreground">
-        {filtered.length} of {workOrders.length} work orders
-      </p>
-    </Card>
+      }}
+      initialSort={{ id: "order_date", asc: false }}
+      noun="work orders"
+      emptyMessage="No work orders found."
+      getRowHref={(w) => `/work-orders/${w.id}`}
+    />
   );
 }

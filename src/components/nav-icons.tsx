@@ -8,7 +8,7 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
-import type { NavIcon } from "./nav-config";
+import type { NavIcon } from "@/config/navigation";
 
 export const NAV_ICONS: Record<NavIcon, LucideIcon> = {
   dashboard: LayoutDashboard,

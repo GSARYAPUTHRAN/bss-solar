@@ -2,30 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { requireProfile } from "@/lib/auth";
-import type { MilestoneStatus, ProjectMilestone, ProjectStage } from "@/lib/types";
+import { requireAdmin } from "@/lib/auth";
+import { projectsRepository } from "@/server/data";
+import { enumValue, str, text } from "@/server/form";
+import type { MilestoneStatus, ProjectStage } from "@/lib/types";
 
+/** Recompute a project's current stage + completion from its milestones. */
 async function recomputeProjectStage(projectId: string) {
-  const supabase = await createClient();
-  const { data } = await supabase
-    .from("project_milestones")
-    .select("stage, sort_order, status")
-    .eq("project_id", projectId)
-    .order("sort_order", { ascending: true });
-
-  const milestones = (data as Pick<
-    ProjectMilestone,
-    "stage" | "sort_order" | "status"
-  >[]) ?? [];
-
+  const milestones = await projectsRepository.milestones(projectId);
   if (milestones.length === 0) return;
 
   const allCompleted = milestones.every((m) => m.status === "completed");
-
-  // Current stage = furthest milestone that has been started (in_progress/completed),
-  // falling back to the first stage if nothing has started yet.
   const started = milestones.filter((m) => m.status !== "pending");
+
   let currentStage: ProjectStage;
   if (allCompleted) {
     currentStage = milestones[milestones.length - 1].stage;
@@ -35,38 +24,28 @@ async function recomputeProjectStage(projectId: string) {
     currentStage = milestones[0].stage;
   }
 
-  await supabase
-    .from("projects")
-    .update({
-      current_stage: currentStage,
-      is_completed: allCompleted,
-      completed_at: allCompleted ? new Date().toISOString() : null,
-    })
-    .eq("id", projectId);
+  await projectsRepository.setProgress(projectId, {
+    current_stage: currentStage,
+    is_completed: allCompleted,
+    completed_at: allCompleted ? new Date().toISOString() : null,
+  });
 }
 
 export async function updateMilestone(formData: FormData) {
-  const profile = await requireProfile();
-  if (profile.role !== "admin") redirect("/projects");
-  const supabase = await createClient();
+  await requireAdmin();
 
-  const projectId = String(formData.get("project_id") ?? "");
-  const milestoneId = String(formData.get("milestone_id") ?? "");
-  const status = String(formData.get("status") ?? "pending") as MilestoneStatus;
-  const notes = String(formData.get("notes") ?? "").trim() || null;
+  const projectId = text(formData.get("project_id"));
+  const milestoneId = text(formData.get("milestone_id"));
+  const status = enumValue<MilestoneStatus>(formData.get("status"), "pending");
+  const notes = str(formData.get("notes"));
 
-  const { error } = await supabase
-    .from("project_milestones")
-    .update({
-      status,
-      notes,
-      completed_at: status === "completed" ? new Date().toISOString() : null,
-    })
-    .eq("id", milestoneId);
+  const { error } = await projectsRepository.updateMilestone(milestoneId, {
+    status,
+    notes,
+    completed_at: status === "completed" ? new Date().toISOString() : null,
+  });
 
-  if (error) {
-    redirect(`/projects/${projectId}?error=${encodeURIComponent(error.message)}`);
-  }
+  if (error) redirect(`/projects/${projectId}?error=${encodeURIComponent(error)}`);
 
   await recomputeProjectStage(projectId);
 
@@ -75,28 +54,19 @@ export async function updateMilestone(formData: FormData) {
   redirect(`/projects/${projectId}`);
 }
 
-/** Advance a project by completing its current (first non-completed) milestone. */
+/** Advance a project by completing its first non-completed milestone. */
 export async function advanceProject(formData: FormData) {
-  const profile = await requireProfile();
-  if (profile.role !== "admin") redirect("/projects");
-  const supabase = await createClient();
-  const projectId = String(formData.get("project_id") ?? "");
+  await requireAdmin();
+  const projectId = text(formData.get("project_id"));
 
-  const { data } = await supabase
-    .from("project_milestones")
-    .select("id, sort_order, status")
-    .eq("project_id", projectId)
-    .order("sort_order", { ascending: true });
-
-  const milestones =
-    (data as Pick<ProjectMilestone, "id" | "sort_order" | "status">[]) ?? [];
+  const milestones = await projectsRepository.milestones(projectId);
   const next = milestones.find((m) => m.status !== "completed");
 
   if (next) {
-    await supabase
-      .from("project_milestones")
-      .update({ status: "completed", completed_at: new Date().toISOString() })
-      .eq("id", next.id);
+    await projectsRepository.updateMilestone(next.id, {
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    });
     await recomputeProjectStage(projectId);
   }
 

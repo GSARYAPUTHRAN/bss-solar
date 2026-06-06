@@ -35,7 +35,7 @@ export function RoleEditor({
           setValue(next as UserRole);
           startTransition(async () => {
             const res = await updateUserRole(userId, next as UserRole);
-            if (res?.error) {
+            if (!res.ok) {
               setValue(prev);
               toast.error(res.error);
             } else {

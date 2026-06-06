@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Menu, Sun, LogOut, User as UserIcon } from "lucide-react";
+import { Menu, LogOut, User as UserIcon } from "lucide-react";
+import { BssLogo } from "@/components/bss-logo";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -21,7 +22,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { SidebarNav } from "./sidebar-nav";
-import type { NavItem } from "./nav-config";
+import type { ModuleNav } from "@/config/navigation";
 import { COMPANY } from "@/lib/constants";
 import type { Profile } from "@/lib/types";
 
@@ -39,7 +40,7 @@ export function AppHeader({
   profile,
   signOutAction,
 }: {
-  items: NavItem[];
+  items: ModuleNav[];
   profile: Profile;
   signOutAction: () => Promise<void>;
 }) {
@@ -57,9 +58,7 @@ export function AppHeader({
         <SheetContent side="left" className="w-64 p-0">
           <SheetHeader className="border-b">
             <SheetTitle className="flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white">
-                <Sun className="h-5 w-5" />
-              </span>
+              <BssLogo variant="icon" className="h-8 w-8 shrink-0" />
               {COMPANY.name}
             </SheetTitle>
           </SheetHeader>
@@ -75,7 +74,7 @@ export function AppHeader({
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" className="flex items-center gap-2 px-2">
             <Avatar className="h-8 w-8">
-              <AvatarFallback className="bg-amber-100 text-amber-800 text-xs font-semibold">
+              <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
                 {initials(profile.full_name)}
               </AvatarFallback>
             </Avatar>

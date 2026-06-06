@@ -1,10 +1,10 @@
-import type {
-  MilestoneStatus,
-  ProjectStage,
-  TicketStatus,
-  TicketType,
-  WorkOrderStatus,
-} from "./types";
+import type { ProjectStage, TicketType } from "./types";
+import {
+  MILESTONE_STATUS,
+  TICKET_STATUS,
+  WORK_ORDER_STATUS,
+  statusLabels,
+} from "./domain/status";
 
 export const PROJECT_STAGES: { value: ProjectStage; label: string }[] = [
   { value: "site_feasibility_survey", label: "Site Feasibility Survey" },
@@ -32,29 +32,14 @@ export const STAGE_LABELS: Record<ProjectStage, string> = Object.fromEntries(
 
 export const STAGE_ORDER: ProjectStage[] = PROJECT_STAGES.map((s) => s.value);
 
-export const MILESTONE_STATUS_LABELS: Record<MilestoneStatus, string> = {
-  pending: "Pending",
-  in_progress: "In Progress",
-  completed: "Completed",
-};
-
-export const WORK_ORDER_STATUS_LABELS: Record<WorkOrderStatus, string> = {
-  pending: "Pending",
-  approved: "Approved",
-  rejected: "Rejected",
-};
+// Status labels are derived from the status registry (single source of truth).
+export const MILESTONE_STATUS_LABELS = statusLabels(MILESTONE_STATUS);
+export const WORK_ORDER_STATUS_LABELS = statusLabels(WORK_ORDER_STATUS);
+export const TICKET_STATUS_LABELS = statusLabels(TICKET_STATUS);
 
 export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
   routine_6m: "Routine (6-Month Check)",
   adhoc: "Ad-hoc Issue",
-};
-
-export const TICKET_STATUS_LABELS: Record<TicketStatus, string> = {
-  open: "Open",
-  scheduled: "Scheduled",
-  in_progress: "In Progress",
-  completed: "Completed",
-  cancelled: "Cancelled",
 };
 
 export const COMMON_CAPACITIES = ["1kW", "2kW", "3kW", "5kW", "8kW", "10kW"];
@@ -63,7 +48,16 @@ export const COMPANY = {
   name: "BSS Solar",
   fullName: "BSS Solar Solutions",
   tagline: "Empanelled Solar Implementation Agency",
-  address: "Kerala, India",
-  email: "service@bsssolar.in",
-  phone: "+91 00000 00000",
+  // Official details (as printed on the physical BSS service form)
+  org: "BHARAT SEVAK SAMAJ",
+  subtitle: "National Development Agency, Promoted by Govt. of India",
+  line1:
+    "A channel partner of Ministry of New and Renewable Energy, Government of India",
+  line2: "Empanelled agency of ANERT, Government of Kerala",
+  officeLabel: "Central Program Office",
+  address:
+    "BSS Solar, Brahmins Colony, Kowdiar P.O., Thiruvananthapuram - 695003, Kerala, India",
+  phone: "0471-2439322, 9048001332, 7736999199",
+  website: "www.bsssolar.com",
+  email: "bsssolarkerala@gmail.com",
 };

@@ -1,31 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, CheckCircle2, XCircle, KanbanSquare } from "lucide-react";
+import { CheckCircle2, XCircle, KanbanSquare } from "lucide-react";
 import { requireProfile } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
+import { workOrdersRepository } from "@/server/data";
 import {
   approveWorkOrder,
   rejectWorkOrder,
   deleteWorkOrder,
 } from "../actions";
-import { PageHeader } from "@/components/page-header";
+import { Page, PageHeader, Section, Field, FieldGrid, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { WorkOrderStatusBadge } from "@/components/status-badges";
 import { formatCurrency, formatDate } from "@/lib/format";
-import type { WorkOrder } from "@/lib/types";
-
-function Field({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </p>
-      <p className="mt-0.5 text-sm font-medium">{value ?? "—"}</p>
-    </div>
-  );
-}
 
 export default async function WorkOrderDetailPage({
   params,
@@ -37,50 +24,29 @@ export default async function WorkOrderDetailPage({
   const profile = await requireProfile();
   const { id } = await params;
   const { error } = await searchParams;
-  const supabase = await createClient();
 
-  const { data } = await supabase
-    .from("work_orders")
-    .select(
-      `*,
-       coordinator:profiles!work_orders_coordinator_id_fkey(id, full_name),
-       projects(id, current_stage, is_completed)`,
-    )
-    .eq("id", id)
-    .maybeSingle();
+  const wo = await workOrdersRepository.byId(id);
+  if (!wo) notFound();
 
-  if (!data) notFound();
-
-  const projects = (data as Record<string, unknown>).projects as
-    | { id: string }[]
-    | null;
-  const project = projects && projects.length > 0 ? projects[0] : null;
-  const wo = data as WorkOrder;
+  const project = wo.project;
   const isAdmin = profile.role === "admin";
 
   return (
-    <div className="mx-auto max-w-3xl">
-      <PageHeader title={wo.client_name} description="Work order details">
-        <Button variant="outline" asChild>
-          <Link href="/work-orders">
-            <ArrowLeft className="mr-2 h-4 w-4" /> Back
-          </Link>
-        </Button>
-      </PageHeader>
+    <Page size="narrow">
+      <PageHeader
+        title={wo.client_name}
+        description="Work order details"
+        backHref="/work-orders"
+      />
 
-      {error && (
-        <p className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
+      <FormError message={error} />
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base">Order Information</CardTitle>
-          <WorkOrderStatusBadge status={wo.status} />
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <div className="grid gap-5 sm:grid-cols-2">
+      <Section
+        title="Order Information"
+        actions={<WorkOrderStatusBadge status={wo.status} />}
+        contentClassName="space-y-6"
+      >
+          <FieldGrid>
             <Field label="Client name" value={wo.client_name} />
             <Field label="Client phone" value={wo.client_phone} />
             <Field label="Address" value={wo.address} />
@@ -98,7 +64,7 @@ export default async function WorkOrderDetailPage({
                 Number(wo.total_cost) - Number(wo.advance_amount ?? 0),
               )}
             />
-          </div>
+          </FieldGrid>
 
           {project && (
             <>
@@ -156,8 +122,7 @@ export default async function WorkOrderDetailPage({
               </div>
             </>
           )}
-        </CardContent>
-      </Card>
-    </div>
+      </Section>
+    </Page>
   );
 }

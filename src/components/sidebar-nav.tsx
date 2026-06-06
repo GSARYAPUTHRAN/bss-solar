@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import type { NavItem } from "./nav-config";
+import type { ModuleNav } from "@/config/navigation";
 import { NAV_ICONS } from "./nav-icons";
 
 export function SidebarNav({
   items,
   onNavigate,
 }: {
-  items: NavItem[];
+  items: ModuleNav[];
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();

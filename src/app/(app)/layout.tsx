@@ -1,7 +1,7 @@
-import { Sun } from "lucide-react";
 import { requireProfile } from "@/lib/auth";
 import { signOut } from "@/app/login/actions";
-import { navForRole } from "@/components/nav-config";
+import { navForRole } from "@/config/navigation";
+import { BssLogo } from "@/components/bss-logo";
 import { SidebarNav } from "@/components/sidebar-nav";
 import { AppHeader } from "@/components/app-header";
 import { COMPANY } from "@/lib/constants";
@@ -18,11 +18,9 @@ export default async function AppLayout({
     <div className="flex min-h-screen w-full">
       {/* Desktop sidebar */}
       <aside className="hidden w-64 shrink-0 flex-col border-r bg-sidebar md:flex">
-        <div className="flex h-14 items-center gap-2 border-b px-5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-amber-500 text-white">
-            <Sun className="h-5 w-5" />
-          </span>
-          <div className="leading-tight">
+        <div className="flex h-14 items-center gap-2.5 border-b px-4">
+          <BssLogo variant="icon" className="h-9 w-9 shrink-0" priority />
+          <div className="min-w-0 leading-tight">
             <p className="text-sm font-semibold">{COMPANY.name}</p>
             <p className="text-[10px] text-muted-foreground">Operations Console</p>
           </div>

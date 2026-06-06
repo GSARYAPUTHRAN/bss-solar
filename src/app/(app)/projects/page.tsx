@@ -1,39 +1,45 @@
 import { requireProfile } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
-import { getCoordinators } from "@/lib/queries";
-import { PageHeader } from "@/components/page-header";
+import { profilesRepository, projectsRepository } from "@/server/data";
+import { Page, PageHeader } from "@/components/layout";
 import { ProjectsBoard } from "@/components/projects-board";
-import type { Project } from "@/lib/types";
+import { ProjectsTable } from "@/components/projects-table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export default async function ProjectsPage() {
   const profile = await requireProfile();
-  const supabase = await createClient();
+  const isAdmin = profile.role === "admin";
 
-  const { data } = await supabase
-    .from("projects")
-    .select(
-      `*,
-       work_order:work_orders!projects_work_order_id_fkey(client_name, plant_capacity, total_cost),
-       coordinator:profiles!projects_coordinator_id_fkey(id, full_name),
-       milestones:project_milestones(status)`,
-    )
-    .order("created_at", { ascending: false });
-
-  const projects = (data as Project[]) ?? [];
-  const coordinators =
-    profile.role === "admin" ? await getCoordinators() : [];
+  const [projects, coordinators] = await Promise.all([
+    projectsRepository.list(),
+    isAdmin ? profilesRepository.coordinators() : Promise.resolve([]),
+  ]);
 
   return (
-    <div>
+    <Page>
       <PageHeader
         title="Project Tracker"
-        description="KSEB / ANERT installation pipeline. Drag-free Kanban grouped by current milestone."
+        description="KSEB / ANERT installation pipeline. Track milestones on the board, or browse every project in the list."
       />
-      <ProjectsBoard
-        projects={projects}
-        coordinators={coordinators}
-        isAdmin={profile.role === "admin"}
-      />
-    </div>
+      <Tabs defaultValue="board">
+        <TabsList>
+          <TabsTrigger value="board">Board</TabsTrigger>
+          <TabsTrigger value="list">List</TabsTrigger>
+        </TabsList>
+        <TabsContent value="board" className="mt-4">
+          <ProjectsBoard
+            projects={projects}
+            coordinators={coordinators}
+            isAdmin={isAdmin}
+          />
+        </TabsContent>
+        <TabsContent value="list" className="mt-4">
+          <ProjectsTable
+            projects={projects}
+            coordinators={coordinators}
+            isAdmin={isAdmin}
+          />
+        </TabsContent>
+      </Tabs>
+    </Page>
   );
 }

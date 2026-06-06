@@ -1,5 +1,6 @@
 import type { UserRole } from "@/lib/types";
 
+/** Icon keys are resolved to components client-side (see nav-icons.tsx). */
 export type NavIcon =
   | "dashboard"
   | "work-orders"
@@ -7,14 +8,21 @@ export type NavIcon =
   | "tickets"
   | "team";
 
-export interface NavItem {
+export interface ModuleNav {
   href: string;
   label: string;
   icon: NavIcon;
   roles: UserRole[];
 }
 
-export const NAV_ITEMS: NavItem[] = [
+/**
+ * Registry of feature modules surfaced in the navigation.
+ *
+ * Plug-and-play: registering a new module is a single entry here plus its
+ * route folder under `app/(app)/<segment>`. Role-based visibility, sidebar,
+ * and mobile nav all derive from this list.
+ */
+export const MODULES: ModuleNav[] = [
   {
     href: "/",
     label: "Dashboard",
@@ -47,6 +55,6 @@ export const NAV_ITEMS: NavItem[] = [
   },
 ];
 
-export function navForRole(role: UserRole): NavItem[] {
-  return NAV_ITEMS.filter((item) => item.roles.includes(role));
+export function navForRole(role: UserRole): ModuleNav[] {
+  return MODULES.filter((module) => module.roles.includes(role));
 }

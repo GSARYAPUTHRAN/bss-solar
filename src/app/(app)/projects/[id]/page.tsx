@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
-  ArrowLeft,
   CheckCircle2,
   Circle,
   Clock,
@@ -10,11 +9,10 @@ import {
   Wrench,
 } from "lucide-react";
 import { requireProfile } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
+import { projectsRepository, ticketsRepository } from "@/server/data";
 import { updateMilestone, advanceProject } from "../actions";
-import { PageHeader } from "@/components/page-header";
+import { Page, PageHeader, Section, EmptyState, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { FormSelect } from "@/components/form-select";
@@ -25,12 +23,7 @@ import {
   TICKET_TYPE_LABELS,
 } from "@/lib/constants";
 import { formatCurrency, formatDate } from "@/lib/format";
-import type {
-  MilestoneStatus,
-  Project,
-  ProjectMilestone,
-  ServiceTicket,
-} from "@/lib/types";
+import type { MilestoneStatus, ProjectMilestone } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_ICON: Record<MilestoneStatus, React.ReactNode> = {
@@ -49,61 +42,35 @@ export default async function ProjectDetailPage({
   const profile = await requireProfile();
   const { id } = await params;
   const { error } = await searchParams;
-  const supabase = await createClient();
   const isAdmin = profile.role === "admin";
 
-  const { data } = await supabase
-    .from("projects")
-    .select(
-      `*,
-       work_order:work_orders!projects_work_order_id_fkey(client_name, client_phone, address, plant_capacity, total_cost, advance_amount),
-       coordinator:profiles!projects_coordinator_id_fkey(id, full_name),
-       milestones:project_milestones(*)`,
-    )
-    .eq("id", id)
-    .maybeSingle();
+  const project = await projectsRepository.byId(id);
+  if (!project) notFound();
 
-  if (!data) notFound();
-  const project = data as Project;
   const milestones = (project.milestones ?? []).sort(
     (a, b) => a.sort_order - b.sort_order,
   );
   const doneCount = milestones.filter((m) => m.status === "completed").length;
 
-  const { data: ticketData } = await supabase
-    .from("service_tickets")
-    .select("id, ticket_no, ticket_type, status, scheduled_date, total")
-    .eq("project_id", id)
-    .order("created_at", { ascending: false });
-  const tickets = (ticketData as ServiceTicket[]) ?? [];
-
+  const tickets = await ticketsRepository.listByProject(id);
   const wo = project.work_order;
 
   return (
-    <div className="mx-auto max-w-4xl">
+    <Page size="wide">
       <PageHeader
         title={wo?.client_name ?? "Project"}
         description={`${wo?.plant_capacity ?? ""} · Started ${formatDate(project.started_at)}`}
-      >
-        <Button variant="outline" asChild>
-          <Link href="/projects">
-            <ArrowLeft className="mr-2 h-4 w-4" /> Back
-          </Link>
-        </Button>
-      </PageHeader>
+        backHref="/projects"
+      />
 
-      {error && (
-        <p className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </p>
-      )}
+      <FormError message={error} />
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Card className="md:col-span-1">
-          <CardHeader>
-            <CardTitle className="text-base">Project Summary</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
+        <Section
+          title="Project Summary"
+          className="md:col-span-1"
+          contentClassName="space-y-3 text-sm"
+        >
             <div className="flex justify-between">
               <span className="text-muted-foreground">Status</span>
               {project.is_completed ? (
@@ -146,16 +113,9 @@ export default async function ProjectDetailPage({
                 </Button>
               </form>
             )}
-          </CardContent>
-        </Card>
+        </Section>
 
-        <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle className="text-base">
-              KSEB / ANERT Milestones
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+        <Section title="KSEB / ANERT Milestones" className="md:col-span-2">
             <ol className="space-y-4">
               {milestones.map((m: ProjectMilestone, i) => (
                 <li key={m.id} className="relative pl-8">
@@ -241,33 +201,34 @@ export default async function ProjectDetailPage({
                 </li>
               ))}
             </ol>
-          </CardContent>
-        </Card>
+        </Section>
       </div>
 
-      <Card className="mt-4">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base">Service Tickets</CardTitle>
-          {isAdmin && (
+      <Section
+        title="Service Tickets"
+        actions={
+          isAdmin && (
             <Button size="sm" asChild>
               <Link href={`/tickets/new?project_id=${project.id}`}>
                 <Plus className="mr-2 h-4 w-4" /> New Ticket
               </Link>
             </Button>
-          )}
-        </CardHeader>
-        <CardContent>
+          )
+        }
+      >
           {tickets.length === 0 ? (
-            <p className="py-4 text-center text-sm text-muted-foreground">
-              No service tickets for this project yet.
-            </p>
+            <EmptyState
+              icon={Wrench}
+              title="No service tickets yet"
+              description="Service tickets raised for this project will appear here."
+            />
           ) : (
             <div className="space-y-2">
               {tickets.map((t) => (
                 <Link
                   key={t.id}
                   href={`/tickets/${t.id}`}
-                  className="flex items-center justify-between rounded-md border p-3 hover:border-amber-400"
+                  className="flex items-center justify-between rounded-md border p-3 transition-colors hover:border-primary/60 hover:bg-accent/50"
                 >
                   <div className="flex items-center gap-3">
                     <Wrench className="h-4 w-4 text-muted-foreground" />
@@ -289,8 +250,7 @@ export default async function ProjectDetailPage({
               ))}
             </div>
           )}
-        </CardContent>
-      </Card>
-    </div>
+      </Section>
+    </Page>
   );
 }

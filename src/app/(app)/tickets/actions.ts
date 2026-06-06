@@ -2,26 +2,15 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
-import { requireProfile } from "@/lib/auth";
-import type { MpptReading, SpvStringReading, TicketStatus, TicketType } from "@/lib/types";
-
-function str(v: FormDataEntryValue | null): string | null {
-  const s = String(v ?? "").trim();
-  return s.length ? s : null;
-}
-function int(v: FormDataEntryValue | null): number | null {
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-  const n = parseInt(s, 10);
-  return Number.isFinite(n) ? n : null;
-}
-function dec(v: FormDataEntryValue | null): number | null {
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
-}
+import { requireAdmin } from "@/lib/auth";
+import { ticketsRepository } from "@/server/data";
+import { dec, enumValue, int, json, str, text } from "@/server/form";
+import type {
+  MpptReading,
+  SpvStringReading,
+  TicketStatus,
+  TicketType,
+} from "@/lib/types";
 
 function genTicketNo(): string {
   const now = new Date();
@@ -32,62 +21,46 @@ function genTicketNo(): string {
 }
 
 export async function createTicket(formData: FormData) {
-  const profile = await requireProfile();
-  if (profile.role !== "admin") redirect("/tickets");
-  const supabase = await createClient();
+  const profile = await requireAdmin();
 
-  const payload = {
+  const { id, error } = await ticketsRepository.create({
     project_id: str(formData.get("project_id")),
     ticket_no: genTicketNo(),
-    ticket_type: (String(formData.get("ticket_type") ?? "routine_6m") as TicketType),
-    status: (String(formData.get("status") ?? "open") as TicketStatus),
+    ticket_type: enumValue<TicketType>(formData.get("ticket_type"), "routine_6m"),
+    status: enumValue<TicketStatus>(formData.get("status"), "open"),
     assigned_to: str(formData.get("assigned_to")),
     scheduled_date: str(formData.get("scheduled_date")),
     nature_of_complaint: str(formData.get("nature_of_complaint")),
     created_by: profile.id,
-  };
+  });
 
-  const { data, error } = await supabase
-    .from("service_tickets")
-    .insert(payload)
-    .select("id")
-    .single();
-
-  if (error || !data) {
-    redirect(`/tickets/new?error=${encodeURIComponent(error?.message ?? "Failed to create ticket")}`);
+  if (error || !id) {
+    redirect(
+      `/tickets/new?error=${encodeURIComponent(error ?? "Failed to create ticket")}`,
+    );
   }
 
   revalidatePath("/tickets");
-  redirect(`/tickets/${data.id}`);
+  redirect(`/tickets/${id}`);
 }
 
 export async function updateTicket(formData: FormData) {
-  const profile = await requireProfile();
-  if (profile.role !== "admin") redirect("/tickets");
-  const supabase = await createClient();
+  await requireAdmin();
+  const id = text(formData.get("id"));
 
-  const id = String(formData.get("id") ?? "");
-
-  let spvReadings: SpvStringReading[] = [];
-  let mpptReadings: MpptReading[] = [];
-  try {
-    spvReadings = JSON.parse(String(formData.get("spv_string_readings") ?? "[]"));
-  } catch {
-    spvReadings = [];
-  }
-  try {
-    mpptReadings = JSON.parse(String(formData.get("mppt_readings") ?? "[]"));
-  } catch {
-    mpptReadings = [];
-  }
+  const spvReadings = json<SpvStringReading[]>(
+    formData.get("spv_string_readings"),
+    [],
+  );
+  const mpptReadings = json<MpptReading[]>(formData.get("mppt_readings"), []);
 
   const serviceCharge = dec(formData.get("service_charge")) ?? 0;
   const costOfSpares = dec(formData.get("cost_of_spares")) ?? 0;
   const amcCharge = dec(formData.get("amc_charge")) ?? 0;
 
-  const payload = {
-    ticket_type: String(formData.get("ticket_type") ?? "routine_6m") as TicketType,
-    status: String(formData.get("status") ?? "open") as TicketStatus,
+  const { error } = await ticketsRepository.update(id, {
+    ticket_type: enumValue<TicketType>(formData.get("ticket_type"), "routine_6m"),
+    status: enumValue<TicketStatus>(formData.get("status"), "open"),
     scheduled_date: str(formData.get("scheduled_date")),
     service_date: str(formData.get("service_date")),
 
@@ -124,15 +97,10 @@ export async function updateTicket(formData: FormData) {
     cost_of_spares: costOfSpares,
     amc_charge: amcCharge,
     total: serviceCharge + costOfSpares + amcCharge,
-  };
-
-  const { error } = await supabase
-    .from("service_tickets")
-    .update(payload)
-    .eq("id", id);
+  });
 
   if (error) {
-    redirect(`/tickets/${id}/edit?error=${encodeURIComponent(error.message)}`);
+    redirect(`/tickets/${id}/edit?error=${encodeURIComponent(error)}`);
   }
 
   revalidatePath(`/tickets/${id}`);
@@ -141,15 +109,11 @@ export async function updateTicket(formData: FormData) {
 }
 
 export async function deleteTicket(formData: FormData) {
-  const profile = await requireProfile();
-  if (profile.role !== "admin") redirect("/tickets");
-  const supabase = await createClient();
-  const id = String(formData.get("id") ?? "");
+  await requireAdmin();
+  const id = text(formData.get("id"));
 
-  const { error } = await supabase.from("service_tickets").delete().eq("id", id);
-  if (error) {
-    redirect(`/tickets/${id}?error=${encodeURIComponent(error.message)}`);
-  }
+  const { error } = await ticketsRepository.remove(id);
+  if (error) redirect(`/tickets/${id}?error=${encodeURIComponent(error)}`);
 
   revalidatePath("/tickets");
   redirect("/tickets");

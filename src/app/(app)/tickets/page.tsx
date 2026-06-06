@@ -1,32 +1,19 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
 import { requireProfile } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
-import { PageHeader } from "@/components/page-header";
+import { ticketsRepository } from "@/server/data";
+import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { TicketsTable } from "@/components/tickets-table";
-import type { ServiceTicket } from "@/lib/types";
 
 export default async function TicketsPage() {
   const profile = await requireProfile();
-  const supabase = await createClient();
   const isAdmin = profile.role === "admin";
 
-  const { data } = await supabase
-    .from("service_tickets")
-    .select(
-      `*,
-       project:projects!service_tickets_project_id_fkey(
-         id,
-         work_order:work_orders!projects_work_order_id_fkey(client_name, address, client_phone)
-       )`,
-    )
-    .order("created_at", { ascending: false });
-
-  const tickets = (data as ServiceTicket[]) ?? [];
+  const tickets = await ticketsRepository.list();
 
   return (
-    <div>
+    <Page>
       <PageHeader
         title="Service Tickets"
         description="Maintenance, 6-month checks and ad-hoc service requests."
@@ -41,6 +28,6 @@ export default async function TicketsPage() {
       </PageHeader>
 
       <TicketsTable tickets={tickets} />
-    </div>
+    </Page>
   );
 }
