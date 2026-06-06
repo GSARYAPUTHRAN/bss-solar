@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Pencil } from "lucide-react";
-import { requireProfile } from "@/lib/auth";
+import { requireAdmin } from "@/lib/auth";
 import { ticketsRepository } from "@/server/data";
 import { deleteTicket } from "../actions";
 import {
@@ -33,10 +33,9 @@ export default async function TicketDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  const profile = await requireProfile();
+  await requireAdmin();
   const { id } = await params;
   const { error } = await searchParams;
-  const isAdmin = profile.role === "admin";
 
   const ticket = await ticketsRepository.byId(id);
   if (!ticket) notFound();
@@ -50,13 +49,11 @@ export default async function TicketDetailPage({
         description={`${TICKET_TYPE_LABELS[ticket.ticket_type]} · ${client?.client_name ?? "No project linked"}`}
         backHref="/tickets"
       >
-        {isAdmin && (
-          <Button variant="outline" asChild>
-            <Link href={`/tickets/${ticket.id}/edit`}>
-              <Pencil className="mr-2 h-4 w-4" /> Edit
-            </Link>
-          </Button>
-        )}
+        <Button variant="outline" asChild>
+          <Link href={`/tickets/${ticket.id}/edit`}>
+            <Pencil className="mr-2 h-4 w-4" /> Edit
+          </Link>
+        </Button>
         <DownloadPdfButton ticket={ticket} />
       </PageHeader>
 
@@ -203,16 +200,14 @@ export default async function TicketDetailPage({
             </div>
         </Section>
 
-        {isAdmin && (
-          <div className="flex justify-end">
-            <form action={deleteTicket}>
-              <input type="hidden" name="id" value={ticket.id} />
-              <Button type="submit" variant="ghost" className="text-destructive">
-                Delete Ticket
-              </Button>
-            </form>
-          </div>
-        )}
+        <div className="flex justify-end">
+          <form action={deleteTicket}>
+            <input type="hidden" name="id" value={ticket.id} />
+            <Button type="submit" variant="ghost" className="text-destructive">
+              Delete Ticket
+            </Button>
+          </form>
+        </div>
       </div>
     </Page>
   );

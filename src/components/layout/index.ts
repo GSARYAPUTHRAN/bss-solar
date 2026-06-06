@@ -4,5 +4,4 @@ export { Section } from "./section";
 export { Field, FieldGrid } from "./field";
 export { EmptyState } from "./empty-state";
 export { FormError, FormField, FormGrid, FormActions } from "./form";
-export { AuthShell } from "./auth-shell";
 export { StatCard } from "./stat-card";

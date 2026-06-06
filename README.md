@@ -76,15 +76,14 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 
 ### Users & roles
 
-- **Self-signup** at `/signup` — new users default to `coordinator`.
-- **Admin adds members** at `/team/new` — create accounts with name, email, password, phone, and role.
+- **Admin adds members** at `/team/new` — create staff accounts with name, email, password, phone, and role.
 - **Promote to admin** — update the `profiles` table directly, or use the role dropdown on the Team page:
 
 ```sql
 update profiles set role = 'admin' where id = '<auth-user-id>';
 ```
 
-> Tip: disable "Confirm email" in Supabase Auth settings during development so new sign-ups can log in immediately.
+> Tip: disable "Confirm email" in Supabase Auth settings during development so admin-created accounts can log in immediately.
 
 ## Project Structure
 
@@ -113,7 +112,7 @@ src/
     projects/                  # Board (default) + list, detail
     tickets/                   # Service tickets list, detail, edit, create
     team/                      # Team list + add member
-  app/login, app/signup        # Auth pages
+  app/login                    # Staff sign-in (accounts created by admin)
 public/brand/                  # Official logo assets from bsssolar.com
 ```
 

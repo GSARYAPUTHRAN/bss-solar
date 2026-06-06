@@ -52,7 +52,9 @@ export default async function ProjectDetailPage({
   );
   const doneCount = milestones.filter((m) => m.status === "completed").length;
 
-  const tickets = await ticketsRepository.listByProject(id);
+  const tickets = isAdmin
+    ? await ticketsRepository.listByProject(id)
+    : [];
   const wo = project.work_order;
 
   return (
@@ -204,18 +206,17 @@ export default async function ProjectDetailPage({
         </Section>
       </div>
 
-      <Section
-        title="Service Tickets"
-        actions={
-          isAdmin && (
+      {isAdmin && (
+        <Section
+          title="Service Tickets"
+          actions={
             <Button size="sm" asChild>
               <Link href={`/tickets/new?project_id=${project.id}`}>
                 <Plus className="mr-2 h-4 w-4" /> New Ticket
               </Link>
             </Button>
-          )
-        }
-      >
+          }
+        >
           {tickets.length === 0 ? (
             <EmptyState
               icon={Wrench}
@@ -250,7 +251,8 @@ export default async function ProjectDetailPage({
               ))}
             </div>
           )}
-      </Section>
+        </Section>
+      )}
     </Page>
   );
 }

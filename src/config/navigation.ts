@@ -27,7 +27,7 @@ export const MODULES: ModuleNav[] = [
     href: "/",
     label: "Dashboard",
     icon: "dashboard",
-    roles: ["admin", "coordinator"],
+    roles: ["admin"],
   },
   {
     href: "/work-orders",
@@ -45,7 +45,7 @@ export const MODULES: ModuleNav[] = [
     href: "/tickets",
     label: "Service Tickets",
     icon: "tickets",
-    roles: ["admin", "coordinator"],
+    roles: ["admin"],
   },
   {
     href: "/team",
@@ -57,4 +57,9 @@ export const MODULES: ModuleNav[] = [
 
 export function navForRole(role: UserRole): ModuleNav[] {
   return MODULES.filter((module) => module.roles.includes(role));
+}
+
+/** Default landing route after sign-in. */
+export function homeForRole(role: UserRole): string {
+  return role === "admin" ? "/" : "/work-orders";
 }

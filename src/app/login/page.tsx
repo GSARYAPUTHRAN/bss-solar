@@ -1,58 +1,66 @@
-import Link from "next/link";
+import { LogIn } from "lucide-react";
 import { login } from "./actions";
-import { AuthShell, FormError, FormField } from "@/components/layout";
+import { LoginShell } from "@/components/login-shell";
+import { FormError, FormField } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string; message?: string }>;
+  searchParams: Promise<{ error?: string }>;
 }) {
-  const { error, message } = await searchParams;
+  const { error } = await searchParams;
 
   return (
-    <AuthShell
-      title="Sign in"
-      description="Enter your credentials to access the dashboard."
-      footer={
-        <>
-          No account?{" "}
-          <Link href="/signup" className="font-medium text-foreground underline">
-            Create one
-          </Link>
-        </>
-      }
-    >
-      <form action={login} className="space-y-4">
-        {message && (
-          <p className="rounded-md bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {message}
+    <LoginShell>
+      <div className="space-y-6">
+        <div className="space-y-1.5">
+          <h2 className="text-2xl font-bold tracking-tight">Welcome back</h2>
+          <p className="text-sm text-muted-foreground">
+            Sign in with your staff email and password to continue.
           </p>
-        )}
-        <FormError message={error} />
-        <FormField label="Email" htmlFor="email">
-          <Input
-            id="email"
-            name="email"
-            type="email"
-            placeholder="you@bsssolar.in"
-            required
-          />
-        </FormField>
-        <FormField label="Password" htmlFor="password">
-          <Input
-            id="password"
-            name="password"
-            type="password"
-            placeholder="••••••••"
-            required
-          />
-        </FormField>
-        <Button type="submit" className="w-full">
-          Sign in
-        </Button>
-      </form>
-    </AuthShell>
+        </div>
+
+        <form action={login} className="space-y-5">
+          <FormError message={error} />
+
+          <FormField label="Email address" htmlFor="email">
+            <Input
+              id="email"
+              name="email"
+              type="email"
+              autoComplete="email"
+              placeholder="you@bsssolar.in"
+              className="h-11"
+              required
+            />
+          </FormField>
+
+          <FormField label="Password" htmlFor="password">
+            <Input
+              id="password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              placeholder="Enter your password"
+              className="h-11"
+              required
+            />
+          </FormField>
+
+          <Button type="submit" size="lg" className="h-11 w-full gap-2">
+            <LogIn className="h-4 w-4" />
+            Sign in
+          </Button>
+        </form>
+
+        <p className="text-center text-xs text-muted-foreground">
+          Staff accounts are created by your administrator.
+          <br />
+          Contact the office if you need access.
+        </p>
+      </div>
+    </LoginShell>
   );
 }

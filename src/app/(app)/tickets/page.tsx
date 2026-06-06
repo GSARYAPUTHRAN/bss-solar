@@ -1,14 +1,13 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
-import { requireProfile } from "@/lib/auth";
+import { requireAdmin } from "@/lib/auth";
 import { ticketsRepository } from "@/server/data";
 import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { TicketsTable } from "@/components/tickets-table";
 
 export default async function TicketsPage() {
-  const profile = await requireProfile();
-  const isAdmin = profile.role === "admin";
+  await requireAdmin();
 
   const tickets = await ticketsRepository.list();
 
@@ -18,13 +17,11 @@ export default async function TicketsPage() {
         title="Service Tickets"
         description="Maintenance, 6-month checks and ad-hoc service requests."
       >
-        {isAdmin && (
-          <Button asChild>
-            <Link href="/tickets/new">
-              <Plus className="mr-2 h-4 w-4" /> New Ticket
-            </Link>
-          </Button>
-        )}
+        <Button asChild>
+          <Link href="/tickets/new">
+            <Plus className="mr-2 h-4 w-4" /> New Ticket
+          </Link>
+        </Button>
       </PageHeader>
 
       <TicketsTable tickets={tickets} />

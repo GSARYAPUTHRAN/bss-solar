@@ -6,7 +6,7 @@ import {
   Wrench,
   IndianRupee,
 } from "lucide-react";
-import { requireProfile } from "@/lib/auth";
+import { requireAdmin } from "@/lib/auth";
 import {
   profilesRepository,
   projectsRepository,
@@ -20,14 +20,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCurrency } from "@/lib/format";
 
 export default async function DashboardPage() {
-  const profile = await requireProfile();
-  const isAdmin = profile.role === "admin";
+  const profile = await requireAdmin();
 
   const [workOrders, projects, tickets, coordinators] = await Promise.all([
     workOrdersRepository.list(),
     projectsRepository.list(),
     ticketsRepository.statuses(),
-    isAdmin ? profilesRepository.coordinators() : Promise.resolve([]),
+    profilesRepository.coordinators(),
   ]);
 
   const pendingApprovals = workOrders.filter(
@@ -46,11 +45,7 @@ export default async function DashboardPage() {
     <Page>
       <PageHeader
         title={`Welcome, ${profile.full_name.split(" ")[0]}`}
-        description={
-          isAdmin
-            ? "Office overview across all coordinators."
-            : "Your work orders and projects at a glance."
-        }
+        description="Office overview across all coordinators."
       />
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -100,14 +95,14 @@ export default async function DashboardPage() {
           <WorkOrdersTable
             workOrders={workOrders}
             coordinators={coordinators}
-            isAdmin={isAdmin}
+            isAdmin
           />
         </TabsContent>
         <TabsContent value="projects" className="mt-4">
           <ProjectsTable
             projects={projects}
             coordinators={coordinators}
-            isAdmin={isAdmin}
+            isAdmin
           />
         </TabsContent>
       </Tabs>

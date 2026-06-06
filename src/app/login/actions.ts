@@ -2,7 +2,9 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { homeForRole } from "@/config/navigation";
 import { createClient } from "@/lib/supabase/server";
+import type { UserRole } from "@/lib/types";
 
 export async function login(formData: FormData) {
   const supabase = await createClient();
@@ -14,29 +16,22 @@ export async function login(formData: FormData) {
     redirect(`/login?error=${encodeURIComponent(error.message)}`);
   }
 
-  revalidatePath("/", "layout");
-  redirect("/");
-}
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-export async function signup(formData: FormData) {
-  const supabase = await createClient();
-  const email = String(formData.get("email") ?? "");
-  const password = String(formData.get("password") ?? "");
-  const fullName = String(formData.get("full_name") ?? "");
-
-  const { error } = await supabase.auth.signUp({
-    email,
-    password,
-    options: {
-      data: { full_name: fullName },
-    },
-  });
-
-  if (error) {
-    redirect(`/signup?error=${encodeURIComponent(error.message)}`);
+  let home = homeForRole("coordinator");
+  if (user) {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+    if (profile?.role) home = homeForRole(profile.role as UserRole);
   }
 
-  redirect(`/login?message=${encodeURIComponent("Account created. Please sign in.")}`);
+  revalidatePath("/", "layout");
+  redirect(home);
 }
 
 export async function signOut() {
