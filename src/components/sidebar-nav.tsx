@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import type { NavItem } from "./nav-config";
+import { NAV_ICONS } from "./nav-icons";
 
 export function SidebarNav({
   items,
@@ -21,7 +22,7 @@ export function SidebarNav({
           item.href === "/"
             ? pathname === "/"
             : pathname.startsWith(item.href);
-        const Icon = item.icon;
+        const Icon = NAV_ICONS[item.icon];
         return (
           <Link
             key={item.href}

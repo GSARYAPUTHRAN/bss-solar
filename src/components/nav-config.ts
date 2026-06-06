@@ -1,17 +1,16 @@
-import {
-  LayoutDashboard,
-  ClipboardList,
-  KanbanSquare,
-  Wrench,
-  Users,
-  type LucideIcon,
-} from "lucide-react";
 import type { UserRole } from "@/lib/types";
+
+export type NavIcon =
+  | "dashboard"
+  | "work-orders"
+  | "projects"
+  | "tickets"
+  | "team";
 
 export interface NavItem {
   href: string;
   label: string;
-  icon: LucideIcon;
+  icon: NavIcon;
   roles: UserRole[];
 }
 
@@ -19,31 +18,31 @@ export const NAV_ITEMS: NavItem[] = [
   {
     href: "/",
     label: "Dashboard",
-    icon: LayoutDashboard,
+    icon: "dashboard",
     roles: ["admin", "coordinator"],
   },
   {
     href: "/work-orders",
     label: "Work Orders",
-    icon: ClipboardList,
+    icon: "work-orders",
     roles: ["admin", "coordinator"],
   },
   {
     href: "/projects",
     label: "Projects",
-    icon: KanbanSquare,
+    icon: "projects",
     roles: ["admin", "coordinator"],
   },
   {
     href: "/tickets",
     label: "Service Tickets",
-    icon: Wrench,
+    icon: "tickets",
     roles: ["admin", "coordinator"],
   },
   {
     href: "/team",
     label: "Team",
-    icon: Users,
+    icon: "team",
     roles: ["admin"],
   },
 ];
