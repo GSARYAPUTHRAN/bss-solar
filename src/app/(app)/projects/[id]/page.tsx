@@ -91,7 +91,9 @@ export default async function ProjectDetailPage({
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Progress</span>
-              <span className="font-medium">{doneCount}/8</span>
+              <span className="font-medium">
+                {doneCount}/{milestones.length}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Coordinator</span>

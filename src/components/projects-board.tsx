@@ -22,7 +22,7 @@ interface Coordinator {
 
 function progressOf(p: Project) {
   const ms = p.milestones ?? [];
-  const total = ms.length || 8;
+  const total = ms.length || PROJECT_STAGES.length;
   const done = ms.filter((m) => m.status === "completed").length;
   return { done, total, pct: Math.round((done / total) * 100) };
 }

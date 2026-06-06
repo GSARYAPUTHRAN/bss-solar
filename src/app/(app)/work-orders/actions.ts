@@ -51,7 +51,7 @@ export async function approveWorkOrder(formData: FormData) {
     redirect(`/work-orders/${id}?error=${encodeURIComponent(statusRes.error)}`);
   }
 
-  // Create the active project (a DB trigger seeds the 8 milestones).
+  // Create the active project (a DB trigger seeds the 9 milestones).
   // Guard against duplicates if approve is pressed twice.
   if (!(await projectsRepository.existsForWorkOrder(id))) {
     const projRes = await projectsRepository.createForWorkOrder(

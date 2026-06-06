@@ -98,7 +98,7 @@ insert into public.work_orders (
   );
 
 -- ---------- Sample Project for the approved WO ----------
--- Inserting a project fires seed_project_milestones() -> 8 milestones created.
+-- Inserting a project fires seed_project_milestones() -> 9 milestones created.
 insert into public.projects (
   id, work_order_id, coordinator_id, current_stage, started_at
 ) values

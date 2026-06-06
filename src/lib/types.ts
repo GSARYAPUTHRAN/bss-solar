@@ -14,7 +14,8 @@ export type ProjectStage =
   | "kseb_portal_registration"
   | "kseb_feasibility_clearance"
   | "material_dispatch"
-  | "structure_fabrication_installation"
+  | "structure_fabrication"
+  | "panel_installation"
   | "wcr_submitted"
   | "kseb_inspection_meter"
   | "plant_commissioning";

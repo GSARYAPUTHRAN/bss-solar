@@ -14,10 +14,8 @@ export const PROJECT_STAGES: { value: ProjectStage; label: string }[] = [
   },
   { value: "kseb_feasibility_clearance", label: "KSEB Feasibility Clearance" },
   { value: "material_dispatch", label: "Material Dispatch (Panels & Structure)" },
-  {
-    value: "structure_fabrication_installation",
-    label: "Structure Fabrication & Panel Installation",
-  },
+  { value: "structure_fabrication", label: "Structure Fabrication" },
+  { value: "panel_installation", label: "Panel Installation" },
   { value: "wcr_submitted", label: "WCR Submitted to KSEB" },
   {
     value: "kseb_inspection_meter",
