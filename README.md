@@ -1,8 +1,8 @@
 # BSS Solar — Operations Console
 
-A B2B SaaS operations console for **BSS Solar**, an empanelled solar implementation agency.
+A B2B SaaS operations console for **[BSS Solar](https://bsssolar.com/)**, an empanelled solar implementation agency in Kerala.
 It covers the full field-to-finance workflow: CRM work orders, KSEB/ANERT-compliant project
-installation tracking, and a maintenance service-ticketing system with a printable PDF service report.
+installation tracking, team management, and a maintenance service-ticketing system with a printable PDF service report.
 
 ## Tech Stack
 
@@ -16,71 +16,105 @@ installation tracking, and a maintenance service-ticketing system with a printab
 - **Auth & RBAC** — Supabase email/password auth with two roles:
   - `admin` (office staff) — sees and manages all data.
   - `coordinator` (field sales) — sees only their own work orders/projects/tickets (enforced by RLS).
-- **Work Orders (CRM)** — log client, capacity, advance, total cost, order date. Admin approves/rejects.
-- **Project Tracker** — approving a work order creates an active project that auto-seeds the 8 regional
-  milestones. Kanban board grouped by current stage + a sequential milestone tracker per project.
+- **Work Orders (CRM)** — log client, capacity, advance, total cost, order date. Admin approves/rejects and spawns a project.
+- **Project Tracker** — Kanban board (default view) plus a filterable list. Approving a work order creates an active project that auto-seeds the 8 KSEB/ANERT milestones with per-milestone status and notes.
 - **Service Tickets** — routine 6-month or ad-hoc tickets capturing the full BSS service sheet
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
-- **PDF Export** — one click generates a professional, invoice-style service report.
-- **Dashboard** — KPI cards plus sortable (chronological) and filterable (coordinator / project stage) tables.
+- **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
+- **Team Management** — admins can add staff accounts, assign roles, and search/filter the team list.
+- **Dashboard** — KPI cards plus paginated, sortable, and filterable tables across all modules.
 
 ## Getting Started
 
-### 1. Create a Supabase project
+### Option A — Local development (recommended)
 
-In the Supabase SQL Editor, run the schema:
+Requires [Docker](https://www.docker.com/) and the [Supabase CLI](https://supabase.com/docs/guides/cli).
 
+```bash
+# 1. Install dependencies
+npm install
+
+# 2. Start local Supabase (schema + demo seed run automatically)
+npx supabase start
+
+# 3. Copy env and fill in keys from `npx supabase status`
+cp .env.local.example .env.local
+
+# 4. Run the app
+npm run dev
 ```
-supabase/schema.sql
+
+Open http://localhost:3000 and sign in with the demo accounts:
+
+| Role        | Email                  | Password     |
+| ----------- | ---------------------- | ------------ |
+| Admin       | `admin@bsssolar.test`  | `Admin@12345` |
+| Coordinator | `coord@bsssolar.test`  | `Coord@12345` |
+
+Reset demo data anytime:
+
+```bash
+npx supabase db reset
 ```
 
-This creates the enums, tables (`profiles`, `work_orders`, `projects`, `project_milestones`,
-`service_tickets`), triggers (auto-profile on signup, auto-seed milestones, `updated_at`), and all RLS policies.
+### Option B — Hosted Supabase project
 
-### 2. Configure environment
+1. Create a Supabase project and run `supabase/schema.sql` in the SQL Editor.
+2. Copy `.env.local.example` to `.env.local` and fill in your project values
+   (Supabase → Project Settings → API).
+3. `npm install && npm run dev`
 
-Copy `.env.local.example` to `.env.local` and fill in your project values
-(Supabase → Project Settings → API):
+### Environment variables
 
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT-ref.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-public-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 ```
 
-### 3. Install & run
+`SUPABASE_SERVICE_ROLE_KEY` is required for admin actions such as **Add Team Member** on the Team page. For local dev, get it from `npx supabase status`.
 
-```
-npm install
-npm run dev
-```
+### Users & roles
 
-Open http://localhost:3000.
-
-### 4. Create users & roles
-
-- Sign up at `/signup`. New users default to the `coordinator` role.
-- To make a user an **admin**, update their row in the `profiles` table:
+- **Self-signup** at `/signup` — new users default to `coordinator`.
+- **Admin adds members** at `/team/new` — create accounts with name, email, password, phone, and role.
+- **Promote to admin** — update the `profiles` table directly, or use the role dropdown on the Team page:
 
 ```sql
 update profiles set role = 'admin' where id = '<auth-user-id>';
 ```
 
-> Tip: if you disable "Confirm email" in Supabase Auth settings during development,
-> new sign-ups can log in immediately.
+> Tip: disable "Confirm email" in Supabase Auth settings during development so new sign-ups can log in immediately.
 
 ## Project Structure
 
 ```
-supabase/schema.sql            # Full PostgreSQL schema + RLS
-src/proxy.ts                   # Auth session refresh + route protection (Next 16 proxy)
-src/lib/supabase/              # Browser/server/proxy Supabase clients
-src/lib/auth.ts                # getProfile / requireProfile / requireAdmin
-src/lib/types.ts               # Shared domain types
-src/lib/constants.ts           # Milestones, labels, company info
-src/lib/pdf.ts                 # jsPDF service-report generator
-src/app/(app)/                 # Authenticated app (dashboard, work-orders, projects, tickets)
-src/app/login, src/app/signup  # Auth pages + actions
-src/components/                # Sidebar, header, tables, forms, badges
+supabase/
+  schema.sql                   # Full PostgreSQL schema + RLS
+  seed.sql                     # Local demo data + test accounts
+src/
+  proxy.ts                     # Auth session refresh + route protection (Next 16)
+  config/navigation.ts         # Module registry (plug-and-play nav)
+  server/
+    data/*.repository.ts       # Supabase data-access layer
+    form.ts                    # Typed FormData parsers for server actions
+  lib/
+    supabase/                  # Browser, server, admin Supabase clients
+    domain/status.ts           # Status registry (labels + badge styles)
+    auth.ts                    # getProfile / requireProfile / requireRole
+    pdf.ts                     # BSS service-form PDF generator
+  components/
+    layout/                    # Reusable page kit (Page, Section, Field, Form…)
+    data-table/                # Generic searchable, filterable, paginated table
+    bss-logo.tsx               # Official BSS Solar branding
+  app/(app)/                   # Authenticated routes
+    page.tsx                   # Dashboard
+    work-orders/               # CRM list, detail, create
+    projects/                  # Board (default) + list, detail
+    tickets/                   # Service tickets list, detail, edit, create
+    team/                      # Team list + add member
+  app/login, app/signup        # Auth pages
+public/brand/                  # Official logo assets from bsssolar.com
 ```
 
 ## Roles & Permissions (RLS summary)
@@ -91,4 +125,13 @@ src/components/                # Sidebar, header, tables, forms, badges
 | Projects           | Full + approve   | Read their own                       |
 | Project Milestones | Update           | Read their own                       |
 | Service Tickets    | Full CRUD        | Read tickets on their own projects   |
+| Team / Profiles    | Full + add users | Read own profile only                |
+
+## Scripts
+
+```bash
+npm run dev      # Start dev server
+npm run build    # Production build
+npm run start    # Start production server
+npm run lint     # ESLint
 ```
