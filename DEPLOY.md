@@ -101,6 +101,28 @@ Keep the **secret / service_role** key private — server-only (Team → Add Mem
 
 Every push to the **`production`** branch auto-deploys when Vercel is configured to use that branch. Merge `master` into `production` when you are ready to release.
 
+> **Private repo on Hobby:** Git pushes only deploy if the **commit author email** matches your GitHub/Vercel account. If you see *“commit author did not have contributing access”*, fix the email (below) or deploy via CLI.
+
+```powershell
+# One-time: use the email on your GitHub account (Settings → Emails)
+git config user.email "YOUR-GITHUB-EMAIL"
+git config user.name "gsaryaputhran"
+
+# Then commit and push as usual
+git checkout production
+git merge master
+git commit --allow-empty -m "Deploy with correct author"
+git push origin production
+```
+
+**CLI deploy (bypasses git author check):**
+
+```powershell
+npx vercel login
+npx vercel link --project bss-solar --yes
+npx vercel --prod
+```
+
 ---
 
 ## Step 4 — Create the first admin user
@@ -161,6 +183,7 @@ Upgrade when you outgrow free limits: Supabase Pro **$25/mo**, Vercel Pro **$20/
 | “Invalid API key” | Re-copy anon key; redeploy Vercel with correct env vars |
 | Add Member fails | `SUPABASE_SERVICE_ROLE_KEY` missing or wrong on Vercel |
 | Coordinator sees dashboard | Clear cache; ensure latest `master` is deployed |
+| Git push blocked on Hobby private repo | Commit email must match GitHub/Vercel account, or use `npx vercel --prod` |
 | RLS blocks data | User must exist in `profiles`; check role is `admin` or `coordinator` |
 
 ---
