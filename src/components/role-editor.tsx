@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useLoading } from "@/lib/loading/loading-context";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -24,6 +25,7 @@ export function RoleEditor({
 }) {
   const [value, setValue] = useState<UserRole>(role);
   const [pending, startTransition] = useTransition();
+  const { trackPromise } = useLoading();
 
   return (
     <div className="flex items-center gap-2">
@@ -33,14 +35,18 @@ export function RoleEditor({
         onValueChange={(next) => {
           const prev = value;
           setValue(next as UserRole);
-          startTransition(async () => {
-            const res = await updateUserRole(userId, next as UserRole);
-            if (!res.ok) {
-              setValue(prev);
-              toast.error(res.error);
-            } else {
-              toast.success("Role updated");
-            }
+          startTransition(() => {
+            void trackPromise(
+              updateUserRole(userId, next as UserRole).then((res) => {
+                if (!res.ok) {
+                  setValue(prev);
+                  toast.error(res.error);
+                } else {
+                  toast.success("Role updated");
+                }
+                return res;
+              }),
+            );
           });
         }}
       >

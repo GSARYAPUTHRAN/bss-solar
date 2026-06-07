@@ -13,6 +13,7 @@ import {
   FormError,
 } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import {
   Table,
   TableBody,
@@ -203,9 +204,9 @@ export default async function TicketDetailPage({
         <div className="flex justify-end">
           <form action={deleteTicket}>
             <input type="hidden" name="id" value={ticket.id} />
-            <Button type="submit" variant="ghost" className="text-destructive">
+            <SubmitButton variant="ghost" className="text-destructive" loadingText="Deleting…">
               Delete Ticket
-            </Button>
+            </SubmitButton>
           </form>
         </div>
       </div>

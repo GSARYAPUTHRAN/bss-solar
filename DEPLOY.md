@@ -50,13 +50,15 @@ npx supabase db push
 
 **Project Settings → API**:
 
-| Key | Env variable |
-| --- | ------------ |
-| Project URL | `NEXT_PUBLIC_SUPABASE_URL` |
-| `anon` `public` | `NEXT_PUBLIC_SUPABASE_ANON_KEY` |
-| `service_role` `secret` | `SUPABASE_SERVICE_ROLE_KEY` |
+| Supabase dashboard label | Vercel env variable |
+| ------------------------ | ------------------- |
+| **Project URL** | `NEXT_PUBLIC_SUPABASE_URL` |
+| **Publishable key** (`sb_publishable_…`) | `NEXT_PUBLIC_SUPABASE_ANON_KEY` |
+| **Secret key** (`sb_secret_…`) | `SUPABASE_SERVICE_ROLE_KEY` |
 
-Keep the **service role** key secret — server-only (Team → Add Member).
+> Older projects may label these `anon` and `service_role` — same mapping applies.
+
+Keep the **secret / service_role** key private — server-only (Team → Add Member).
 
 ---
 
@@ -66,10 +68,10 @@ Keep the **service role** key secret — server-only (Team → Add Member).
    - Enable Email provider.  
    - **Disable “Allow new users to sign up”** (staff accounts are created by admin only).
 
-2. **Authentication → URL configuration** (after you have a Vercel URL from Step 3):  
-   - **Site URL**: `https://YOUR-APP.vercel.app`  
+2. **Authentication → URL configuration**:  
+   - **Site URL**: `https://app.bss-solar.com`  
    - **Redirect URLs**: add  
-     - `https://YOUR-APP.vercel.app/**`  
+     - `https://app.bss-solar.com/**`  
      - `http://localhost:3000/**` (optional, for local testing against prod DB)
 
 3. For faster onboarding, you may disable **Confirm email** under Email provider until staff accounts are set up.
@@ -80,21 +82,24 @@ Keep the **service role** key secret — server-only (Team → Add Member).
 
 1. Go to [vercel.com/new](https://vercel.com/new) → **Import** `GSARYAPUTHRAN/bss-solar` from GitHub.
 2. Framework preset: **Next.js** (auto-detected).
-3. **Environment variables** — add all three:
+3. **Environment variables** (Settings → Environment Variables) — add all three for **Production** (and Preview if you test PRs):
 
-```
-NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
-SUPABASE_SERVICE_ROLE_KEY=eyJ...
-```
+| Name | Value |
+| ---- | ----- |
+| `NEXT_PUBLIC_SUPABASE_URL` | `https://YOUR-PROJECT-REF.supabase.co` |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | your `sb_publishable_…` key |
+| `SUPABASE_SERVICE_ROLE_KEY` | your `sb_secret_…` key |
 
 4. Click **Deploy** and wait for the build to finish.
-5. Copy your live URL, e.g. `https://bss-solar.vercel.app`.
-6. Return to Supabase **URL configuration** (Step 2) and set Site URL + Redirect URLs to this domain.
+5. Add custom domain **bss-solar.com** under **Settings → Domains** (already done if purchased on Vercel).
+6. Return to Supabase **URL configuration** (Step 2):
+   - **Site URL**: `https://app.bss-solar.com`
+   - **Redirect URLs**: `https://app.bss-solar.com/**`
+7. **Redeploy** after adding env vars (Deployments → ⋯ → Redeploy).
 
 ### Redeploys
 
-Every push to `master` on GitHub can auto-deploy if Vercel Git integration is enabled.
+Every push to the **`production`** branch auto-deploys when Vercel is configured to use that branch. Merge `master` into `production` when you are ready to release.
 
 ---
 
@@ -109,7 +114,7 @@ There is no public sign-up page. Create the first admin manually:
 
 2. **SQL Editor** — run [`supabase/production-bootstrap.sql`](supabase/production-bootstrap.sql) after editing the email inside the file.
 
-3. Sign in at `https://YOUR-APP.vercel.app/login`.
+3. Sign in at `https://app.bss-solar.com/login`.
 
 4. Use **Team → Add Member** to create coordinator accounts.
 
@@ -128,11 +133,23 @@ There is no public sign-up page. Create the first admin manually:
 
 ---
 
-## Optional — Custom domain
+## Custom domain
 
-1. **Vercel → Project → Settings → Domains** — add e.g. `ops.bsssolar.com`.
-2. Add the DNS records Vercel shows at your domain registrar.
-3. Update Supabase **Site URL** and **Redirect URLs** to the custom domain.
+Production URL: **https://app.bss-solar.com** (subdomain of `bss-solar.com` registered on Vercel).
+
+Update Supabase **Site URL** and **Redirect URLs** to `https://app.bss-solar.com` only.
+
+## Running costs (typical)
+
+| Service | Tier | Monthly | Notes |
+| ------- | ---- | ------- | ----- |
+| **Vercel** | Hobby (free) | **$0** | Enough for a small internal ops app |
+| **Supabase** | Free | **$0** | 500 MB DB; pauses after ~7 days idle on free tier |
+| **Domain** | bss-solar.com | **~$0.94/mo** | ~$11.25/year renewal on Vercel |
+
+**Estimated total today: ~$0/month** + domain renewal (~$11/year).
+
+Upgrade when you outgrow free limits: Supabase Pro **$25/mo**, Vercel Pro **$20/mo** per seat.
 
 ---
 

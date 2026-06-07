@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useRouter } from "next/navigation";
+import { useLoadingRouter } from "@/lib/loading/use-loading-router";
 import { ArrowUpDown, Search } from "lucide-react";
 import {
   Table,
@@ -59,7 +59,7 @@ export function DataTable<T>({
   onRowClick,
   toolbarEnd,
 }: DataTableProps<T>) {
-  const router = useRouter();
+  const router = useLoadingRouter();
   const visibleColumns = columns.filter((c) => !c.hidden);
   const visibleFilters = (filters ?? []).filter((f) => !f.hidden);
 

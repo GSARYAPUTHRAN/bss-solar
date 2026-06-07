@@ -12,6 +12,7 @@ import {
   FormError,
 } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FormSelect } from "@/components/form-select";
@@ -103,7 +104,7 @@ export default async function NewTicketPage({
             <Button variant="outline" asChild>
               <Link href="/tickets">Cancel</Link>
             </Button>
-            <Button type="submit">Create Ticket</Button>
+            <SubmitButton loadingText="Creating…">Create Ticket</SubmitButton>
           </FormActions>
         </form>
       </Section>

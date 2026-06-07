@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Section, FormActions } from "@/components/layout";
 import { FormSelect } from "@/components/form-select";
 import { updateTicket } from "@/app/(app)/tickets/actions";
@@ -386,7 +386,7 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
       </Section>
 
       <FormActions>
-        <Button type="submit">Save Service Sheet</Button>
+        <SubmitButton loadingText="Saving…">Save Service Sheet</SubmitButton>
       </FormActions>
     </form>
   );

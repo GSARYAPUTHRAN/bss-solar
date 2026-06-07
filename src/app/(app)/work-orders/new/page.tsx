@@ -12,6 +12,7 @@ import {
   FormError,
 } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CoordinatorSelect } from "@/components/coordinator-select";
@@ -121,7 +122,7 @@ export default async function NewWorkOrderPage({
             <Button variant="outline" asChild>
               <Link href="/work-orders">Cancel</Link>
             </Button>
-            <Button type="submit">Create Work Order</Button>
+            <SubmitButton loadingText="Creating…">Create Work Order</SubmitButton>
           </FormActions>
         </form>
       </Section>

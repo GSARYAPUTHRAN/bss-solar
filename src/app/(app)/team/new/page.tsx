@@ -11,6 +11,7 @@ import {
   FormError,
 } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { FormSelect } from "@/components/form-select";
 
@@ -78,7 +79,7 @@ export default async function NewTeamMemberPage({
             <Button variant="outline" asChild>
               <Link href="/team">Cancel</Link>
             </Button>
-            <Button type="submit">Add Member</Button>
+            <SubmitButton loadingText="Adding…">Add Member</SubmitButton>
           </FormActions>
         </form>
       </Section>

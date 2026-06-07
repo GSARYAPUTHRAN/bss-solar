@@ -5,3 +5,4 @@ export { Field, FieldGrid } from "./field";
 export { EmptyState } from "./empty-state";
 export { FormError, FormField, FormGrid, FormActions } from "./form";
 export { StatCard } from "./stat-card";
+export { PageSkeleton } from "./page-skeleton";

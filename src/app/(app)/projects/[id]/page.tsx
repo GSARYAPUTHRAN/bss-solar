@@ -13,6 +13,7 @@ import { projectsRepository, ticketsRepository } from "@/server/data";
 import { updateMilestone, advanceProject } from "../actions";
 import { Page, PageHeader, Section, EmptyState, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { FormSelect } from "@/components/form-select";
@@ -112,9 +113,9 @@ export default async function ProjectDetailPage({
             {isAdmin && !project.is_completed && (
               <form action={advanceProject} className="pt-2">
                 <input type="hidden" name="project_id" value={project.id} />
-                <Button type="submit" variant="outline" className="w-full">
+                <SubmitButton variant="outline" className="w-full" loadingText="Updating…">
                   <FastForward className="mr-2 h-4 w-4" /> Complete Next Milestone
-                </Button>
+                </SubmitButton>
               </form>
             )}
         </Section>
@@ -191,9 +192,9 @@ export default async function ProjectDetailPage({
                             rows={1}
                             className="flex-1"
                           />
-                          <Button type="submit" size="sm" variant="secondary">
+                          <SubmitButton size="sm" variant="secondary" loadingText="Saving…">
                             Save
-                          </Button>
+                          </SubmitButton>
                         </div>
                       </form>
                     ) : (

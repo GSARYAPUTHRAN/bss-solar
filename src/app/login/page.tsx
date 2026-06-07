@@ -2,7 +2,7 @@ import { LogIn } from "lucide-react";
 import { login } from "./actions";
 import { LoginShell } from "@/components/login-shell";
 import { FormError, FormField } from "@/components/layout";
-import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 
 export default async function LoginPage({
@@ -49,10 +49,10 @@ export default async function LoginPage({
             />
           </FormField>
 
-          <Button type="submit" size="lg" className="h-11 w-full gap-2">
+          <SubmitButton size="lg" className="h-11 w-full gap-2" loadingText="Signing in…">
             <LogIn className="h-4 w-4" />
             Sign in
-          </Button>
+          </SubmitButton>
         </form>
 
         <p className="text-center text-xs text-muted-foreground">

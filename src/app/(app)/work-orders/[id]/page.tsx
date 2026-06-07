@@ -10,6 +10,7 @@ import {
 } from "../actions";
 import { Page, PageHeader, Section, Field, FieldGrid, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/submit-button";
 import { Separator } from "@/components/ui/separator";
 import { WorkOrderStatusBadge } from "@/components/status-badges";
 import { formatCurrency, formatDate } from "@/lib/format";
@@ -90,34 +91,34 @@ export default async function WorkOrderDetailPage({
                   <>
                     <form action={approveWorkOrder}>
                       <input type="hidden" name="id" value={wo.id} />
-                      <Button type="submit">
+                      <SubmitButton loadingText="Approving…">
                         <CheckCircle2 className="mr-2 h-4 w-4" /> Approve & Create
                         Project
-                      </Button>
+                      </SubmitButton>
                     </form>
                     <form action={rejectWorkOrder}>
                       <input type="hidden" name="id" value={wo.id} />
-                      <Button type="submit" variant="outline">
+                      <SubmitButton variant="outline" loadingText="Rejecting…">
                         <XCircle className="mr-2 h-4 w-4" /> Reject
-                      </Button>
+                      </SubmitButton>
                     </form>
                   </>
                 )}
                 {wo.status === "rejected" && (
                   <form action={approveWorkOrder}>
                     <input type="hidden" name="id" value={wo.id} />
-                    <Button type="submit">
+                    <SubmitButton loadingText="Approving…">
                       <CheckCircle2 className="mr-2 h-4 w-4" /> Approve & Create
                       Project
-                    </Button>
+                    </SubmitButton>
                   </form>
                 )}
                 <div className="flex-1" />
                 <form action={deleteWorkOrder}>
                   <input type="hidden" name="id" value={wo.id} />
-                  <Button type="submit" variant="ghost" className="text-destructive">
+                  <SubmitButton variant="ghost" className="text-destructive" loadingText="Deleting…">
                     Delete
-                  </Button>
+                  </SubmitButton>
                 </form>
               </div>
             </>
