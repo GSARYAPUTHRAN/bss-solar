@@ -17,7 +17,7 @@ installation tracking, team management, and a maintenance service-ticketing syst
   - `admin` (office staff) — sees and manages all data.
   - `coordinator` (field sales) — sees only their own work orders/projects/tickets (enforced by RLS).
 - **Work Orders (CRM)** — log client, capacity, advance, total cost, order date. Admin approves/rejects and spawns a project.
-- **Project Tracker** — Kanban board (default view) plus a filterable list. Approving a work order creates an active project that auto-seeds the 8 KSEB/ANERT milestones with per-milestone status and notes.
+- **Project Tracker** — Kanban board (default view) plus a filterable list. Approving a work order creates an active project that auto-seeds the 9 KSEB/ANERT milestones with per-milestone status and notes.
 - **Service Tickets** — routine 6-month or ad-hoc tickets capturing the full BSS service sheet
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
 - **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
@@ -137,3 +137,7 @@ npm run build    # Production build
 npm run start    # Start production server
 npm run lint     # ESLint
 ```
+
+## Deploy to production
+
+See **[DEPLOY.md](DEPLOY.md)** for the full guide (Supabase Cloud + Vercel).
