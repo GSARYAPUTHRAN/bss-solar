@@ -21,7 +21,12 @@ const databaseUrl = process.env.DATABASE_URL;
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? `https://${PROJECT_REF}.supabase.co`;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const adminEmail = process.env.ADMIN_EMAIL ?? "admin@bsssolar.in";
-const adminPassword = process.env.ADMIN_PASSWORD ?? "Bss@Solar2026!Admin";
+const adminPassword = process.env.ADMIN_PASSWORD;
+
+if (!adminPassword) {
+  console.error("Set ADMIN_PASSWORD env var before running production bootstrap.");
+  process.exit(1);
+}
 
 async function runSqlViaManagementApi(query) {
   const res = await fetch(
@@ -141,7 +146,6 @@ async function bootstrapAdmin() {
   const { data: counts } = await supabase.from("profiles").select("id", { count: "exact", head: true });
   console.log("Profiles count:", counts);
   console.log("Admin ready:", adminEmail);
-  console.log("Temporary password (change after first login):", adminPassword);
 }
 
 async function main() {
