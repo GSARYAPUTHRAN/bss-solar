@@ -1,8 +1,10 @@
 "use client";
 
+import { KanbanSquare } from "lucide-react";
 import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/layout";
 import { StageBadge } from "@/components/status-badges";
 import { PROJECT_STAGES } from "@/lib/constants";
 import { formatDate } from "@/lib/format";
@@ -127,6 +129,13 @@ export function ProjectsTable({
         search={search}
         noun="projects"
         emptyMessage="No projects found."
+        emptyState={
+          <EmptyState
+            icon={KanbanSquare}
+            title="No projects yet"
+            description="A project starts automatically when a work order is approved. Approve one, or import existing projects from Onboarding."
+          />
+        }
         defaultSort={{ key: "created_at", asc: false }}
         getRowHref={(p) => `/projects/${p.id}`}
       />

@@ -59,6 +59,8 @@ from `schema.sql` you can safely paste and run these files in the **SQL Editor**
 3. `supabase/migrations/20260709140000_dashboard_metrics_and_indexes.sql` — dashboard
    aggregate function + indexes.
 4. `supabase/migrations/20260709150000_ticket_no_sequence.sql` — collision-free ticket numbers.
+5. `supabase/migrations/20260709160000_list_views.sql` — flattened views that
+   back server-side pagination/search (RLS-respecting `security_invoker` views).
 
 Or, if the project is linked to the CLI, run `npx supabase db push`.
 

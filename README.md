@@ -22,7 +22,10 @@ installation tracking, team management, and a maintenance service-ticketing syst
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
 - **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
 - **Team Management** — admins can add staff accounts, assign roles, and search/filter the team list.
-- **Dashboard** — KPI cards plus paginated, sortable, and filterable tables across all modules.
+- **Onboarding import** — admins bulk-load existing projects from a CSV (paste or upload); each row creates an approved work order + project at the specified stage, with a per-row result report.
+- **Dashboard** — KPI cards (single aggregate query) plus recent-activity tables.
+- **Scalable lists** — every list paginates, filters, sorts and searches **server-side** (URL-driven) via RLS-respecting Postgres views, so they hold up at large data volumes.
+- **Light / dark theme** — system-aware with a toggle; preference persists.
 
 ## Getting Started
 
