@@ -6,7 +6,8 @@ export type NavIcon =
   | "work-orders"
   | "projects"
   | "tickets"
-  | "team";
+  | "team"
+  | "onboarding";
 
 export interface ModuleNav {
   href: string;
@@ -51,6 +52,12 @@ export const MODULES: ModuleNav[] = [
     href: "/team",
     label: "Team",
     icon: "team",
+    roles: ["admin"],
+  },
+  {
+    href: "/onboarding",
+    label: "Onboarding",
+    icon: "onboarding",
     roles: ["admin"],
   },
 ];
