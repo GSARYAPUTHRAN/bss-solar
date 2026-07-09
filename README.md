@@ -132,11 +132,34 @@ public/brand/                  # Official logo assets from bsssolar.com
 ## Scripts
 
 ```bash
-npm run dev      # Start dev server
-npm run build    # Production build
-npm run start    # Start production server
-npm run lint     # ESLint
+npm run dev        # Start dev server
+npm run build      # Production build
+npm run start      # Start production server
+npm run lint       # ESLint (fails on warnings)
+npm run typecheck  # tsc --noEmit
+npm run test       # Vitest unit tests
+npm run verify     # typecheck + lint + unit + build (pre-push gate)
+npm run db:types   # Regenerate src/lib/supabase/database.types.ts from local DB
 ```
+
+## Testing
+
+| Layer | Tool | Command | Needs |
+| ----- | ---- | ------- | ----- |
+| Unit | Vitest | `npm run test` | — |
+| Integration (RLS, triggers, RPCs) | Vitest + local Supabase | `npm run test:integration` | `npx supabase start` |
+| End-to-end (critical flows) | Playwright | `npm run test:e2e` | `supabase start` + `npm run build` |
+
+- **Integration tests** exercise real Row Level Security and DB triggers against a
+  local Supabase stack — they assert that a coordinator cannot escalate to admin,
+  cannot self-approve work orders, tenant data stays isolated, approval seeds the 9
+  milestones, and ticket numbers are unique.
+- **E2E** covers login/RBAC redirects and work-order creation with Playwright.
+- CI (`.github/workflows/ci.yml`) runs all of the above on every PR. See
+  **[DEPLOY.md](DEPLOY.md)** for the branch-protection setup that gates merges.
+
+> First E2E/integration run: `npx supabase start` (Docker) and
+> `npx playwright install chromium`.
 
 ## Deploy to production
 

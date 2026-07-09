@@ -46,6 +46,22 @@ npx supabase db push
 
 > Do **not** run `supabase/seed.sql` on production — it is local demo data only.
 
+### Updating an existing production database (this release) ⚠️
+
+This release ships **security-critical** database changes. Apply them before (or with)
+the matching app deploy. Each migration is idempotent, so on a DB that was provisioned
+from `schema.sql` you can safely paste and run these files in the **SQL Editor** in order:
+
+1. `supabase/migrations/20260709120000_security_hardening.sql` — **closes the coordinator
+   → admin privilege-escalation hole and the self-approval hole**, and makes approval
+   atomically create the project. **Highest priority — apply ASAP.**
+2. `supabase/migrations/20260709130000_api_role_grants.sql` — API-role grants.
+3. `supabase/migrations/20260709140000_dashboard_metrics_and_indexes.sql` — dashboard
+   aggregate function + indexes.
+4. `supabase/migrations/20260709150000_ticket_no_sequence.sql` — collision-free ticket numbers.
+
+Or, if the project is linked to the CLI, run `npx supabase db push`.
+
 ### Collect API keys
 
 **Project Settings → API**:
@@ -76,6 +92,12 @@ Keep the **secret / service_role** key private — server-only (Team → Add Mem
 
 3. For faster onboarding, you may disable **Confirm email** under Email provider until staff accounts are set up.
 
+4. **Harden auth** (defense-in-depth for the app-layer throttling):
+   - **Authentication → Rate Limits / Attack Protection** — keep the default
+     sign-in rate limits enabled; turn on **CAPTCHA** (hCaptcha/Turnstile) if exposed publicly.
+   - **Authentication → Policies** — set a **minimum password length of 12** to match the
+     app's Add-Member validation.
+
 ---
 
 ## Step 3 — Deploy the Next.js app on Vercel
@@ -100,6 +122,19 @@ Keep the **secret / service_role** key private — server-only (Team → Add Mem
 ### Redeploys
 
 Every push to the **`production`** branch auto-deploys when Vercel is configured to use that branch. Merge `master` into `production` when you are ready to release.
+
+### CI quality gate (recommended branch protection)
+
+`.github/workflows/ci.yml` runs on every PR to `master`/`production`: typecheck,
+lint, unit tests, a production build, RLS/DB integration tests (against a
+throwaway local Supabase), and Playwright E2E. To make green CI a merge
+requirement:
+
+1. **GitHub → Settings → Branches → Add rule** for `master` **and** `production`.
+2. Require a pull request before merging; require the **CI** status checks
+   (`quality`, `integration`, `e2e`) to pass; disallow direct pushes.
+3. Release by merging `master → production` **only after CI is green**, so the
+   branch Vercel deploys can never contain unverified code.
 
 > **Private repo on Hobby:** Git pushes only deploy if the **commit author email** matches your GitHub/Vercel account. If you see *“commit author did not have contributing access”*, fix the email (below) or deploy via CLI.
 
