@@ -71,8 +71,8 @@ export default async function WorkOrderDetailPage({
           {project && (
             <>
               <Separator />
-              <div className="flex items-center justify-between rounded-md bg-emerald-50 px-4 py-3">
-                <p className="text-sm text-emerald-800">
+              <div className="flex items-center justify-between rounded-md bg-emerald-50 px-4 py-3 dark:bg-emerald-500/10">
+                <p className="text-sm text-emerald-800 dark:text-emerald-300">
                   This work order is an active project.
                 </p>
                 <Button size="sm" variant="outline" asChild>

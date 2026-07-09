@@ -52,31 +52,31 @@ export default async function DashboardPage() {
           label="Pending Approvals"
           value={metrics.pendingApprovals}
           icon={Clock}
-          accent="bg-amber-100 text-amber-700"
+          accent="bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
         />
         <StatCard
           label="Active Projects"
           value={metrics.activeProjects}
           icon={KanbanSquare}
-          accent="bg-indigo-100 text-indigo-700"
+          accent="bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"
         />
         <StatCard
           label="Commissioned"
           value={metrics.commissioned}
           icon={CheckCircle2}
-          accent="bg-emerald-100 text-emerald-700"
+          accent="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
         />
         <StatCard
           label="Open Tickets"
           value={metrics.openTickets}
           icon={Wrench}
-          accent="bg-blue-100 text-blue-700"
+          accent="bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300"
         />
         <StatCard
           label="Approved Pipeline"
           value={formatCurrency(metrics.approvedPipeline)}
           icon={IndianRupee}
-          accent="bg-emerald-100 text-emerald-700"
+          accent="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
         />
       </div>
 

@@ -77,7 +77,7 @@ export default async function ProjectDetailPage({
             <div className="flex justify-between">
               <span className="text-muted-foreground">Status</span>
               {project.is_completed ? (
-                <Badge className="border-transparent bg-emerald-100 text-emerald-800">
+                <Badge className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
                   Commissioned
                 </Badge>
               ) : (
@@ -145,9 +145,9 @@ export default async function ProjectDetailPage({
                         className={cn(
                           "shrink-0 text-xs",
                           m.status === "completed" &&
-                            "border-emerald-200 text-emerald-700",
+                            "border-emerald-200 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300",
                           m.status === "in_progress" &&
-                            "border-amber-200 text-amber-700",
+                            "border-amber-200 text-amber-700 dark:border-amber-500/30 dark:text-amber-300",
                         )}
                       >
                         {MILESTONE_STATUS_LABELS[m.status]}
@@ -174,6 +174,7 @@ export default async function ProjectDetailPage({
                         <div className="flex flex-col gap-2 sm:flex-row">
                           <FormSelect
                             name="status"
+                            aria-label={`Status for ${STAGE_LABELS[m.stage]}`}
                             defaultValue={m.status}
                             className="w-full sm:w-44"
                             options={(
