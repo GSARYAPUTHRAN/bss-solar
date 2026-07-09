@@ -1,10 +1,5 @@
 import type { ProjectStage, TicketType } from "./types";
-import {
-  MILESTONE_STATUS,
-  TICKET_STATUS,
-  WORK_ORDER_STATUS,
-  statusLabels,
-} from "./domain/status";
+import { MILESTONE_STATUS, TICKET_STATUS, statusLabels } from "./domain/status";
 
 export const PROJECT_STAGES: { value: ProjectStage; label: string }[] = [
   { value: "site_feasibility_survey", label: "Site Feasibility Survey" },
@@ -32,7 +27,6 @@ export const STAGE_ORDER: ProjectStage[] = PROJECT_STAGES.map((s) => s.value);
 
 // Status labels are derived from the status registry (single source of truth).
 export const MILESTONE_STATUS_LABELS = statusLabels(MILESTONE_STATUS);
-export const WORK_ORDER_STATUS_LABELS = statusLabels(WORK_ORDER_STATUS);
 export const TICKET_STATUS_LABELS = statusLabels(TICKET_STATUS);
 
 export const TICKET_TYPE_LABELS: Record<TicketType, string> = {

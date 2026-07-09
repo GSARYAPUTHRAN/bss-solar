@@ -1,5 +1,10 @@
 import { createClient } from "@/lib/supabase/server";
+import type { Database } from "@/lib/supabase/database.types";
 import { LIST_QUERY_LIMIT } from "@/lib/constants";
+
+// The jsonb reading columns are typed as `Json` by the generated schema; the
+// app models them as structured arrays, so cast explicitly at this boundary.
+type TicketRowUpdate = Database["public"]["Tables"]["service_tickets"]["Update"];
 import type {
   MpptReading,
   ServiceTicket,
@@ -88,7 +93,7 @@ export const ticketsRepository = {
       .select(SELECT_DETAIL)
       .eq("id", id)
       .maybeSingle();
-    return (data as ServiceTicket) ?? null;
+    return (data as unknown as ServiceTicket) ?? null;
   },
 
   async listByProject(projectId: string): Promise<ServiceTicket[]> {
@@ -120,7 +125,7 @@ export const ticketsRepository = {
     const supabase = await createClient();
     const { error } = await supabase
       .from("service_tickets")
-      .update(patch)
+      .update(patch as unknown as TicketRowUpdate)
       .eq("id", id);
     return { error: error?.message ?? null };
   },

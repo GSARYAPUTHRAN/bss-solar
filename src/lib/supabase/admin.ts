@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import type { Database } from "./database.types";
 
 /**
  * Service-role client for privileged admin operations (e.g. creating team accounts).
@@ -12,7 +13,7 @@ export function createAdminClient() {
       "SUPABASE_SERVICE_ROLE_KEY is required for admin operations. Add it to .env.local (see .env.local.example).",
     );
   }
-  return createClient(url, key, {
+  return createClient<Database>(url, key, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 }
