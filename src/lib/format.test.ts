@@ -1,5 +1,20 @@
 import { describe, it, expect } from "vitest";
-import { formatCurrency, formatDate, formatDateTime } from "./format";
+import {
+  formatCurrency,
+  formatDate,
+  formatDateTime,
+  todayISO,
+} from "./format";
+
+describe("todayISO", () => {
+  it("returns a YYYY-MM-DD string", () => {
+    expect(todayISO()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it("accepts an explicit time zone", () => {
+    expect(todayISO("UTC")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
 
 describe("formatCurrency", () => {
   it("uses Indian digit grouping", () => {

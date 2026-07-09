@@ -12,20 +12,10 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { PROJECT_STAGES, STAGE_LABELS } from "@/lib/constants";
+import { projectProgress } from "@/lib/domain/project";
 import { formatCurrency } from "@/lib/format";
+import type { Coordinator } from "@/server/data";
 import type { Project, ProjectStage } from "@/lib/types";
-
-interface Coordinator {
-  id: string;
-  full_name: string;
-}
-
-function progressOf(p: Project) {
-  const ms = p.milestones ?? [];
-  const total = ms.length || PROJECT_STAGES.length;
-  const done = ms.filter((m) => m.status === "completed").length;
-  return { done, total, pct: Math.round((done / total) * 100) };
-}
 
 export function ProjectsBoard({
   projects,
@@ -111,7 +101,7 @@ export function ProjectsBoard({
               </div>
               <div className="space-y-2">
                 {items.map((p) => {
-                  const prog = progressOf(p);
+                  const prog = projectProgress(p);
                   return (
                     <Link key={p.id} href={`/projects/${p.id}`}>
                       <Card className="gap-2 p-3 transition-colors hover:border-amber-400">

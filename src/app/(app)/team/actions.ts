@@ -57,6 +57,9 @@ export async function createTeamMember(formData: FormData) {
       .update(updates)
       .eq("id", data.user.id);
     if (profileError) {
+      // Roll back the just-created auth user so it isn't orphaned and the
+      // email can be reused on retry.
+      await admin.auth.admin.deleteUser(data.user.id);
       redirect(
         `/team/new?error=${encodeURIComponent(profileError.message)}`,
       );

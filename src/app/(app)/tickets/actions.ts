@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
 import { ticketsRepository } from "@/server/data";
+import { ticketTotal } from "@/lib/domain/ticket";
 import { dec, enumValue, int, json, str, text } from "@/server/form";
 import type {
   MpptReading,
@@ -12,20 +13,12 @@ import type {
   TicketType,
 } from "@/lib/types";
 
-function genTicketNo(): string {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const rand = Math.floor(1000 + Math.random() * 9000);
-  return `BSS-${yy}${mm}-${rand}`;
-}
-
 export async function createTicket(formData: FormData) {
   const profile = await requireAdmin();
 
+  // ticket_no is assigned by a DB sequence/trigger (collision-free).
   const { id, error } = await ticketsRepository.create({
     project_id: str(formData.get("project_id")),
-    ticket_no: genTicketNo(),
     ticket_type: enumValue<TicketType>(formData.get("ticket_type"), "routine_6m"),
     status: enumValue<TicketStatus>(formData.get("status"), "open"),
     assigned_to: str(formData.get("assigned_to")),
@@ -96,7 +89,7 @@ export async function updateTicket(formData: FormData) {
     service_charge: serviceCharge,
     cost_of_spares: costOfSpares,
     amc_charge: amcCharge,
-    total: serviceCharge + costOfSpares + amcCharge,
+    total: ticketTotal({ serviceCharge, costOfSpares, amcCharge }),
   });
 
   if (error) {

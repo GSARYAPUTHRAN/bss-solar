@@ -25,7 +25,8 @@ const SELECT_DETAIL = `*,
 
 export interface TicketCreateInput {
   project_id: string | null;
-  ticket_no: string;
+  /** Optional — assigned by a DB sequence/trigger when omitted. */
+  ticket_no?: string;
   ticket_type: TicketType;
   status: TicketStatus;
   assigned_to: string | null;

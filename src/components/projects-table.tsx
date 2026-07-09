@@ -5,14 +5,13 @@ import type { ColumnDef, FilterDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
 import { StageBadge } from "@/components/status-badges";
 import { PROJECT_STAGES } from "@/lib/constants";
+import { projectProgress } from "@/lib/domain/project";
 import { formatDate } from "@/lib/format";
 import type { Coordinator } from "@/server/data";
 import type { Project } from "@/lib/types";
 
 function progress(p: Project) {
-  const ms = p.milestones ?? [];
-  const total = ms.length || 8;
-  const done = ms.filter((m) => m.status === "completed").length;
+  const { done, total } = projectProgress(p);
   return `${done}/${total}`;
 }
 

@@ -330,3 +330,19 @@ create index if not exists idx_projects_created_at on projects (created_at desc)
 create index if not exists idx_tickets_created_at on service_tickets (created_at desc);
 create index if not exists idx_work_orders_created_at on work_orders (created_at desc);
 create index if not exists idx_profiles_full_name on profiles (full_name);
+
+-- ============ SERVICE TICKET NUMBERING ============
+-- Monotonic, collision-free ticket numbers assigned on insert when not supplied.
+create sequence if not exists service_ticket_no_seq;
+create or replace function assign_ticket_no()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.ticket_no is null then
+    new.ticket_no := 'BSS-' || to_char((now() at time zone 'Asia/Kolkata'), 'YYMM')
+      || '-' || lpad(nextval('service_ticket_no_seq')::text, 4, '0');
+  end if;
+  return new;
+end; $$;
+create trigger t_ticket_assign_no before insert on service_tickets
+  for each row execute function assign_ticket_no();
+grant usage, select on sequence service_ticket_no_seq to anon, authenticated, service_role;
