@@ -7,6 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { profilesRepository } from "@/server/data";
 import { enumValue, str, text } from "@/server/form";
 import { fail, ok, type ActionResult } from "@/lib/result";
+import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
 import type { UserRole } from "@/lib/types";
 
 export async function createTeamMember(formData: FormData) {
@@ -18,9 +19,9 @@ export async function createTeamMember(formData: FormData) {
   const phone = str(formData.get("phone"));
   const role = enumValue<UserRole>(formData.get("role"), "coordinator");
 
-  if (password.length < 6) {
+  if (password.length < MIN_PASSWORD_LENGTH) {
     redirect(
-      `/team/new?error=${encodeURIComponent("Password must be at least 6 characters.")}`,
+      `/team/new?error=${encodeURIComponent(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`)}`,
     );
   }
 
@@ -70,10 +71,20 @@ export async function updateUserRole(
   userId: string,
   role: UserRole,
 ): Promise<ActionResult> {
-  await requireAdmin();
+  const me = await requireAdmin();
 
   if (role !== "admin" && role !== "coordinator") {
     return fail("Invalid role");
+  }
+
+  // Never let an admin demote themselves (would risk an admin lock-out).
+  if (userId === me.id && role !== "admin") {
+    return fail("You cannot change your own admin role.");
+  }
+
+  // Belt-and-suspenders: never remove the last remaining admin.
+  if (role === "coordinator" && (await profilesRepository.adminCount()) <= 1) {
+    return fail("At least one administrator is required.");
   }
 
   const { error } = await profilesRepository.setRole(userId, role);

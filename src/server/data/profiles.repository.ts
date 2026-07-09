@@ -33,4 +33,14 @@ export const profilesRepository = {
       .eq("id", id);
     return { error: error?.message ?? null };
   },
+
+  /** Number of admin accounts (used to prevent locking out the last admin). */
+  async adminCount(): Promise<number> {
+    const supabase = await createClient();
+    const { count } = await supabase
+      .from("profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "admin");
+    return count ?? 0;
+  },
 };

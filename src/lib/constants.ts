@@ -42,6 +42,12 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
 
 export const COMMON_CAPACITIES = ["1kW", "2kW", "3kW", "5kW", "8kW", "10kW"];
 
+/** Minimum staff-account password length (also enforce in Supabase Auth). */
+export const MIN_PASSWORD_LENGTH = 12;
+
+/** Login throttle: max attempts per IP+email within the window. */
+export const LOGIN_RATE_LIMIT = { max: 5, windowMs: 15 * 60 * 1000 };
+
 export const COMPANY = {
   name: "BSS Solar",
   fullName: "BSS Solar Solutions",
