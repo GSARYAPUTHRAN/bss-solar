@@ -2,15 +2,25 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { requireAdmin } from "@/lib/auth";
 import { profilesRepository } from "@/server/data";
+import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
 import { TeamTable } from "@/components/team-table";
 import { Button } from "@/components/ui/button";
 
 export const metadata = { title: "Team" };
 
-export default async function TeamPage() {
+export default async function TeamPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const me = await requireAdmin();
-  const profiles = await profilesRepository.list();
+  const params = parsePageParams(await searchParams, {
+    filterKeys: ["role"],
+    defaultSort: "full_name",
+    defaultDir: "asc",
+  });
+  const pageResult = await profilesRepository.page(params);
 
   return (
     <Page>
@@ -24,7 +34,15 @@ export default async function TeamPage() {
           </Link>
         </Button>
       </PageHeader>
-      <TeamTable profiles={profiles} meId={me.id} />
+      <TeamTable
+        profiles={pageResult.rows}
+        meId={me.id}
+        server={{
+          total: pageResult.total,
+          page: pageResult.page,
+          pageSize: pageResult.pageSize,
+        }}
+      />
       <p className="text-xs text-muted-foreground">
         You cannot change your own role to avoid accidental lock-out.
       </p>

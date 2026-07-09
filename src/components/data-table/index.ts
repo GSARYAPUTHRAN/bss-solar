@@ -1,5 +1,7 @@
 export { DataTable } from "./data-table";
 export type { DataTableProps } from "./data-table";
+export { ServerDataTable } from "./server-data-table";
+export type { ServerDataTableProps } from "./server-data-table";
 export { useDataTable } from "./use-data-table";
 export type {
   ColumnDef,

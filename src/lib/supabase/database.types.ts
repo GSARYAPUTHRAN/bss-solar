@@ -94,6 +94,20 @@ export type Database = {
             referencedRelation: "projects"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "project_milestones_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects_list"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "project_milestones_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "work_orders_list"
+            referencedColumns: ["project_id"]
+          },
         ]
       }
       projects: {
@@ -143,6 +157,13 @@ export type Database = {
             columns: ["work_order_id"]
             isOneToOne: true
             referencedRelation: "work_orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "projects_work_order_id_fkey"
+            columns: ["work_order_id"]
+            isOneToOne: true
+            referencedRelation: "work_orders_list"
             referencedColumns: ["id"]
           },
         ]
@@ -293,6 +314,20 @@ export type Database = {
             referencedRelation: "projects"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "service_tickets_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects_list"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "service_tickets_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "work_orders_list"
+            referencedColumns: ["project_id"]
+          },
         ]
       }
       work_orders: {
@@ -350,7 +385,98 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      projects_list: {
+        Row: {
+          client_name: string | null
+          completed_at: string | null
+          coordinator_id: string | null
+          coordinator_name: string | null
+          created_at: string | null
+          current_stage: Database["public"]["Enums"]["project_stage"] | null
+          id: string | null
+          is_completed: boolean | null
+          milestones_done: number | null
+          milestones_total: number | null
+          plant_capacity: string | null
+          started_at: string | null
+          total_cost: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "projects_coordinator_id_fkey"
+            columns: ["coordinator_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      service_tickets_list: {
+        Row: {
+          client_name: string | null
+          created_at: string | null
+          id: string | null
+          project_id: string | null
+          scheduled_date: string | null
+          service_date: string | null
+          status: Database["public"]["Enums"]["ticket_status"] | null
+          ticket_no: string | null
+          ticket_type: Database["public"]["Enums"]["ticket_type"] | null
+          total: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "service_tickets_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "service_tickets_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects_list"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "service_tickets_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "work_orders_list"
+            referencedColumns: ["project_id"]
+          },
+        ]
+      }
+      work_orders_list: {
+        Row: {
+          address: string | null
+          advance_amount: number | null
+          client_name: string | null
+          client_phone: string | null
+          coordinator_id: string | null
+          coordinator_name: string | null
+          created_at: string | null
+          current_stage: Database["public"]["Enums"]["project_stage"] | null
+          id: string | null
+          is_completed: boolean | null
+          order_date: string | null
+          plant_capacity: string | null
+          project_id: string | null
+          status: Database["public"]["Enums"]["work_order_status"] | null
+          total_cost: number | null
+          updated_at: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "work_orders_coordinator_id_fkey"
+            columns: ["coordinator_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       dashboard_metrics: {

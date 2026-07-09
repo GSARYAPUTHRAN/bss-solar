@@ -1,11 +1,25 @@
 import { createClient } from "@/lib/supabase/server";
 import { LIST_QUERY_LIMIT, PROJECT_PICKER_LIMIT } from "@/lib/constants";
+import {
+  rangeFor,
+  sanitizeSearch,
+  type PageParams,
+  type PageResult,
+} from "@/lib/pagination";
 import type {
   MilestoneStatus,
   Project,
+  ProjectListRow,
   ProjectMilestone,
   ProjectStage,
 } from "@/lib/types";
+
+const PROJECT_SORT_COLUMNS = new Set([
+  "created_at",
+  "client_name",
+  "coordinator_name",
+  "current_stage",
+]);
 
 const SELECT_LIST = `*,
   work_order:work_orders!projects_work_order_id_fkey(client_name, plant_capacity, total_cost),
@@ -39,9 +53,59 @@ export const projectsRepository = {
     return (data as Project[]) ?? [];
   },
 
-  /** Most-recent slice for dashboard/overview contexts. */
-  async recent(limit: number): Promise<Project[]> {
-    return this.list(limit);
+  /** Most-recent slice (flattened rows) for dashboard/overview contexts. */
+  async recent(limit: number): Promise<ProjectListRow[]> {
+    const { rows } = await this.page({
+      page: 1,
+      pageSize: limit,
+      q: "",
+      sort: null,
+      dir: "desc",
+      filters: {},
+    });
+    return rows;
+  },
+
+  /** Server-side paginated/filtered/sorted page from the flattened view. */
+  async page(params: PageParams): Promise<PageResult<ProjectListRow>> {
+    const supabase = await createClient();
+    const [from, to] = rangeFor(params.page, params.pageSize);
+
+    let query = supabase.from("projects_list").select("*", { count: "exact" });
+
+    const q = sanitizeSearch(params.q);
+    if (q) {
+      const like = `%${q}%`;
+      query = query.or(
+        `client_name.ilike.${like},coordinator_name.ilike.${like}`,
+      );
+    }
+    if (params.filters.status === "active") {
+      query = query.eq("is_completed", false);
+    } else if (params.filters.status === "completed") {
+      query = query.eq("is_completed", true);
+    }
+    if (params.filters.stage) {
+      query = query.eq("current_stage", params.filters.stage as ProjectStage);
+    }
+    if (params.filters.coordinator) {
+      query = query.eq("coordinator_id", params.filters.coordinator);
+    }
+
+    const sortCol = PROJECT_SORT_COLUMNS.has(params.sort ?? "")
+      ? (params.sort as "created_at")
+      : "created_at";
+    query = query
+      .order(sortCol, { ascending: params.dir === "asc" })
+      .range(from, to);
+
+    const { data, count } = await query;
+    return {
+      rows: (data as ProjectListRow[]) ?? [],
+      total: count ?? 0,
+      page: params.page,
+      pageSize: params.pageSize,
+    };
   },
 
   async byId(id: string): Promise<Project | null> {

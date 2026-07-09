@@ -1,6 +1,20 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Database } from "@/lib/supabase/database.types";
 import { LIST_QUERY_LIMIT } from "@/lib/constants";
+import {
+  rangeFor,
+  sanitizeSearch,
+  type PageParams,
+  type PageResult,
+} from "@/lib/pagination";
+
+const TICKET_SORT_COLUMNS = new Set([
+  "created_at",
+  "scheduled_date",
+  "total",
+  "client_name",
+  "ticket_no",
+]);
 
 // The jsonb reading columns are typed as `Json` by the generated schema; the
 // app models them as structured arrays, so cast explicitly at this boundary.
@@ -9,6 +23,7 @@ import type {
   MpptReading,
   ServiceTicket,
   SpvStringReading,
+  TicketListRow,
   TicketStatus,
   TicketType,
 } from "@/lib/types";
@@ -84,6 +99,43 @@ export const ticketsRepository = {
       .order("created_at", { ascending: false })
       .limit(limit);
     return (data as unknown as ServiceTicket[]) ?? [];
+  },
+
+  /** Server-side paginated/filtered/sorted page from the flattened view. */
+  async page(params: PageParams): Promise<PageResult<TicketListRow>> {
+    const supabase = await createClient();
+    const [from, to] = rangeFor(params.page, params.pageSize);
+
+    let query = supabase
+      .from("service_tickets_list")
+      .select("*", { count: "exact" });
+
+    const q = sanitizeSearch(params.q);
+    if (q) {
+      const like = `%${q}%`;
+      query = query.or(`ticket_no.ilike.${like},client_name.ilike.${like}`);
+    }
+    if (params.filters.type) {
+      query = query.eq("ticket_type", params.filters.type as TicketType);
+    }
+    if (params.filters.status) {
+      query = query.eq("status", params.filters.status as TicketStatus);
+    }
+
+    const sortCol = TICKET_SORT_COLUMNS.has(params.sort ?? "")
+      ? (params.sort as "created_at")
+      : "created_at";
+    query = query
+      .order(sortCol, { ascending: params.dir === "asc" })
+      .range(from, to);
+
+    const { data, count } = await query;
+    return {
+      rows: (data as TicketListRow[]) ?? [],
+      total: count ?? 0,
+      page: params.page,
+      pageSize: params.pageSize,
+    };
   },
 
   async byId(id: string): Promise<ServiceTicket | null> {
