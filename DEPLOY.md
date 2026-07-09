@@ -138,6 +138,34 @@ requirement:
 3. Release by merging `master → production` **only after CI is green**, so the
    branch Vercel deploys can never contain unverified code.
 
+### Automatic production migrations
+
+Vercel builds the Next.js app but does **not** run database migrations. The CI
+workflow includes a `migrate-production` job that runs **only after the whole
+pipeline passes on `master`** and applies pending migrations to the production
+Supabase project with `supabase db push`. Because the migrations are backward
+compatible (additive views/functions/triggers/grants), the schema is made ready
+while the currently-deployed code keeps working; you then merge
+`master → production` to ship the code that uses it.
+
+Enable it once by adding three **repo secrets**
+(Settings → Secrets and variables → Actions):
+
+| Secret | Where to get it |
+| ------ | --------------- |
+| `SUPABASE_ACCESS_TOKEN` | Supabase → Account → Access Tokens |
+| `SUPABASE_DB_PASSWORD` | The database password you set when creating the project |
+| `SUPABASE_PROJECT_REF` | Supabase project ref (e.g. from the project URL) |
+
+Recommended release flow once secrets are set:
+
+1. Merge work into `master` → CI runs; on green, `migrate-production` applies
+   migrations to the prod DB automatically.
+2. Merge `master → production` → Vercel builds and deploys the code.
+
+> Keep every migration **backward compatible** (additive, or safe against the
+> currently-deployed code), since the schema is applied before the new code.
+
 > **Private repo on Hobby:** Git pushes only deploy if the **commit author email** matches your GitHub/Vercel account. If you see *“commit author did not have contributing access”*, fix the email (below) or deploy via CLI.
 
 ```powershell
