@@ -130,8 +130,10 @@ jobs:
         run: |
           set -e
           if [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ] || [ -z "$PROJECT_REF" ]; then
-            echo "::error::Set SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF repo secrets to enable automatic production migrations."
-            exit 1
+            echo "::warning::Production migration skipped — add SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF repo secrets (Settings -> Secrets and variables -> Actions) to enable it."
+            exit 0
           fi
+          echo "Applying migrations to production project $PROJECT_REF …"
           supabase link --project-ref "$PROJECT_REF"
           supabase db push
+          echo "Production migrations applied."
