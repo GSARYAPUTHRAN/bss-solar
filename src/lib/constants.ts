@@ -48,6 +48,19 @@ export const MIN_PASSWORD_LENGTH = 12;
 /** Login throttle: max attempts per IP+email within the window. */
 export const LOGIN_RATE_LIMIT = { max: 5, windowMs: 15 * 60 * 1000 };
 
+/**
+ * Upper bound on rows a list query returns to the interactive client tables.
+ * Keeps payload/memory bounded; the newest rows are always included. Raise this
+ * (or move to true server-side pagination) if a single list ever exceeds it.
+ */
+export const LIST_QUERY_LIMIT = 1000;
+
+/** Rows shown in the dashboard's "recent activity" tables. */
+export const DASHBOARD_RECENT = 25;
+
+/** Cap on options loaded into the project picker on the ticket form. */
+export const PROJECT_PICKER_LIMIT = 200;
+
 export const COMPANY = {
   name: "BSS Solar",
   fullName: "BSS Solar Solutions",

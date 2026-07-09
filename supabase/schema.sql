@@ -299,3 +299,34 @@ alter default privileges in schema public
   grant usage, select on sequences to anon, authenticated, service_role;
 alter default privileges in schema public
   grant execute on functions to anon, authenticated, service_role;
+
+-- ============ DASHBOARD AGGREGATES (scalability) ============
+-- Single aggregate query for the dashboard KPIs (SECURITY INVOKER: respects
+-- the caller's RLS). Avoids loading every row to count in the app.
+create or replace function dashboard_metrics()
+returns table (
+  total_work_orders bigint,
+  pending_approvals bigint,
+  active_projects bigint,
+  commissioned bigint,
+  open_tickets bigint,
+  approved_pipeline numeric
+)
+language sql stable security invoker set search_path = public as $$
+  select
+    (select count(*) from work_orders)::bigint,
+    (select count(*) from work_orders where status = 'pending')::bigint,
+    (select count(*) from projects where not is_completed)::bigint,
+    (select count(*) from projects where is_completed)::bigint,
+    (select count(*) from service_tickets
+       where status in ('open', 'scheduled', 'in_progress'))::bigint,
+    coalesce(
+      (select sum(total_cost) from work_orders where status = 'approved'), 0
+    )::numeric;
+$$;
+grant execute on function dashboard_metrics() to anon, authenticated, service_role;
+
+create index if not exists idx_projects_created_at on projects (created_at desc);
+create index if not exists idx_tickets_created_at on service_tickets (created_at desc);
+create index if not exists idx_work_orders_created_at on work_orders (created_at desc);
+create index if not exists idx_profiles_full_name on profiles (full_name);

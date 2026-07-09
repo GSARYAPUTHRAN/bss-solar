@@ -1,8 +1,11 @@
 import { createClient } from "@/lib/supabase/server";
+import { LIST_QUERY_LIMIT } from "@/lib/constants";
 import type { WorkOrder, WorkOrderStatus } from "@/lib/types";
 
-/** Columns + joins needed to render a work order anywhere in the app. */
-const SELECT = `*,
+/** Explicit columns + joins needed to render a work order (no SELECT *). */
+const SELECT = `id, coordinator_id, client_name, client_phone, address,
+  plant_capacity, advance_amount, total_cost, order_date, status,
+  created_at, updated_at,
   coordinator:profiles!work_orders_coordinator_id_fkey(id, full_name),
   projects(id, current_stage, is_completed)`;
 
@@ -29,15 +32,21 @@ export interface WorkOrderInput {
 }
 
 export const workOrdersRepository = {
-  async list(): Promise<WorkOrder[]> {
+  async list(limit: number = LIST_QUERY_LIMIT): Promise<WorkOrder[]> {
     const supabase = await createClient();
     const { data } = await supabase
       .from("work_orders")
       .select(SELECT)
-      .order("order_date", { ascending: false });
+      .order("order_date", { ascending: false })
+      .limit(limit);
     return (data ?? []).map((row) =>
       mapWorkOrder(row as Record<string, unknown>),
     );
+  },
+
+  /** Most-recent slice for dashboard/overview contexts. */
+  async recent(limit: number): Promise<WorkOrder[]> {
+    return this.list(limit);
   },
 
   async byId(id: string): Promise<WorkOrder | null> {

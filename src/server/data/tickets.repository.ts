@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { LIST_QUERY_LIMIT } from "@/lib/constants";
 import type {
   MpptReading,
   ServiceTicket,
@@ -7,10 +8,13 @@ import type {
   TicketType,
 } from "@/lib/types";
 
-const SELECT_LIST = `*,
+// List projection: only what the tickets table renders/searches. Deliberately
+// excludes the ~30 detail columns and the JSONB reading arrays (fetched only in
+// the detail view) to keep list payloads small.
+const SELECT_LIST = `id, ticket_no, ticket_type, status, scheduled_date, total,
   project:projects!service_tickets_project_id_fkey(
     id,
-    work_order:work_orders!projects_work_order_id_fkey(client_name, address, client_phone)
+    work_order:work_orders!projects_work_order_id_fkey(client_name)
   )`;
 
 const SELECT_DETAIL = `*,
@@ -66,13 +70,14 @@ export interface TicketUpdateInput {
 }
 
 export const ticketsRepository = {
-  async list(): Promise<ServiceTicket[]> {
+  async list(limit: number = LIST_QUERY_LIMIT): Promise<ServiceTicket[]> {
     const supabase = await createClient();
     const { data } = await supabase
       .from("service_tickets")
       .select(SELECT_LIST)
-      .order("created_at", { ascending: false });
-    return (data as ServiceTicket[]) ?? [];
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    return (data as unknown as ServiceTicket[]) ?? [];
   },
 
   async byId(id: string): Promise<ServiceTicket | null> {
@@ -83,13 +88,6 @@ export const ticketsRepository = {
       .eq("id", id)
       .maybeSingle();
     return (data as ServiceTicket) ?? null;
-  },
-
-  /** Minimal projection for dashboard KPI counts. */
-  async statuses(): Promise<Pick<ServiceTicket, "id" | "status">[]> {
-    const supabase = await createClient();
-    const { data } = await supabase.from("service_tickets").select("id, status");
-    return (data as Pick<ServiceTicket, "id" | "status">[]) ?? [];
   },
 
   async listByProject(projectId: string): Promise<ServiceTicket[]> {

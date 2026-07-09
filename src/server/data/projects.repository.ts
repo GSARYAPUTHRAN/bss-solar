@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { LIST_QUERY_LIMIT, PROJECT_PICKER_LIMIT } from "@/lib/constants";
 import type {
   MilestoneStatus,
   Project,
@@ -28,13 +29,19 @@ type MilestoneSlice = Pick<
 >;
 
 export const projectsRepository = {
-  async list(): Promise<Project[]> {
+  async list(limit: number = LIST_QUERY_LIMIT): Promise<Project[]> {
     const supabase = await createClient();
     const { data } = await supabase
       .from("projects")
       .select(SELECT_LIST)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(limit);
     return (data as Project[]) ?? [];
+  },
+
+  /** Most-recent slice for dashboard/overview contexts. */
+  async recent(limit: number): Promise<Project[]> {
+    return this.list(limit);
   },
 
   async byId(id: string): Promise<Project | null> {
@@ -55,7 +62,8 @@ export const projectsRepository = {
         `id,
          work_order:work_orders!projects_work_order_id_fkey(client_name, plant_capacity)`,
       )
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(PROJECT_PICKER_LIMIT);
 
     return (
       (data as
