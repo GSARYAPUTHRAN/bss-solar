@@ -5,6 +5,7 @@ import { Analytics } from "@vercel/analytics/react";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { LoadingProvider } from "@/lib/loading/loading-context";
 import { GlobalLoader } from "@/components/global-loader";
+import { FlashToast } from "@/components/flash-toast";
 
 export function Providers({ children }: { children: ReactNode }) {
   return (
@@ -12,6 +13,7 @@ export function Providers({ children }: { children: ReactNode }) {
       <LoadingProvider>
         {children}
         <GlobalLoader />
+        <FlashToast />
         <Analytics />
         <SpeedInsights />
       </LoadingProvider>

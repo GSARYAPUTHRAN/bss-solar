@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
 import { ticketsRepository } from "@/server/data";
 import { ticketTotal } from "@/lib/domain/ticket";
+import { withFlash } from "@/lib/flash";
 import { dec, enumValue, int, json, str, text } from "@/server/form";
 import type {
   MpptReading,
@@ -34,7 +35,7 @@ export async function createTicket(formData: FormData) {
   }
 
   revalidatePath("/tickets");
-  redirect(`/tickets/${id}`);
+  redirect(withFlash(`/tickets/${id}`, "Ticket created."));
 }
 
 export async function updateTicket(formData: FormData) {
@@ -98,7 +99,7 @@ export async function updateTicket(formData: FormData) {
 
   revalidatePath(`/tickets/${id}`);
   revalidatePath("/tickets");
-  redirect(`/tickets/${id}`);
+  redirect(withFlash(`/tickets/${id}`, "Service sheet saved."));
 }
 
 export async function deleteTicket(formData: FormData) {
@@ -109,5 +110,5 @@ export async function deleteTicket(formData: FormData) {
   if (error) redirect(`/tickets/${id}?error=${encodeURIComponent(error)}`);
 
   revalidatePath("/tickets");
-  redirect("/tickets");
+  redirect(withFlash("/tickets", "Ticket deleted."));
 }

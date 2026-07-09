@@ -7,6 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { profilesRepository } from "@/server/data";
 import { enumValue, str, text } from "@/server/form";
 import { fail, ok, type ActionResult } from "@/lib/result";
+import { withFlash } from "@/lib/flash";
 import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
 import type { UserRole } from "@/lib/types";
 
@@ -67,7 +68,7 @@ export async function createTeamMember(formData: FormData) {
   }
 
   revalidatePath("/team");
-  redirect("/team");
+  redirect(withFlash("/team", "Team member added."));
 }
 
 export async function updateUserRole(

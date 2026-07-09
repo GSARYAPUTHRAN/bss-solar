@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
   SheetTrigger,
@@ -61,6 +62,9 @@ export function AppHeader({
               <BssLogo variant="icon" className="h-8 w-8 shrink-0" />
               {COMPANY.name}
             </SheetTitle>
+            <SheetDescription className="sr-only">
+              Main navigation
+            </SheetDescription>
           </SheetHeader>
           <div className="py-3">
             <SidebarNav items={items} onNavigate={() => setOpen(false)} />
@@ -94,10 +98,10 @@ export function AppHeader({
             </Badge>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <DropdownMenuItem disabled>
-            <UserIcon className="mr-2 h-4 w-4" />
+          <DropdownMenuLabel className="flex items-center gap-2 font-normal text-muted-foreground">
+            <UserIcon className="h-4 w-4" />
             {profile.phone ?? "No phone on file"}
-          </DropdownMenuItem>
+          </DropdownMenuLabel>
           <DropdownMenuSeparator />
           <form action={signOutAction}>
             <DropdownMenuItem

@@ -6,6 +6,8 @@ import { Page, PageHeader } from "@/components/layout";
 import { TeamTable } from "@/components/team-table";
 import { Button } from "@/components/ui/button";
 
+export const metadata = { title: "Team" };
+
 export default async function TeamPage() {
   const me = await requireAdmin();
   const profiles = await profilesRepository.list();

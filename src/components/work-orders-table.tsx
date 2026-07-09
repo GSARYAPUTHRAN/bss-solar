@@ -1,7 +1,11 @@
 "use client";
 
+import Link from "next/link";
+import { ClipboardList, Plus } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef } from "@/components/data-table";
+import { EmptyState } from "@/components/layout";
+import { Button } from "@/components/ui/button";
 import { WorkOrderStatusBadge } from "@/components/status-badges";
 import { WORK_ORDER_STATUS, statusOptions } from "@/lib/domain/status";
 import { formatCurrency, formatDate } from "@/lib/format";
@@ -103,6 +107,20 @@ export function WorkOrdersTable({
       initialSort={{ id: "order_date", asc: false }}
       noun="work orders"
       emptyMessage="No work orders found."
+      emptyState={
+        <EmptyState
+          icon={ClipboardList}
+          title="No work orders yet"
+          description="Log business captured in the field to start the KSEB/ANERT pipeline."
+          action={
+            <Button asChild>
+              <Link href="/work-orders/new">
+                <Plus className="mr-2 h-4 w-4" /> New Work Order
+              </Link>
+            </Button>
+          }
+        />
+      }
       getRowHref={(w) => `/work-orders/${w.id}`}
     />
   );

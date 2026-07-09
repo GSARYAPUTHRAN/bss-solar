@@ -5,6 +5,8 @@ import { ProjectsBoard } from "@/components/projects-board";
 import { ProjectsTable } from "@/components/projects-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+export const metadata = { title: "Project Tracker" };
+
 export default async function ProjectsPage() {
   const profile = await requireProfile();
   const isAdmin = profile.role === "admin";

@@ -11,6 +11,7 @@ import {
 import { Page, PageHeader, Section, Field, FieldGrid, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/submit-button";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Separator } from "@/components/ui/separator";
 import { WorkOrderStatusBadge } from "@/components/status-badges";
 import { formatCurrency, formatDate } from "@/lib/format";
@@ -114,12 +115,17 @@ export default async function WorkOrderDetailPage({
                   </form>
                 )}
                 <div className="flex-1" />
-                <form action={deleteWorkOrder}>
-                  <input type="hidden" name="id" value={wo.id} />
-                  <SubmitButton variant="ghost" className="text-destructive" loadingText="Deleting…">
-                    Delete
-                  </SubmitButton>
-                </form>
+                <ConfirmSubmit
+                  action={deleteWorkOrder}
+                  fields={{ id: wo.id }}
+                  triggerLabel="Delete"
+                  triggerVariant="ghost"
+                  triggerClassName="text-destructive hover:text-destructive"
+                  title="Delete this work order?"
+                  description="This permanently removes the work order and any linked project and milestones. This cannot be undone."
+                  confirmLabel="Delete work order"
+                  loadingText="Deleting…"
+                />
               </div>
             </>
           )}

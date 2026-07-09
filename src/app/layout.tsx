@@ -15,7 +15,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "BSS Solar | Operations Console",
+  title: {
+    default: "BSS Solar | Operations Console",
+    template: "%s · BSS Solar",
+  },
   description:
     "B2B operations console for BSS Solar: work orders, KSEB/ANERT project tracking, and service ticketing.",
 };

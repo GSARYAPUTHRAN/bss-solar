@@ -6,6 +6,8 @@ import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { TicketsTable } from "@/components/tickets-table";
 
+export const metadata = { title: "Service Tickets" };
+
 export default async function TicketsPage() {
   await requireAdmin();
 

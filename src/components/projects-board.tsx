@@ -103,8 +103,12 @@ export function ProjectsBoard({
                 {items.map((p) => {
                   const prog = projectProgress(p);
                   return (
-                    <Link key={p.id} href={`/projects/${p.id}`}>
-                      <Card className="gap-2 p-3 transition-colors hover:border-amber-400">
+                    <Link
+                      key={p.id}
+                      href={`/projects/${p.id}`}
+                      className="block rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <Card className="gap-2 p-3 transition-colors hover:border-amber-400 hover:shadow-sm">
                         <div className="flex items-center justify-between">
                           <p className="text-sm font-semibold">
                             {p.work_order?.client_name ?? "Project"}

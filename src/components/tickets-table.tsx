@@ -1,8 +1,12 @@
 "use client";
 
+import Link from "next/link";
+import { Wrench, Plus } from "lucide-react";
 import { DataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef } from "@/components/data-table";
+import { EmptyState } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { TicketStatusBadge } from "@/components/status-badges";
 import { TICKET_TYPE_LABELS } from "@/lib/constants";
 import { TICKET_STATUS, statusOptions } from "@/lib/domain/status";
@@ -93,6 +97,20 @@ export function TicketsTable({ tickets }: { tickets: ServiceTicket[] }) {
       }}
       noun="tickets"
       emptyMessage="No tickets found."
+      emptyState={
+        <EmptyState
+          icon={Wrench}
+          title="No service tickets yet"
+          description="Raise a routine 6-month check or an ad-hoc service request for a commissioned site."
+          action={
+            <Button asChild>
+              <Link href="/tickets/new">
+                <Plus className="mr-2 h-4 w-4" /> New Ticket
+              </Link>
+            </Button>
+          }
+        />
+      }
       getRowHref={(t) => `/tickets/${t.id}`}
     />
   );

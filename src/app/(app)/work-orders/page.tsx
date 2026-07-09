@@ -6,6 +6,8 @@ import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { WorkOrdersTable } from "@/components/work-orders-table";
 
+export const metadata = { title: "Work Orders" };
+
 export default async function WorkOrdersPage() {
   const profile = await requireProfile();
   const isAdmin = profile.role === "admin";

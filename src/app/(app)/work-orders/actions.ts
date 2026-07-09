@@ -6,6 +6,7 @@ import { requireAdmin, requireProfile } from "@/lib/auth";
 import { projectsRepository, workOrdersRepository } from "@/server/data";
 import { dec, num, str, text } from "@/server/form";
 import { todayISO } from "@/lib/format";
+import { withFlash } from "@/lib/flash";
 
 export async function createWorkOrder(formData: FormData) {
   const profile = await requireProfile();
@@ -46,7 +47,7 @@ export async function createWorkOrder(formData: FormData) {
   if (error) redirect(`/work-orders/new?error=${encodeURIComponent(error)}`);
 
   revalidatePath("/work-orders");
-  redirect("/work-orders");
+  redirect(withFlash("/work-orders", "Work order created."));
 }
 
 export async function approveWorkOrder(formData: FormData) {
@@ -80,7 +81,7 @@ export async function approveWorkOrder(formData: FormData) {
   revalidatePath("/work-orders");
   revalidatePath("/projects");
   revalidatePath(`/work-orders/${id}`);
-  redirect(`/work-orders/${id}`);
+  redirect(withFlash(`/work-orders/${id}`, "Work order approved — project created."));
 }
 
 export async function rejectWorkOrder(formData: FormData) {
@@ -92,7 +93,7 @@ export async function rejectWorkOrder(formData: FormData) {
 
   revalidatePath("/work-orders");
   revalidatePath(`/work-orders/${id}`);
-  redirect(`/work-orders/${id}`);
+  redirect(withFlash(`/work-orders/${id}`, "Work order rejected."));
 }
 
 export async function deleteWorkOrder(formData: FormData) {
@@ -103,5 +104,5 @@ export async function deleteWorkOrder(formData: FormData) {
   if (error) redirect(`/work-orders/${id}?error=${encodeURIComponent(error)}`);
 
   revalidatePath("/work-orders");
-  redirect("/work-orders");
+  redirect(withFlash("/work-orders", "Work order deleted."));
 }
