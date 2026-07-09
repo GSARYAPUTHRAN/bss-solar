@@ -8,9 +8,9 @@ test("admin can search the work orders list server-side", async ({ page }) => {
   await expect(page).toHaveURL(/\/$|\/\?/);
 
   await page.goto("/work-orders");
-  await expect(page.getByText("Meera Nair")).toBeVisible();
 
-  // Debounced search pushes ?q= to the URL and the server returns the match.
+  // Debounced search pushes ?q= to the URL and the server returns the match
+  // (robust to how many rows exist / which page it would otherwise be on).
   await page.getByLabel("Search").fill("Meera");
   await expect(page).toHaveURL(/q=Meera/);
   await expect(page.getByText("Meera Nair")).toBeVisible();
