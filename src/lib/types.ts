@@ -62,6 +62,55 @@ export interface Project {
   milestones?: ProjectMilestone[];
 }
 
+/** Flattened rows from the list views (server-side pagination). */
+export interface WorkOrderListRow {
+  id: string;
+  coordinator_id: string;
+  client_name: string;
+  client_phone: string | null;
+  address: string | null;
+  plant_capacity: string;
+  advance_amount: number | null;
+  total_cost: number;
+  order_date: string;
+  status: WorkOrderStatus;
+  created_at: string;
+  updated_at: string;
+  coordinator_name: string | null;
+  project_id: string | null;
+  current_stage: ProjectStage | null;
+  is_completed: boolean | null;
+}
+
+export interface TicketListRow {
+  id: string;
+  ticket_no: string | null;
+  ticket_type: TicketType;
+  status: TicketStatus;
+  scheduled_date: string | null;
+  service_date: string | null;
+  total: number | null;
+  created_at: string;
+  project_id: string | null;
+  client_name: string | null;
+}
+
+export interface ProjectListRow {
+  id: string;
+  coordinator_id: string;
+  current_stage: ProjectStage;
+  is_completed: boolean;
+  created_at: string;
+  started_at: string;
+  completed_at: string | null;
+  client_name: string | null;
+  plant_capacity: string | null;
+  total_cost: number | null;
+  coordinator_name: string | null;
+  milestones_done: number;
+  milestones_total: number;
+}
+
 export interface ProjectMilestone {
   id: string;
   project_id: string;

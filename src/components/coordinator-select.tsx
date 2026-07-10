@@ -19,12 +19,16 @@ export function CoordinatorSelect({
   defaultValue,
   includeSelf,
   placeholder = "Select coordinator",
+  id,
+  "aria-label": ariaLabel,
 }: {
   name: string;
   coordinators: Coordinator[];
   defaultValue?: string;
   includeSelf?: Coordinator;
   placeholder?: string;
+  id?: string;
+  "aria-label"?: string;
 }) {
   const list = [...coordinators];
   if (includeSelf && !list.some((c) => c.id === includeSelf.id)) {
@@ -33,7 +37,7 @@ export function CoordinatorSelect({
 
   return (
     <Select name={name} defaultValue={defaultValue}>
-      <SelectTrigger className="w-full">
+      <SelectTrigger id={id} aria-label={ariaLabel ?? placeholder} className="w-full">
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>

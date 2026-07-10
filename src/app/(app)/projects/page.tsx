@@ -1,16 +1,33 @@
 import { requireProfile } from "@/lib/auth";
 import { profilesRepository, projectsRepository } from "@/server/data";
+import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
 import { ProjectsBoard } from "@/components/projects-board";
 import { ProjectsTable } from "@/components/projects-table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ProjectsTabs } from "@/components/projects-tabs";
 
-export default async function ProjectsPage() {
+export const metadata = { title: "Project Tracker" };
+
+export default async function ProjectsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const profile = await requireProfile();
   const isAdmin = profile.role === "admin";
+  const sp = await searchParams;
+  const view = (Array.isArray(sp.view) ? sp.view[0] : sp.view) ?? "board";
 
-  const [projects, coordinators] = await Promise.all([
+  const params = parsePageParams(sp, {
+    filterKeys: ["status", "stage", "coordinator"],
+    defaultSort: "created_at",
+    defaultDir: "desc",
+  });
+
+  // Board = all active projects (bounded); list = server-paginated flat rows.
+  const [boardProjects, listPage, coordinators] = await Promise.all([
     projectsRepository.list(),
+    projectsRepository.page(params),
     isAdmin ? profilesRepository.coordinators() : Promise.resolve([]),
   ]);
 
@@ -20,26 +37,28 @@ export default async function ProjectsPage() {
         title="Project Tracker"
         description="KSEB / ANERT installation pipeline. Track milestones on the board, or browse every project in the list."
       />
-      <Tabs defaultValue="board">
-        <TabsList>
-          <TabsTrigger value="board">Board</TabsTrigger>
-          <TabsTrigger value="list">List</TabsTrigger>
-        </TabsList>
-        <TabsContent value="board" className="mt-4">
+      <ProjectsTabs
+        view={view}
+        board={
           <ProjectsBoard
-            projects={projects}
+            projects={boardProjects}
             coordinators={coordinators}
             isAdmin={isAdmin}
           />
-        </TabsContent>
-        <TabsContent value="list" className="mt-4">
+        }
+        list={
           <ProjectsTable
-            projects={projects}
+            projects={listPage.rows}
             coordinators={coordinators}
             isAdmin={isAdmin}
+            server={{
+              total: listPage.total,
+              page: listPage.page,
+              pageSize: listPage.pageSize,
+            }}
           />
-        </TabsContent>
-      </Tabs>
+        }
+      />
     </Page>
   );
 }

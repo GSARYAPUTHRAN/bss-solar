@@ -58,6 +58,8 @@ export function LoadingProvider({ children }: { children: ReactNode }) {
       showTimer.current = setTimeout(() => setVisible(true), 150);
     } else {
       if (showTimer.current) clearTimeout(showTimer.current);
+      // Deliberate: hide as soon as the in-flight counter drains.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setVisible(false);
     }
     return () => {
@@ -65,10 +67,12 @@ export function LoadingProvider({ children }: { children: ReactNode }) {
     };
   }, [pending]);
 
-  // Navigation or server-action redirect completed.
+  // Navigation or server-action redirect completed — reset the loader.
   useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect */
     setPending(0);
     setVisible(false);
+    /* eslint-enable react-hooks/set-state-in-effect */
   }, [pathname, searchParams]);
 
   // Install fetch middleware + form submit tracking.
@@ -98,7 +102,7 @@ export function LoadingProvider({ children }: { children: ReactNode }) {
       document.removeEventListener("submit", onSubmit, true);
       document.removeEventListener("click", onClick, true);
     };
-  }, [pathname, trackStart]);
+  }, [pathname, trackStart, trackEnd]);
 
   const value = useMemo(
     () => ({ isLoading: visible, trackStart, trackEnd, trackPromise }),

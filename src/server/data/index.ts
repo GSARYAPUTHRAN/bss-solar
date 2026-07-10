@@ -9,3 +9,5 @@ export type {
 } from "./tickets.repository";
 export { profilesRepository } from "./profiles.repository";
 export type { Coordinator } from "./profiles.repository";
+export { metricsRepository } from "./metrics.repository";
+export type { DashboardMetrics } from "./metrics.repository";

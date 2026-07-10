@@ -35,6 +35,8 @@ export interface DataTableProps<T> {
   /** Plural noun for the pagination summary (e.g. "work orders"). */
   noun?: string;
   emptyMessage?: string;
+  /** Rich empty-state node rendered when there are zero rows (overrides emptyMessage). */
+  emptyState?: ReactNode;
   /** Stable row key (defaults to `row.id`). */
   getRowId?: (row: T) => string;
   /** If provided, clicking a row navigates here. */
@@ -54,6 +56,7 @@ export function DataTable<T>({
   pageSize = 10,
   noun = "rows",
   emptyMessage = "No records found.",
+  emptyState,
   getRowId = (row) => (row as { id: string }).id,
   getRowHref,
   onRowClick,
@@ -143,11 +146,16 @@ export function DataTable<T>({
           <TableBody>
             {table.paged.length === 0 ? (
               <TableRow>
-                <TableCell
-                  colSpan={visibleColumns.length}
-                  className="h-24 text-center text-muted-foreground"
-                >
-                  {emptyMessage}
+                <TableCell colSpan={visibleColumns.length} className="p-0">
+                  {data.length === 0 && emptyState ? (
+                    <div className="py-6">{emptyState}</div>
+                  ) : (
+                    <div className="flex h-24 items-center justify-center text-muted-foreground">
+                      {data.length === 0
+                        ? emptyMessage
+                        : "No matches for your search or filters."}
+                    </div>
+                  )}
                 </TableCell>
               </TableRow>
             ) : (

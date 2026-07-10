@@ -1,16 +1,40 @@
 import { createClient } from "@/lib/supabase/server";
+import type { Database } from "@/lib/supabase/database.types";
+import { LIST_QUERY_LIMIT } from "@/lib/constants";
+import {
+  rangeFor,
+  sanitizeSearch,
+  type PageParams,
+  type PageResult,
+} from "@/lib/pagination";
+
+const TICKET_SORT_COLUMNS = new Set([
+  "created_at",
+  "scheduled_date",
+  "total",
+  "client_name",
+  "ticket_no",
+]);
+
+// The jsonb reading columns are typed as `Json` by the generated schema; the
+// app models them as structured arrays, so cast explicitly at this boundary.
+type TicketRowUpdate = Database["public"]["Tables"]["service_tickets"]["Update"];
 import type {
   MpptReading,
   ServiceTicket,
   SpvStringReading,
+  TicketListRow,
   TicketStatus,
   TicketType,
 } from "@/lib/types";
 
-const SELECT_LIST = `*,
+// List projection: only what the tickets table renders/searches. Deliberately
+// excludes the ~30 detail columns and the JSONB reading arrays (fetched only in
+// the detail view) to keep list payloads small.
+const SELECT_LIST = `id, ticket_no, ticket_type, status, scheduled_date, total,
   project:projects!service_tickets_project_id_fkey(
     id,
-    work_order:work_orders!projects_work_order_id_fkey(client_name, address, client_phone)
+    work_order:work_orders!projects_work_order_id_fkey(client_name)
   )`;
 
 const SELECT_DETAIL = `*,
@@ -21,7 +45,8 @@ const SELECT_DETAIL = `*,
 
 export interface TicketCreateInput {
   project_id: string | null;
-  ticket_no: string;
+  /** Optional — assigned by a DB sequence/trigger when omitted. */
+  ticket_no?: string;
   ticket_type: TicketType;
   status: TicketStatus;
   assigned_to: string | null;
@@ -66,13 +91,51 @@ export interface TicketUpdateInput {
 }
 
 export const ticketsRepository = {
-  async list(): Promise<ServiceTicket[]> {
+  async list(limit: number = LIST_QUERY_LIMIT): Promise<ServiceTicket[]> {
     const supabase = await createClient();
     const { data } = await supabase
       .from("service_tickets")
       .select(SELECT_LIST)
-      .order("created_at", { ascending: false });
-    return (data as ServiceTicket[]) ?? [];
+      .order("created_at", { ascending: false })
+      .limit(limit);
+    return (data as unknown as ServiceTicket[]) ?? [];
+  },
+
+  /** Server-side paginated/filtered/sorted page from the flattened view. */
+  async page(params: PageParams): Promise<PageResult<TicketListRow>> {
+    const supabase = await createClient();
+    const [from, to] = rangeFor(params.page, params.pageSize);
+
+    let query = supabase
+      .from("service_tickets_list")
+      .select("*", { count: "exact" });
+
+    const q = sanitizeSearch(params.q);
+    if (q) {
+      const like = `%${q}%`;
+      query = query.or(`ticket_no.ilike.${like},client_name.ilike.${like}`);
+    }
+    if (params.filters.type) {
+      query = query.eq("ticket_type", params.filters.type as TicketType);
+    }
+    if (params.filters.status) {
+      query = query.eq("status", params.filters.status as TicketStatus);
+    }
+
+    const sortCol = TICKET_SORT_COLUMNS.has(params.sort ?? "")
+      ? (params.sort as "created_at")
+      : "created_at";
+    query = query
+      .order(sortCol, { ascending: params.dir === "asc" })
+      .range(from, to);
+
+    const { data, count } = await query;
+    return {
+      rows: (data as TicketListRow[]) ?? [],
+      total: count ?? 0,
+      page: params.page,
+      pageSize: params.pageSize,
+    };
   },
 
   async byId(id: string): Promise<ServiceTicket | null> {
@@ -82,14 +145,7 @@ export const ticketsRepository = {
       .select(SELECT_DETAIL)
       .eq("id", id)
       .maybeSingle();
-    return (data as ServiceTicket) ?? null;
-  },
-
-  /** Minimal projection for dashboard KPI counts. */
-  async statuses(): Promise<Pick<ServiceTicket, "id" | "status">[]> {
-    const supabase = await createClient();
-    const { data } = await supabase.from("service_tickets").select("id, status");
-    return (data as Pick<ServiceTicket, "id" | "status">[]) ?? [];
+    return (data as unknown as ServiceTicket) ?? null;
   },
 
   async listByProject(projectId: string): Promise<ServiceTicket[]> {
@@ -121,7 +177,7 @@ export const ticketsRepository = {
     const supabase = await createClient();
     const { error } = await supabase
       .from("service_tickets")
-      .update(patch)
+      .update(patch as unknown as TicketRowUpdate)
       .eq("id", id);
     return { error: error?.message ?? null };
   },

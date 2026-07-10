@@ -1,5 +1,6 @@
 import { ClipboardList, KanbanSquare, Phone, Wrench } from "lucide-react";
 import { BssLogo } from "@/components/bss-logo";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { COMPANY } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +70,9 @@ export function LoginShell({
           className,
         )}
       >
+        <div className="absolute right-3 top-3">
+          <ThemeToggle />
+        </div>
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 bg-[radial-gradient(70%_60%_at_50%_0%,var(--color-primary)/8%,transparent)] lg:hidden"

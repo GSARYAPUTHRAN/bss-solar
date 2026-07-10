@@ -4,30 +4,20 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
 import { projectsRepository } from "@/server/data";
+import { deriveProjectStage } from "@/lib/domain/project";
 import { enumValue, str, text } from "@/server/form";
-import type { MilestoneStatus, ProjectStage } from "@/lib/types";
+import type { MilestoneStatus } from "@/lib/types";
 
 /** Recompute a project's current stage + completion from its milestones. */
 async function recomputeProjectStage(projectId: string) {
   const milestones = await projectsRepository.milestones(projectId);
-  if (milestones.length === 0) return;
-
-  const allCompleted = milestones.every((m) => m.status === "completed");
-  const started = milestones.filter((m) => m.status !== "pending");
-
-  let currentStage: ProjectStage;
-  if (allCompleted) {
-    currentStage = milestones[milestones.length - 1].stage;
-  } else if (started.length > 0) {
-    currentStage = started[started.length - 1].stage;
-  } else {
-    currentStage = milestones[0].stage;
-  }
+  const derived = deriveProjectStage(milestones);
+  if (!derived) return;
 
   await projectsRepository.setProgress(projectId, {
-    current_stage: currentStage,
-    is_completed: allCompleted,
-    completed_at: allCompleted ? new Date().toISOString() : null,
+    current_stage: derived.currentStage,
+    is_completed: derived.isCompleted,
+    completed_at: derived.isCompleted ? new Date().toISOString() : null,
   });
 }
 

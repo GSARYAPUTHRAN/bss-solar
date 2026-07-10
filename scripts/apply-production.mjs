@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { createClient } from "@supabase/supabase-js";
 
-const PROJECT_REF = "naexdhmutckbxuhqwdib";
+// Override per environment; falls back to the current production project.
+const PROJECT_REF = process.env.SUPABASE_PROJECT_REF ?? "naexdhmutckbxuhqwdib";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SCHEMA_PATH = join(ROOT, "supabase", "schema.sql");
 

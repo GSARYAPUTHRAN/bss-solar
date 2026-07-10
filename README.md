@@ -22,7 +22,10 @@ installation tracking, team management, and a maintenance service-ticketing syst
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
 - **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
 - **Team Management** — admins can add staff accounts, assign roles, and search/filter the team list.
-- **Dashboard** — KPI cards plus paginated, sortable, and filterable tables across all modules.
+- **Onboarding import** — admins bulk-load existing projects from a CSV (paste or upload); each row creates an approved work order + project at the specified stage, with a per-row result report.
+- **Dashboard** — KPI cards (single aggregate query) plus recent-activity tables.
+- **Scalable lists** — every list paginates, filters, sorts and searches **server-side** (URL-driven) via RLS-respecting Postgres views, so they hold up at large data volumes.
+- **Light / dark theme** — system-aware with a toggle; preference persists.
 
 ## Getting Started
 
@@ -132,11 +135,34 @@ public/brand/                  # Official logo assets from bsssolar.com
 ## Scripts
 
 ```bash
-npm run dev      # Start dev server
-npm run build    # Production build
-npm run start    # Start production server
-npm run lint     # ESLint
+npm run dev        # Start dev server
+npm run build      # Production build
+npm run start      # Start production server
+npm run lint       # ESLint (fails on warnings)
+npm run typecheck  # tsc --noEmit
+npm run test       # Vitest unit tests
+npm run verify     # typecheck + lint + unit + build (pre-push gate)
+npm run db:types   # Regenerate src/lib/supabase/database.types.ts from local DB
 ```
+
+## Testing
+
+| Layer | Tool | Command | Needs |
+| ----- | ---- | ------- | ----- |
+| Unit | Vitest | `npm run test` | — |
+| Integration (RLS, triggers, RPCs) | Vitest + local Supabase | `npm run test:integration` | `npx supabase start` |
+| End-to-end (critical flows) | Playwright | `npm run test:e2e` | `supabase start` + `npm run build` |
+
+- **Integration tests** exercise real Row Level Security and DB triggers against a
+  local Supabase stack — they assert that a coordinator cannot escalate to admin,
+  cannot self-approve work orders, tenant data stays isolated, approval seeds the 9
+  milestones, and ticket numbers are unique.
+- **E2E** covers login/RBAC redirects and work-order creation with Playwright.
+- CI (`.github/workflows/ci.yml`) runs all of the above on every PR. See
+  **[DEPLOY.md](DEPLOY.md)** for the branch-protection setup that gates merges.
+
+> First E2E/integration run: `npx supabase start` (Docker) and
+> `npx playwright install chromium`.
 
 ## Deploy to production
 

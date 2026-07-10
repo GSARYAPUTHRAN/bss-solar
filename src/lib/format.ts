@@ -1,3 +1,12 @@
+/**
+ * Today's date as YYYY-MM-DD in the given IANA time zone (defaults to India).
+ * Avoids the toISOString() off-by-one where an early-morning IST timestamp
+ * resolves to the previous UTC day. en-CA formats as ISO (YYYY-MM-DD).
+ */
+export function todayISO(timeZone = "Asia/Kolkata"): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone }).format(new Date());
+}
+
 export function formatCurrency(value: number | null | undefined): string {
   const n = Number(value ?? 0);
   return new Intl.NumberFormat("en-IN", {

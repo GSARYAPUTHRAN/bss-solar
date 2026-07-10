@@ -1,10 +1,5 @@
 import type { ProjectStage, TicketType } from "./types";
-import {
-  MILESTONE_STATUS,
-  TICKET_STATUS,
-  WORK_ORDER_STATUS,
-  statusLabels,
-} from "./domain/status";
+import { MILESTONE_STATUS, TICKET_STATUS, statusLabels } from "./domain/status";
 
 export const PROJECT_STAGES: { value: ProjectStage; label: string }[] = [
   { value: "site_feasibility_survey", label: "Site Feasibility Survey" },
@@ -32,7 +27,6 @@ export const STAGE_ORDER: ProjectStage[] = PROJECT_STAGES.map((s) => s.value);
 
 // Status labels are derived from the status registry (single source of truth).
 export const MILESTONE_STATUS_LABELS = statusLabels(MILESTONE_STATUS);
-export const WORK_ORDER_STATUS_LABELS = statusLabels(WORK_ORDER_STATUS);
 export const TICKET_STATUS_LABELS = statusLabels(TICKET_STATUS);
 
 export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
@@ -41,6 +35,25 @@ export const TICKET_TYPE_LABELS: Record<TicketType, string> = {
 };
 
 export const COMMON_CAPACITIES = ["1kW", "2kW", "3kW", "5kW", "8kW", "10kW"];
+
+/** Minimum staff-account password length (also enforce in Supabase Auth). */
+export const MIN_PASSWORD_LENGTH = 12;
+
+/** Login throttle: max attempts per IP+email within the window. */
+export const LOGIN_RATE_LIMIT = { max: 5, windowMs: 15 * 60 * 1000 };
+
+/**
+ * Upper bound on rows a list query returns to the interactive client tables.
+ * Keeps payload/memory bounded; the newest rows are always included. Raise this
+ * (or move to true server-side pagination) if a single list ever exceeds it.
+ */
+export const LIST_QUERY_LIMIT = 1000;
+
+/** Rows shown in the dashboard's "recent activity" tables. */
+export const DASHBOARD_RECENT = 25;
+
+/** Cap on options loaded into the project picker on the ticket form. */
+export const PROJECT_PICKER_LIMIT = 200;
 
 export const COMPANY = {
   name: "BSS Solar",

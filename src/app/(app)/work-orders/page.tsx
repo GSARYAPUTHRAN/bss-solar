@@ -2,16 +2,29 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { requireProfile } from "@/lib/auth";
 import { profilesRepository, workOrdersRepository } from "@/server/data";
+import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { WorkOrdersTable } from "@/components/work-orders-table";
 
-export default async function WorkOrdersPage() {
+export const metadata = { title: "Work Orders" };
+
+export default async function WorkOrdersPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const profile = await requireProfile();
   const isAdmin = profile.role === "admin";
 
-  const [workOrders, coordinators] = await Promise.all([
-    workOrdersRepository.list(),
+  const params = parsePageParams(await searchParams, {
+    filterKeys: ["status", "coordinator"],
+    defaultSort: "order_date",
+    defaultDir: "desc",
+  });
+
+  const [pageResult, coordinators] = await Promise.all([
+    workOrdersRepository.page(params),
     isAdmin ? profilesRepository.coordinators() : Promise.resolve([]),
   ]);
 
@@ -33,9 +46,14 @@ export default async function WorkOrdersPage() {
       </PageHeader>
 
       <WorkOrdersTable
-        workOrders={workOrders}
+        workOrders={pageResult.rows}
         coordinators={coordinators}
         isAdmin={isAdmin}
+        server={{
+          total: pageResult.total,
+          page: pageResult.page,
+          pageSize: pageResult.pageSize,
+        }}
       />
     </Page>
   );

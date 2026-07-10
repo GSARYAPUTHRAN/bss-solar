@@ -2,14 +2,26 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { requireAdmin } from "@/lib/auth";
 import { ticketsRepository } from "@/server/data";
+import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { TicketsTable } from "@/components/tickets-table";
 
-export default async function TicketsPage() {
+export const metadata = { title: "Service Tickets" };
+
+export default async function TicketsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   await requireAdmin();
 
-  const tickets = await ticketsRepository.list();
+  const params = parsePageParams(await searchParams, {
+    filterKeys: ["type", "status"],
+    defaultSort: "created_at",
+    defaultDir: "desc",
+  });
+  const pageResult = await ticketsRepository.page(params);
 
   return (
     <Page>
@@ -24,7 +36,14 @@ export default async function TicketsPage() {
         </Button>
       </PageHeader>
 
-      <TicketsTable tickets={tickets} />
+      <TicketsTable
+        tickets={pageResult.rows}
+        server={{
+          total: pageResult.total,
+          page: pageResult.page,
+          pageSize: pageResult.pageSize,
+        }}
+      />
     </Page>
   );
 }

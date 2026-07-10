@@ -1,0 +1,145 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master, production]
+  push:
+    branches: [master, production]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Placeholder public values so the production build never fails on missing env.
+  # Real values are injected in the integration/e2e jobs from the local stack.
+  NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+
+jobs:
+  quality:
+    name: Typecheck · Lint · Unit · Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Unit tests
+        run: npm run test
+      - name: Build
+        run: npm run build
+
+  integration:
+    name: RLS & DB integration (local Supabase)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start Supabase
+        run: supabase start
+      - name: Export Supabase credentials
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          {
+            echo "SUPABASE_URL=$API_URL"
+            echo "SUPABASE_ANON_KEY=$ANON_KEY"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+          } >> "$GITHUB_ENV"
+      - name: Integration tests
+        run: npm run test:integration
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop --no-backup || true
+
+  e2e:
+    name: End-to-end (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Start Supabase
+        run: supabase start
+      - name: Export Supabase credentials
+        run: |
+          eval "$(supabase status -o env | sed 's/^/export /')"
+          {
+            echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL"
+            echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY"
+            echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+          } >> "$GITHUB_ENV"
+      - name: Build
+        run: npm run build
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: E2E tests
+        run: npm run test:e2e
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+      - name: Stop Supabase
+        if: always()
+        run: supabase stop --no-backup || true
+
+  # Apply pending migrations to the PRODUCTION database, but only after the full
+  # pipeline passes on master. The migrations in this repo are backward
+  # compatible (additive views/functions/triggers/grants), so the schema is made
+  # ready before the production code deploy. Requires three repo secrets:
+  #   SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD, SUPABASE_PROJECT_REF
+  # (Settings -> Secrets and variables -> Actions).
+  migrate-production:
+    name: Migrate production DB
+    runs-on: ubuntu-latest
+    needs: [quality, integration, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+      - name: Apply migrations to production
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+          PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          set -e
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ] || [ -z "$SUPABASE_DB_PASSWORD" ] || [ -z "$PROJECT_REF" ]; then
+            echo "::warning::Production migration skipped — add SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD and SUPABASE_PROJECT_REF repo secrets (Settings -> Secrets and variables -> Actions) to enable it."
+            exit 0
+          fi
+          echo "Applying migrations to production project $PROJECT_REF …"
+          supabase link --project-ref "$PROJECT_REF"
+          # Production was first provisioned from schema.sql, so the CLI has no
+          # record of the two original migrations. Mark them as already applied
+          # so `db push` only applies the new (idempotent) migrations rather than
+          # re-running init (which would fail on "type already exists").
+          supabase migration repair --status applied 20260606212913 || true
+          supabase migration repair --status applied 20260607120000 || true
+          supabase db push
+          echo "Production migrations applied."

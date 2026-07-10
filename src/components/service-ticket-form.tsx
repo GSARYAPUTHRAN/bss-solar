@@ -111,8 +111,11 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
         contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
       >
           <div className="space-y-1.5">
-            <Label className="text-xs">Ticket type</Label>
+            <Label htmlFor="ticket_type" className="text-xs">
+              Ticket type
+            </Label>
             <FormSelect
+              id="ticket_type"
               name="ticket_type"
               defaultValue={ticket.ticket_type}
               options={(Object.keys(TICKET_TYPE_LABELS) as TicketType[]).map(
@@ -121,8 +124,11 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs">Status</Label>
+            <Label htmlFor="ticket_status" className="text-xs">
+              Status
+            </Label>
             <FormSelect
+              id="ticket_status"
               name="status"
               defaultValue={ticket.status}
               options={(Object.keys(TICKET_STATUS_LABELS) as TicketStatus[]).map(

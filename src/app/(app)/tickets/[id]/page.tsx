@@ -13,7 +13,7 @@ import {
   FormError,
 } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { SubmitButton } from "@/components/submit-button";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import {
   Table,
   TableBody,
@@ -202,12 +202,17 @@ export default async function TicketDetailPage({
         </Section>
 
         <div className="flex justify-end">
-          <form action={deleteTicket}>
-            <input type="hidden" name="id" value={ticket.id} />
-            <SubmitButton variant="ghost" className="text-destructive" loadingText="Deleting…">
-              Delete Ticket
-            </SubmitButton>
-          </form>
+          <ConfirmSubmit
+            action={deleteTicket}
+            fields={{ id: ticket.id }}
+            triggerLabel="Delete Ticket"
+            triggerVariant="ghost"
+            triggerClassName="text-destructive hover:text-destructive"
+            title="Delete this service ticket?"
+            description="This permanently removes the ticket and its service sheet. This cannot be undone."
+            confirmLabel="Delete ticket"
+            loadingText="Deleting…"
+          />
         </div>
       </div>
     </Page>

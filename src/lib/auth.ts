@@ -1,9 +1,15 @@
+import { cache } from "react";
 import { redirect } from "next/navigation";
 import { homeForRole } from "@/config/navigation";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile, UserRole } from "./types";
 
-export async function getProfile(): Promise<Profile | null> {
+/**
+ * Resolve the current user's profile. Wrapped in React.cache so the layout and
+ * page in a single request share one `auth.getUser()` + profiles read instead
+ * of duplicating both round-trips.
+ */
+export const getProfile = cache(async (): Promise<Profile | null> => {
   const supabase = await createClient();
   const {
     data: { user },
@@ -12,12 +18,12 @@ export async function getProfile(): Promise<Profile | null> {
 
   const { data } = await supabase
     .from("profiles")
-    .select("*")
+    .select("id, full_name, phone, role, created_at")
     .eq("id", user.id)
     .single();
 
   return (data as Profile) ?? null;
-}
+});
 
 export async function requireProfile(): Promise<Profile> {
   const profile = await getProfile();

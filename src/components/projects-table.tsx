@@ -1,37 +1,42 @@
 "use client";
 
-import { DataTable } from "@/components/data-table";
-import type { ColumnDef, FilterDef } from "@/components/data-table";
+import { KanbanSquare } from "lucide-react";
+import { DataTable, ServerDataTable } from "@/components/data-table";
+import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
+import { EmptyState } from "@/components/layout";
 import { StageBadge } from "@/components/status-badges";
 import { PROJECT_STAGES } from "@/lib/constants";
 import { formatDate } from "@/lib/format";
 import type { Coordinator } from "@/server/data";
-import type { Project } from "@/lib/types";
+import type { ProjectListRow } from "@/lib/types";
 
-function progress(p: Project) {
-  const ms = p.milestones ?? [];
-  const total = ms.length || 8;
-  const done = ms.filter((m) => m.status === "completed").length;
-  return `${done}/${total}`;
+function progress(p: ProjectListRow) {
+  const total = p.milestones_total || PROJECT_STAGES.length;
+  return `${p.milestones_done}/${total}`;
 }
 
 export function ProjectsTable({
   projects,
   coordinators,
   isAdmin,
+  server,
 }: {
-  projects: Project[];
+  projects: ProjectListRow[];
   coordinators: Coordinator[];
   isAdmin: boolean;
+  server?: { total: number; page: number; pageSize: number };
 }) {
-  const columns: ColumnDef<Project>[] = [
+  const columns: ColumnDef<ProjectListRow>[] = [
     {
-      id: "client",
+      id: "client_name",
       header: "Client",
+      sortable: true,
+      sortKey: "client_name",
+      sortAccessor: (p) => (p.client_name ?? "").toLowerCase(),
       cell: (p) => (
         <span className="font-medium hover:underline">
-          {p.work_order?.client_name ?? "Project"}
+          {p.client_name ?? "Project"}
         </span>
       ),
     },
@@ -39,19 +44,19 @@ export function ProjectsTable({
       id: "coordinator",
       header: "Coordinator",
       hidden: !isAdmin,
-      cell: (p) => p.coordinator?.full_name ?? "—",
+      cell: (p) => p.coordinator_name ?? "—",
     },
     {
       id: "capacity",
       header: "Capacity",
-      cell: (p) => p.work_order?.plant_capacity ?? "—",
+      cell: (p) => p.plant_capacity ?? "—",
     },
     {
       id: "stage",
       header: "Current Stage",
       cell: (p) =>
         p.is_completed ? (
-          <Badge className="border-transparent bg-emerald-100 text-emerald-800">
+          <Badge className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
             Commissioned
           </Badge>
         ) : (
@@ -63,12 +68,13 @@ export function ProjectsTable({
       id: "created",
       header: "Created",
       sortable: true,
+      sortKey: "created_at",
       sortAccessor: (p) => new Date(p.created_at).getTime(),
       cell: (p) => formatDate(p.created_at),
     },
   ];
 
-  const filters: FilterDef<Project>[] = [
+  const filters: FilterDef<ProjectListRow>[] = [
     {
       id: "status",
       placeholder: "Status",
@@ -103,16 +109,45 @@ export function ProjectsTable({
     },
   ];
 
+  const search: SearchDef<ProjectListRow> = {
+    placeholder: "Search client or coordinator…",
+    columns: ["client_name", "coordinator_name"],
+    predicate: (p, q) =>
+      (p.client_name ?? "").toLowerCase().includes(q) ||
+      (p.coordinator_name ?? "").toLowerCase().includes(q),
+  };
+
+  if (server) {
+    return (
+      <ServerDataTable
+        rows={projects}
+        total={server.total}
+        page={server.page}
+        pageSize={server.pageSize}
+        columns={columns}
+        filters={filters}
+        search={search}
+        noun="projects"
+        emptyMessage="No projects found."
+        emptyState={
+          <EmptyState
+            icon={KanbanSquare}
+            title="No projects yet"
+            description="A project starts automatically when a work order is approved. Approve one, or import existing projects from Onboarding."
+          />
+        }
+        defaultSort={{ key: "created_at", asc: false }}
+        getRowHref={(p) => `/projects/${p.id}`}
+      />
+    );
+  }
+
   return (
     <DataTable
       data={projects}
       columns={columns}
       filters={filters}
-      search={{
-        placeholder: "Search client…",
-        predicate: (p, q) =>
-          (p.work_order?.client_name ?? "").toLowerCase().includes(q),
-      }}
+      search={search}
       initialSort={{ id: "created", asc: false }}
       noun="projects"
       emptyMessage="No projects found."

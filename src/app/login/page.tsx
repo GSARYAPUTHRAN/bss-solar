@@ -5,6 +5,8 @@ import { FormError, FormField } from "@/components/layout";
 import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 
+export const metadata = { title: "Sign in" };
+
 export default async function LoginPage({
   searchParams,
 }: {

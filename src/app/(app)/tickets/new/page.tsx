@@ -19,6 +19,8 @@ import { FormSelect } from "@/components/form-select";
 import { TICKET_TYPE_LABELS } from "@/lib/constants";
 import type { TicketType } from "@/lib/types";
 
+export const metadata = { title: "New Service Ticket" };
+
 export default async function NewTicketPage({
   searchParams,
 }: {
@@ -45,6 +47,7 @@ export default async function NewTicketPage({
 
           <FormField
             label="Project / Site"
+            htmlFor="project_id"
             hint={
               projects.length === 0
                 ? "No projects yet. Approve a work order first."
@@ -52,6 +55,7 @@ export default async function NewTicketPage({
             }
           >
             <FormSelect
+              id="project_id"
               name="project_id"
               defaultValue={project_id}
               placeholder="Select a project"
@@ -63,8 +67,9 @@ export default async function NewTicketPage({
           </FormField>
 
           <FormGrid>
-            <FormField label="Ticket type">
+            <FormField label="Ticket type" htmlFor="ticket_type">
               <FormSelect
+                id="ticket_type"
                 name="ticket_type"
                 defaultValue="routine_6m"
                 options={(Object.keys(TICKET_TYPE_LABELS) as TicketType[]).map(
@@ -77,8 +82,9 @@ export default async function NewTicketPage({
             </FormField>
           </FormGrid>
 
-          <FormField label="Assign to">
+          <FormField label="Assign to" htmlFor="assigned_to">
             <FormSelect
+              id="assigned_to"
               name="assigned_to"
               placeholder="Unassigned"
               options={coordinators.map((c) => ({
@@ -104,7 +110,9 @@ export default async function NewTicketPage({
             <Button variant="outline" asChild>
               <Link href="/tickets">Cancel</Link>
             </Button>
-            <SubmitButton loadingText="Creating…">Create Ticket</SubmitButton>
+            <SubmitButton loadingText="Creating…" disabled={projects.length === 0}>
+              Create Ticket
+            </SubmitButton>
           </FormActions>
         </form>
       </Section>

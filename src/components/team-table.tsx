@@ -1,7 +1,7 @@
 "use client";
 
-import { DataTable } from "@/components/data-table";
-import type { ColumnDef, FilterDef } from "@/components/data-table";
+import { DataTable, ServerDataTable } from "@/components/data-table";
+import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { RoleEditor } from "@/components/role-editor";
 import { formatDate } from "@/lib/format";
@@ -19,18 +19,23 @@ function initials(name: string) {
 export function TeamTable({
   profiles,
   meId,
+  server,
 }: {
   profiles: Profile[];
   meId: string;
+  server?: { total: number; page: number; pageSize: number };
 }) {
   const columns: ColumnDef<Profile>[] = [
     {
       id: "member",
       header: "Member",
+      sortable: true,
+      sortKey: "full_name",
+      sortAccessor: (p) => p.full_name.toLowerCase(),
       cell: (p) => (
         <div className="flex items-center gap-3">
           <Avatar className="h-8 w-8">
-            <AvatarFallback className="bg-amber-100 text-xs font-semibold text-amber-800">
+            <AvatarFallback className="bg-amber-100 text-xs font-semibold text-amber-800 dark:bg-amber-500/15 dark:text-amber-300">
               {initials(p.full_name)}
             </AvatarFallback>
           </Avatar>
@@ -48,6 +53,7 @@ export function TeamTable({
       id: "joined",
       header: "Joined",
       sortable: true,
+      sortKey: "created_at",
       sortAccessor: (p) => p.created_at,
       cell: (p) => formatDate(p.created_at),
     },
@@ -73,17 +79,37 @@ export function TeamTable({
     },
   ];
 
+  const search: SearchDef<Profile> = {
+    placeholder: "Search name or phone…",
+    columns: ["full_name", "phone"],
+    predicate: (p, q) =>
+      p.full_name.toLowerCase().includes(q) ||
+      (p.phone ?? "").toLowerCase().includes(q),
+  };
+
+  if (server) {
+    return (
+      <ServerDataTable
+        rows={profiles}
+        total={server.total}
+        page={server.page}
+        pageSize={server.pageSize}
+        columns={columns}
+        filters={filters}
+        search={search}
+        noun="members"
+        emptyMessage="No team members found."
+        defaultSort={{ key: "full_name", asc: true }}
+      />
+    );
+  }
+
   return (
     <DataTable
       data={profiles}
       columns={columns}
       filters={filters}
-      search={{
-        placeholder: "Search name or phone…",
-        predicate: (p, q) =>
-          p.full_name.toLowerCase().includes(q) ||
-          (p.phone ?? "").toLowerCase().includes(q),
-      }}
+      search={search}
       noun="members"
       emptyMessage="No team members found."
     />

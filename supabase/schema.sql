@@ -197,9 +197,9 @@ alter table projects enable row level security;
 alter table project_milestones enable row level security;
 alter table service_tickets enable row level security;
 
--- PROFILES: user reads own; admin reads all; user updates own
+-- PROFILES: user reads own; admin reads all; user updates own (never role — see guard_profile_role)
 create policy profiles_select_self on profiles for select using (id = auth.uid() or is_admin());
-create policy profiles_update_self on profiles for update using (id = auth.uid() or is_admin());
+create policy profiles_update_self on profiles for update using (id = auth.uid()) with check (id = auth.uid());
 create policy profiles_admin_all on profiles for all using (is_admin());
 
 -- WORK ORDERS: coordinator owns; admin all
@@ -208,7 +208,8 @@ create policy wo_select on work_orders for select
 create policy wo_insert on work_orders for insert
   with check (coordinator_id = auth.uid() or is_admin());
 create policy wo_update on work_orders for update
-  using (is_admin() or coordinator_id = auth.uid());
+  using (is_admin() or coordinator_id = auth.uid())
+  with check (is_admin() or coordinator_id = auth.uid());
 create policy wo_delete on work_orders for delete using (is_admin());
 
 -- PROJECTS: coordinator sees own; admin all (only admin creates via approval)
@@ -233,3 +234,153 @@ create policy ticket_select on service_tickets for select using (
   )
 );
 create policy ticket_admin_write on service_tickets for all using (is_admin());
+
+-- ============ SECURITY & DATA-INTEGRITY GUARDS ============
+-- Guards allow server-side contexts (service-role key / superuser: auth.uid()
+-- is NULL) and admins; only a logged-in NON-admin is restricted.
+
+-- Only an admin may change a profile's role (blocks privilege escalation).
+create or replace function guard_profile_role()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.role is distinct from old.role
+     and auth.uid() is not null and not is_admin() then
+    raise exception 'Only an administrator can change a user role' using errcode = '42501';
+  end if;
+  return new;
+end; $$;
+create trigger t_profiles_guard_role before update on profiles
+  for each row execute function guard_profile_role();
+
+-- Only an admin may change work order status / reassign ownership.
+create or replace function guard_work_order_update()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is not null and not is_admin() then
+    if new.status is distinct from old.status then
+      raise exception 'Only an administrator can change a work order status' using errcode = '42501';
+    end if;
+    if new.coordinator_id is distinct from old.coordinator_id then
+      raise exception 'Only an administrator can reassign a work order' using errcode = '42501';
+    end if;
+  end if;
+  return new;
+end; $$;
+create trigger t_wo_guard before update on work_orders
+  for each row execute function guard_work_order_update();
+
+-- Atomically create the project when a work order is approved (un-bypassable).
+create or replace function create_project_on_approval()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.status = 'approved' and old.status is distinct from 'approved' then
+    insert into projects (work_order_id, coordinator_id)
+    values (new.id, new.coordinator_id)
+    on conflict (work_order_id) do nothing;
+  end if;
+  return new;
+end; $$;
+create trigger t_wo_create_project after update on work_orders
+  for each row execute function create_project_on_approval();
+
+-- ============ API ROLE GRANTS ============
+-- PostgREST roles need table privileges IN ADDITION to RLS (the real gate for
+-- anon/authenticated; service_role bypasses RLS). Idempotent.
+grant usage on schema public to anon, authenticated, service_role;
+grant select, insert, update, delete on all tables in schema public
+  to anon, authenticated, service_role;
+grant usage, select on all sequences in schema public
+  to anon, authenticated, service_role;
+grant execute on all functions in schema public
+  to anon, authenticated, service_role;
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to anon, authenticated, service_role;
+alter default privileges in schema public
+  grant usage, select on sequences to anon, authenticated, service_role;
+alter default privileges in schema public
+  grant execute on functions to anon, authenticated, service_role;
+
+-- ============ DASHBOARD AGGREGATES (scalability) ============
+-- Single aggregate query for the dashboard KPIs (SECURITY INVOKER: respects
+-- the caller's RLS). Avoids loading every row to count in the app.
+create or replace function dashboard_metrics()
+returns table (
+  total_work_orders bigint,
+  pending_approvals bigint,
+  active_projects bigint,
+  commissioned bigint,
+  open_tickets bigint,
+  approved_pipeline numeric
+)
+language sql stable security invoker set search_path = public as $$
+  select
+    (select count(*) from work_orders)::bigint,
+    (select count(*) from work_orders where status = 'pending')::bigint,
+    (select count(*) from projects where not is_completed)::bigint,
+    (select count(*) from projects where is_completed)::bigint,
+    (select count(*) from service_tickets
+       where status in ('open', 'scheduled', 'in_progress'))::bigint,
+    coalesce(
+      (select sum(total_cost) from work_orders where status = 'approved'), 0
+    )::numeric;
+$$;
+grant execute on function dashboard_metrics() to anon, authenticated, service_role;
+
+create index if not exists idx_projects_created_at on projects (created_at desc);
+create index if not exists idx_tickets_created_at on service_tickets (created_at desc);
+create index if not exists idx_work_orders_created_at on work_orders (created_at desc);
+create index if not exists idx_profiles_full_name on profiles (full_name);
+
+-- ============ SERVICE TICKET NUMBERING ============
+-- Monotonic, collision-free ticket numbers assigned on insert when not supplied.
+create sequence if not exists service_ticket_no_seq;
+create or replace function assign_ticket_no()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if new.ticket_no is null then
+    new.ticket_no := 'BSS-' || to_char((now() at time zone 'Asia/Kolkata'), 'YYMM')
+      || '-' || lpad(nextval('service_ticket_no_seq')::text, 4, '0');
+  end if;
+  return new;
+end; $$;
+create trigger t_ticket_assign_no before insert on service_tickets
+  for each row execute function assign_ticket_no();
+grant usage, select on sequence service_ticket_no_seq to anon, authenticated, service_role;
+
+-- ============ FLATTENED LIST VIEWS (server-side pagination) ============
+-- SECURITY INVOKER: the caller's RLS on base tables still applies.
+create or replace view work_orders_list with (security_invoker = true) as
+select
+  w.id, w.coordinator_id, w.client_name, w.client_phone, w.address,
+  w.plant_capacity, w.advance_amount, w.total_cost, w.order_date, w.status,
+  w.created_at, w.updated_at,
+  co.full_name as coordinator_name,
+  pr.id as project_id, pr.current_stage, pr.is_completed
+from work_orders w
+left join profiles co on co.id = w.coordinator_id
+left join projects pr on pr.work_order_id = w.id;
+
+create or replace view service_tickets_list with (security_invoker = true) as
+select
+  t.id, t.ticket_no, t.ticket_type, t.status, t.scheduled_date, t.service_date,
+  t.total, t.created_at, t.project_id,
+  wo.client_name
+from service_tickets t
+left join projects pr on pr.id = t.project_id
+left join work_orders wo on wo.id = pr.work_order_id;
+
+create or replace view projects_list with (security_invoker = true) as
+select
+  pr.id, pr.coordinator_id, pr.current_stage, pr.is_completed,
+  pr.created_at, pr.started_at, pr.completed_at,
+  wo.client_name, wo.plant_capacity, wo.total_cost,
+  co.full_name as coordinator_name,
+  (select count(*) from project_milestones m
+     where m.project_id = pr.id and m.status = 'completed') as milestones_done,
+  (select count(*) from project_milestones m where m.project_id = pr.id) as milestones_total
+from projects pr
+left join work_orders wo on wo.id = pr.work_order_id
+left join profiles co on co.id = pr.coordinator_id;
+
+grant select on work_orders_list, service_tickets_list, projects_list
+  to anon, authenticated, service_role;

@@ -6,6 +6,7 @@ import {
   KanbanSquare,
   Wrench,
   Users,
+  UploadCloud,
   type LucideIcon,
 } from "lucide-react";
 import type { NavIcon } from "@/config/navigation";
@@ -16,4 +17,5 @@ export const NAV_ICONS: Record<NavIcon, LucideIcon> = {
   projects: KanbanSquare,
   tickets: Wrench,
   team: Users,
+  onboarding: UploadCloud,
 };

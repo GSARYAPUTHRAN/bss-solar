@@ -17,6 +17,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { CoordinatorSelect } from "@/components/coordinator-select";
 import { COMMON_CAPACITIES } from "@/lib/constants";
+import { todayISO } from "@/lib/format";
+
+export const metadata = { title: "New Work Order" };
 
 export default async function NewWorkOrderPage({
   searchParams,
@@ -27,7 +30,7 @@ export default async function NewWorkOrderPage({
   const { error } = await searchParams;
   const coordinators =
     profile.role === "admin" ? await profilesRepository.coordinators() : [];
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
 
   return (
     <Page size="narrow">
@@ -42,8 +45,9 @@ export default async function NewWorkOrderPage({
           <FormError message={error} />
 
           {profile.role === "admin" && (
-            <FormField label="Coordinator">
+            <FormField label="Coordinator" htmlFor="coordinator_id">
               <CoordinatorSelect
+                id="coordinator_id"
                 name="coordinator_id"
                 coordinators={coordinators}
                 defaultValue={profile.id}
