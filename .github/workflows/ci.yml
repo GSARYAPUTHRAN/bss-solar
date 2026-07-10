@@ -135,5 +135,11 @@ jobs:
           fi
           echo "Applying migrations to production project $PROJECT_REF …"
           supabase link --project-ref "$PROJECT_REF"
+          # Production was first provisioned from schema.sql, so the CLI has no
+          # record of the two original migrations. Mark them as already applied
+          # so `db push` only applies the new (idempotent) migrations rather than
+          # re-running init (which would fail on "type already exists").
+          supabase migration repair --status applied 20260606212913 || true
+          supabase migration repair --status applied 20260607120000 || true
           supabase db push
           echo "Production migrations applied."
