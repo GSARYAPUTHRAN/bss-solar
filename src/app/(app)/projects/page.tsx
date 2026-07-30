@@ -5,6 +5,7 @@ import { Page, PageHeader } from "@/components/layout";
 import { ProjectsBoard } from "@/components/projects-board";
 import { ProjectsTable } from "@/components/projects-table";
 import { ProjectsTabs } from "@/components/projects-tabs";
+import { isOfficeRole } from "@/lib/domain/role";
 
 export const metadata = { title: "Project Tracker" };
 
@@ -14,7 +15,7 @@ export default async function ProjectsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const profile = await requireProfile();
-  const isAdmin = profile.role === "admin";
+  const isAdmin = isOfficeRole(profile.role);
   const sp = await searchParams;
   const view = (Array.isArray(sp.view) ? sp.view[0] : sp.view) ?? "board";
 

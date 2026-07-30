@@ -11,8 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { PaymentBadge } from "@/components/status-badges";
 import { PROJECT_STAGES, STAGE_LABELS } from "@/lib/constants";
 import { projectProgress } from "@/lib/domain/project";
+import { isPaymentPending } from "@/lib/domain/payment";
 import { formatCurrency } from "@/lib/format";
 import type { Coordinator } from "@/server/data";
 import type { Project, ProjectStage } from "@/lib/types";
@@ -36,6 +38,8 @@ export function ProjectsBoard({
     if (showCompleted === "active") rows = rows.filter((p) => !p.is_completed);
     if (showCompleted === "completed")
       rows = rows.filter((p) => p.is_completed);
+    if (showCompleted === "payment_pending")
+      rows = rows.filter((p) => isPaymentPending(p, p.work_order ?? {}));
     return rows;
   }, [projects, coordinator, showCompleted]);
 
@@ -52,12 +56,15 @@ export function ProjectsBoard({
     <div className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <Select value={showCompleted} onValueChange={setShowCompleted}>
-          <SelectTrigger className="w-full sm:w-44">
+          <SelectTrigger className="w-full sm:w-60">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="active">Active projects</SelectItem>
             <SelectItem value="completed">Commissioned</SelectItem>
+            <SelectItem value="payment_pending">
+              Commissioned · payment pending
+            </SelectItem>
             <SelectItem value="all">All projects</SelectItem>
           </SelectContent>
         </Select>
@@ -125,6 +132,13 @@ export function ProjectsBoard({
                           <p className="text-xs text-muted-foreground">
                             {p.coordinator?.full_name}
                           </p>
+                        )}
+                        {isPaymentPending(p, p.work_order ?? {}) && (
+                          <PaymentBadge
+                            source={p.work_order ?? {}}
+                            isCompleted
+                            className="w-fit text-[10px]"
+                          />
                         )}
                         <div className="mt-1">
                           <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">

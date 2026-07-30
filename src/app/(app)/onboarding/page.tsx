@@ -58,6 +58,20 @@ export default async function OnboardingPage() {
                   coordinator is used.
                 </li>
                 <li>Dates use YYYY-MM-DD.</li>
+                <li>
+                  Money received ={" "}
+                  <span className="font-mono text-xs">advance_amount</span> +{" "}
+                  <span className="font-mono text-xs">first_payment_amount</span>{" "}
+                  +{" "}
+                  <span className="font-mono text-xs">
+                    second_payment_amount
+                  </span>
+                  . A commissioned row with a balance left is flagged{" "}
+                  <strong>payment pending</strong>.
+                </li>
+                <li>
+                  Every column except the three required ones may be left blank.
+                </li>
               </ul>
             </div>
             <details className="rounded-md border p-2">

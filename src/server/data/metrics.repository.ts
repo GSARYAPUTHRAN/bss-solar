@@ -7,6 +7,10 @@ export interface DashboardMetrics {
   commissioned: number;
   openTickets: number;
   approvedPipeline: number;
+  /** Commissioned projects whose contract value is not fully collected. */
+  commissionedUnpaid: number;
+  /** Total balance due across those projects. */
+  outstandingAmount: number;
 }
 
 const EMPTY: DashboardMetrics = {
@@ -16,6 +20,8 @@ const EMPTY: DashboardMetrics = {
   commissioned: 0,
   openTickets: 0,
   approvedPipeline: 0,
+  commissionedUnpaid: 0,
+  outstandingAmount: 0,
 };
 
 export const metricsRepository = {
@@ -31,6 +37,8 @@ export const metricsRepository = {
       commissioned: number;
       open_tickets: number;
       approved_pipeline: number;
+      commissioned_unpaid: number;
+      outstanding_amount: number;
     };
     return {
       totalWorkOrders: Number(row.total_work_orders ?? 0),
@@ -39,6 +47,8 @@ export const metricsRepository = {
       commissioned: Number(row.commissioned ?? 0),
       openTickets: Number(row.open_tickets ?? 0),
       approvedPipeline: Number(row.approved_pipeline ?? 0),
+      commissionedUnpaid: Number(row.commissioned_unpaid ?? 0),
+      outstandingAmount: Number(row.outstanding_amount ?? 0),
     };
   },
 };

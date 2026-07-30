@@ -7,7 +7,9 @@
 create extension if not exists "uuid-ossp";
 
 -- ============ ENUMS ============
-create type user_role as enum ('admin', 'coordinator');
+-- 'superadmin' is a single privileged account that owns destructive actions
+-- (deleting users, projects and work orders); 'admin' keeps everything else.
+create type user_role as enum ('admin', 'coordinator', 'superadmin');
 create type work_order_status as enum ('pending', 'approved', 'rejected');
 create type milestone_status as enum ('pending', 'in_progress', 'completed');
 create type ticket_type as enum ('routine_6m', 'adhoc');
@@ -45,11 +47,28 @@ create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function handle_new_user();
 
--- Helper: is current user an admin?
+-- Helper: is current user office staff or above? (admin OR superadmin)
 create or replace function is_admin()
 returns boolean language sql security definer stable set search_path = public as $$
-  select exists(select 1 from profiles where id = auth.uid() and role = 'admin');
+  select exists(
+    select 1 from profiles
+    where id = auth.uid() and role::text in ('admin', 'superadmin')
+  );
 $$;
+
+-- Helper: is current user THE SuperAdmin? (gates every delete)
+create or replace function is_superadmin()
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists(
+    select 1 from profiles where id = auth.uid() and role::text = 'superadmin'
+  );
+$$;
+
+-- There is exactly one SuperAdmin. Every row in the partial set shares the same
+-- `role`, so a unique index over it caps the set at a single member. Compares
+-- the enum directly — an enum->text cast is only STABLE, which a predicate rejects.
+create unique index if not exists uniq_profiles_single_superadmin
+  on profiles (role) where role = 'superadmin';
 
 -- ============ WORK ORDERS ============
 create table work_orders (
@@ -63,12 +82,26 @@ create table work_orders (
   total_cost numeric(12,2) not null default 0,
   order_date date not null default current_date,
   status work_order_status not null default 'pending',
+
+  -- Office/field details captured after the sale
+  consumer_number text,                   -- KSEB consumer number
+  notes text,
+  kseb_section text,                      -- KSEB section office
+  loan_bank_name text,
+
+  -- Staged collections (advance_amount above is the first money in)
+  first_payment_date date,
+  first_payment_amount numeric(12,2),
+  second_payment_date date,
+  second_payment_amount numeric(12,2),
+
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 create index idx_work_orders_coordinator on work_orders(coordinator_id);
 create index idx_work_orders_status on work_orders(status);
 create index idx_work_orders_order_date on work_orders(order_date);
+create index idx_work_orders_consumer_number on work_orders(consumer_number);
 
 -- ============ PROJECTS ============
 create table projects (
@@ -197,10 +230,13 @@ alter table projects enable row level security;
 alter table project_milestones enable row level security;
 alter table service_tickets enable row level security;
 
--- PROFILES: user reads own; admin reads all; user updates own (never role — see guard_profile_role)
+-- PROFILES: user reads own; admin reads all; user updates own (never role — see
+-- guard_profile_role). DELETE is SuperAdmin-only.
 create policy profiles_select_self on profiles for select using (id = auth.uid() or is_admin());
 create policy profiles_update_self on profiles for update using (id = auth.uid()) with check (id = auth.uid());
-create policy profiles_admin_all on profiles for all using (is_admin());
+create policy profiles_admin_insert on profiles for insert with check (is_admin());
+create policy profiles_admin_update on profiles for update using (is_admin()) with check (is_admin());
+create policy profiles_superadmin_delete on profiles for delete using (is_superadmin());
 
 -- WORK ORDERS: coordinator owns; admin all
 create policy wo_select on work_orders for select
@@ -210,12 +246,16 @@ create policy wo_insert on work_orders for insert
 create policy wo_update on work_orders for update
   using (is_admin() or coordinator_id = auth.uid())
   with check (is_admin() or coordinator_id = auth.uid());
-create policy wo_delete on work_orders for delete using (is_admin());
+create policy wo_delete on work_orders for delete using (is_superadmin());
 
--- PROJECTS: coordinator sees own; admin all (only admin creates via approval)
+-- PROJECTS: coordinator sees own; admin writes (only admin creates via
+-- approval); DELETE is SuperAdmin-only.
 create policy proj_select on projects for select
   using (is_admin() or coordinator_id = auth.uid());
-create policy proj_admin_write on projects for all using (is_admin());
+create policy proj_admin_insert on projects for insert with check (is_admin());
+create policy proj_admin_update on projects for update
+  using (is_admin()) with check (is_admin());
+create policy proj_superadmin_delete on projects for delete using (is_superadmin());
 
 -- MILESTONES: visible to project owner + admin; admin writes
 create policy ms_select on project_milestones for select using (
@@ -239,13 +279,22 @@ create policy ticket_admin_write on service_tickets for all using (is_admin());
 -- Guards allow server-side contexts (service-role key / superuser: auth.uid()
 -- is NULL) and admins; only a logged-in NON-admin is restricted.
 
--- Only an admin may change a profile's role (blocks privilege escalation).
+-- Only an admin may change a profile's role (blocks privilege escalation), and
+-- only the SuperAdmin may grant/revoke SuperAdmin — except while that seat is
+-- vacant, when any admin may appoint the first one (bootstrap / recovery).
 create or replace function guard_profile_role()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
-  if new.role is distinct from old.role
-     and auth.uid() is not null and not is_admin() then
-    raise exception 'Only an administrator can change a user role' using errcode = '42501';
+  if new.role is distinct from old.role and auth.uid() is not null then
+    if not is_admin() then
+      raise exception 'Only an administrator can change a user role' using errcode = '42501';
+    end if;
+    if (new.role::text = 'superadmin' or old.role::text = 'superadmin')
+       and not is_superadmin()
+       and exists (select 1 from profiles where role::text = 'superadmin') then
+      raise exception 'Only the SuperAdmin can grant or revoke the SuperAdmin role'
+        using errcode = '42501';
+    end if;
   end if;
   return new;
 end; $$;
@@ -300,32 +349,20 @@ alter default privileges in schema public
 alter default privileges in schema public
   grant execute on functions to anon, authenticated, service_role;
 
--- ============ DASHBOARD AGGREGATES (scalability) ============
--- Single aggregate query for the dashboard KPIs (SECURITY INVOKER: respects
--- the caller's RLS). Avoids loading every row to count in the app.
-create or replace function dashboard_metrics()
-returns table (
-  total_work_orders bigint,
-  pending_approvals bigint,
-  active_projects bigint,
-  commissioned bigint,
-  open_tickets bigint,
-  approved_pipeline numeric
+-- ============ PAYMENT MATHS ============
+-- One definition of "money received against a work order", shared by the list
+-- views and the dashboard aggregate. Mirrored in lib/domain/payment.ts.
+create or replace function wo_amount_received(
+  advance numeric, first_payment numeric, second_payment numeric
 )
-language sql stable security invoker set search_path = public as $$
-  select
-    (select count(*) from work_orders)::bigint,
-    (select count(*) from work_orders where status = 'pending')::bigint,
-    (select count(*) from projects where not is_completed)::bigint,
-    (select count(*) from projects where is_completed)::bigint,
-    (select count(*) from service_tickets
-       where status in ('open', 'scheduled', 'in_progress'))::bigint,
-    coalesce(
-      (select sum(total_cost) from work_orders where status = 'approved'), 0
-    )::numeric;
+returns numeric language sql immutable as $$
+  select coalesce(advance, 0) + coalesce(first_payment, 0)
+       + coalesce(second_payment, 0);
 $$;
-grant execute on function dashboard_metrics() to anon, authenticated, service_role;
+grant execute on function wo_amount_received(numeric, numeric, numeric)
+  to anon, authenticated, service_role;
 
+-- ============ LIST INDEXES (scalability) ============
 create index if not exists idx_projects_created_at on projects (created_at desc);
 create index if not exists idx_tickets_created_at on service_tickets (created_at desc);
 create index if not exists idx_work_orders_created_at on work_orders (created_at desc);
@@ -355,7 +392,16 @@ select
   w.plant_capacity, w.advance_amount, w.total_cost, w.order_date, w.status,
   w.created_at, w.updated_at,
   co.full_name as coordinator_name,
-  pr.id as project_id, pr.current_stage, pr.is_completed
+  pr.id as project_id, pr.current_stage, pr.is_completed,
+  w.consumer_number, w.notes, w.kseb_section, w.loan_bank_name,
+  w.first_payment_date, w.first_payment_amount,
+  w.second_payment_date, w.second_payment_amount,
+  wo_amount_received(
+    w.advance_amount, w.first_payment_amount, w.second_payment_amount
+  ) as amount_received,
+  w.total_cost - wo_amount_received(
+    w.advance_amount, w.first_payment_amount, w.second_payment_amount
+  ) as balance_due
 from work_orders w
 left join profiles co on co.id = w.coordinator_id
 left join projects pr on pr.work_order_id = w.id;
@@ -377,10 +423,61 @@ select
   co.full_name as coordinator_name,
   (select count(*) from project_milestones m
      where m.project_id = pr.id and m.status = 'completed') as milestones_done,
-  (select count(*) from project_milestones m where m.project_id = pr.id) as milestones_total
+  (select count(*) from project_milestones m where m.project_id = pr.id) as milestones_total,
+  pr.work_order_id,
+  wo.consumer_number, wo.kseb_section, wo.loan_bank_name,
+  wo.advance_amount,
+  wo.first_payment_date, wo.first_payment_amount,
+  wo.second_payment_date, wo.second_payment_amount,
+  wo_amount_received(
+    wo.advance_amount, wo.first_payment_amount, wo.second_payment_amount
+  ) as amount_received,
+  coalesce(wo.total_cost, 0) - wo_amount_received(
+    wo.advance_amount, wo.first_payment_amount, wo.second_payment_amount
+  ) as balance_due,
+  -- The business case: the plant is commissioned but the money is not fully in.
+  (
+    pr.is_completed
+    and coalesce(wo.total_cost, 0) - wo_amount_received(
+      wo.advance_amount, wo.first_payment_amount, wo.second_payment_amount
+    ) > 0
+  ) as payment_pending
 from projects pr
 left join work_orders wo on wo.id = pr.work_order_id
 left join profiles co on co.id = pr.coordinator_id;
 
 grant select on work_orders_list, service_tickets_list, projects_list
   to anon, authenticated, service_role;
+
+-- ============ DASHBOARD AGGREGATES (scalability) ============
+-- Single aggregate query for the dashboard KPIs (SECURITY INVOKER: respects
+-- the caller's RLS). Avoids loading every row to count in the app. Defined
+-- after the list views because it reads projects_list for the payment KPIs.
+create or replace function dashboard_metrics()
+returns table (
+  total_work_orders bigint,
+  pending_approvals bigint,
+  active_projects bigint,
+  commissioned bigint,
+  open_tickets bigint,
+  approved_pipeline numeric,
+  commissioned_unpaid bigint,
+  outstanding_amount numeric
+)
+language sql stable security invoker set search_path = public as $$
+  select
+    (select count(*) from work_orders)::bigint,
+    (select count(*) from work_orders where status = 'pending')::bigint,
+    (select count(*) from projects where not is_completed)::bigint,
+    (select count(*) from projects where is_completed)::bigint,
+    (select count(*) from service_tickets
+       where status in ('open', 'scheduled', 'in_progress'))::bigint,
+    coalesce(
+      (select sum(total_cost) from work_orders where status = 'approved'), 0
+    )::numeric,
+    (select count(*) from projects_list where payment_pending)::bigint,
+    coalesce(
+      (select sum(balance_due) from projects_list where payment_pending), 0
+    )::numeric;
+$$;
+grant execute on function dashboard_metrics() to anon, authenticated, service_role;

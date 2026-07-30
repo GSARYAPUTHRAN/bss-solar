@@ -1,4 +1,9 @@
-export type UserRole = "admin" | "coordinator";
+/**
+ * `superadmin` is a single privileged account that owns the destructive actions
+ * (deleting users, projects and work orders). It holds every `admin` capability
+ * on top of that — see lib/domain/role.ts.
+ */
+export type UserRole = "admin" | "coordinator" | "superadmin";
 export type WorkOrderStatus = "pending" | "approved" | "rejected";
 export type MilestoneStatus = "pending" | "in_progress" | "completed";
 export type TicketType = "routine_6m" | "adhoc";
@@ -28,7 +33,19 @@ export interface Profile {
   created_at: string;
 }
 
-export interface WorkOrder {
+/** Office/field details captured on a work order after the sale. */
+export interface WorkOrderDetails {
+  consumer_number: string | null;
+  notes: string | null;
+  kseb_section: string | null;
+  loan_bank_name: string | null;
+  first_payment_date: string | null;
+  first_payment_amount: number | null;
+  second_payment_date: string | null;
+  second_payment_amount: number | null;
+}
+
+export interface WorkOrder extends WorkOrderDetails {
   id: string;
   coordinator_id: string;
   client_name: string;
@@ -63,7 +80,7 @@ export interface Project {
 }
 
 /** Flattened rows from the list views (server-side pagination). */
-export interface WorkOrderListRow {
+export interface WorkOrderListRow extends WorkOrderDetails {
   id: string;
   coordinator_id: string;
   client_name: string;
@@ -80,6 +97,10 @@ export interface WorkOrderListRow {
   project_id: string | null;
   current_stage: ProjectStage | null;
   is_completed: boolean | null;
+  /** advance + both instalments, computed in the view. */
+  amount_received: number | null;
+  /** total_cost - amount_received (negative when overpaid). */
+  balance_due: number | null;
 }
 
 export interface TicketListRow {
@@ -109,6 +130,19 @@ export interface ProjectListRow {
   coordinator_name: string | null;
   milestones_done: number;
   milestones_total: number;
+  work_order_id: string | null;
+  consumer_number: string | null;
+  kseb_section: string | null;
+  loan_bank_name: string | null;
+  advance_amount: number | null;
+  first_payment_date: string | null;
+  first_payment_amount: number | null;
+  second_payment_date: string | null;
+  second_payment_amount: number | null;
+  amount_received: number | null;
+  balance_due: number | null;
+  /** Commissioned, but money is still outstanding. */
+  payment_pending: boolean | null;
 }
 
 export interface ProjectMilestone {

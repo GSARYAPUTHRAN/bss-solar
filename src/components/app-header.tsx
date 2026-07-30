@@ -26,6 +26,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarNav } from "./sidebar-nav";
 import type { ModuleNav } from "@/config/navigation";
 import { COMPANY } from "@/lib/constants";
+import { ROLE_LABELS, isOfficeRole } from "@/lib/domain/role";
 import type { Profile } from "@/lib/types";
 
 function initials(name: string) {
@@ -94,10 +95,10 @@ export function AppHeader({
           <DropdownMenuLabel className="flex flex-col gap-1">
             <span>{profile.full_name}</span>
             <Badge
-              variant={profile.role === "admin" ? "default" : "secondary"}
-              className="w-fit capitalize"
+              variant={isOfficeRole(profile.role) ? "default" : "secondary"}
+              className="w-fit"
             >
-              {profile.role}
+              {ROLE_LABELS[profile.role]}
             </Badge>
           </DropdownMenuLabel>
           <DropdownMenuSeparator />

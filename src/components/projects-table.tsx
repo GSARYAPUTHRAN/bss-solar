@@ -5,9 +5,10 @@ import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/layout";
-import { StageBadge } from "@/components/status-badges";
+import { PaymentBadge, StageBadge } from "@/components/status-badges";
 import { PROJECT_STAGES } from "@/lib/constants";
 import { formatDate } from "@/lib/format";
+import { isPaymentPending } from "@/lib/domain/payment";
 import type { Coordinator } from "@/server/data";
 import type { ProjectListRow } from "@/lib/types";
 
@@ -65,6 +66,14 @@ export function ProjectsTable({
     },
     { id: "progress", header: "Progress", cell: (p) => progress(p) },
     {
+      id: "payment",
+      header: "Payment",
+      sortable: true,
+      sortKey: "balance_due",
+      sortAccessor: (p) => Number(p.balance_due ?? 0),
+      cell: (p) => <PaymentBadge source={p} isCompleted={p.is_completed} />,
+    },
+    {
       id: "created",
       header: "Created",
       sortable: true,
@@ -78,13 +87,24 @@ export function ProjectsTable({
     {
       id: "status",
       placeholder: "Status",
+      widthClass: "sm:w-60",
       options: [
         { value: "all", label: "All projects" },
         { value: "active", label: "Active" },
         { value: "completed", label: "Commissioned" },
+        {
+          value: "payment_pending",
+          label: "Commissioned · payment pending",
+        },
       ],
       predicate: (p, v) =>
-        v === "active" ? !p.is_completed : v === "completed" ? p.is_completed : true,
+        v === "active"
+          ? !p.is_completed
+          : v === "completed"
+            ? p.is_completed
+            : v === "payment_pending"
+              ? isPaymentPending(p, p)
+              : true,
     },
     {
       id: "stage",

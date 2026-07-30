@@ -1,9 +1,13 @@
 "use client";
 
+import { Trash2 } from "lucide-react";
 import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { RoleEditor } from "@/components/role-editor";
+import { ConfirmSubmit } from "@/components/confirm-submit";
+import { deleteTeamMember } from "@/app/(app)/team/actions";
+import { ROLE_LABELS } from "@/lib/domain/role";
 import { formatDate } from "@/lib/format";
 import type { Profile } from "@/lib/types";
 
@@ -19,10 +23,16 @@ function initials(name: string) {
 export function TeamTable({
   profiles,
   meId,
+  canGrantSuperAdmin = false,
+  canDelete = false,
   server,
 }: {
   profiles: Profile[];
   meId: string;
+  /** Offer the SuperAdmin seat in the role picker (server re-checks). */
+  canGrantSuperAdmin?: boolean;
+  /** Show the delete action — SuperAdmin only (server re-checks). */
+  canDelete?: boolean;
   server?: { total: number; page: number; pageSize: number };
 }) {
   const columns: ColumnDef<Profile>[] = [
@@ -61,8 +71,34 @@ export function TeamTable({
       id: "role",
       header: "Role",
       cell: (p) => (
-        <RoleEditor userId={p.id} role={p.role} disabled={p.id === meId} />
+        <RoleEditor
+          userId={p.id}
+          role={p.role}
+          disabled={p.id === meId}
+          canGrantSuperAdmin={canGrantSuperAdmin}
+        />
       ),
+    },
+    {
+      id: "actions",
+      header: "",
+      headerClassName: "w-10",
+      hidden: !canDelete,
+      cell: (p) =>
+        p.id === meId ? null : (
+          <ConfirmSubmit
+            action={deleteTeamMember}
+            fields={{ user_id: p.id }}
+            triggerLabel={<Trash2 className="h-4 w-4" />}
+            triggerAriaLabel={`Delete ${p.full_name}`}
+            triggerVariant="ghost"
+            triggerClassName="text-destructive hover:text-destructive"
+            title={`Delete ${p.full_name}?`}
+            description="This permanently removes the staff account and its sign-in. A member who still owns work orders cannot be deleted — reassign or delete that business first. This cannot be undone."
+            confirmLabel="Delete member"
+            loadingText="Deleting…"
+          />
+        ),
     },
   ];
 
@@ -72,8 +108,9 @@ export function TeamTable({
       placeholder: "Role",
       options: [
         { value: "all", label: "All roles" },
-        { value: "admin", label: "Admin" },
-        { value: "coordinator", label: "Coordinator" },
+        ...(Object.keys(ROLE_LABELS) as (keyof typeof ROLE_LABELS)[]).map(
+          (role) => ({ value: role, label: ROLE_LABELS[role] }),
+        ),
       ],
       predicate: (p, v) => p.role === v,
     },

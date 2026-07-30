@@ -6,6 +6,7 @@ import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { WorkOrdersTable } from "@/components/work-orders-table";
+import { isOfficeRole } from "@/lib/domain/role";
 
 export const metadata = { title: "Work Orders" };
 
@@ -15,10 +16,10 @@ export default async function WorkOrdersPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const profile = await requireProfile();
-  const isAdmin = profile.role === "admin";
+  const isAdmin = isOfficeRole(profile.role);
 
   const params = parsePageParams(await searchParams, {
-    filterKeys: ["status", "coordinator"],
+    filterKeys: ["status", "coordinator", "payment"],
     defaultSort: "order_date",
     defaultDir: "desc",
   });

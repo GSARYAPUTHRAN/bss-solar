@@ -336,11 +336,19 @@ export type Database = {
           advance_amount: number | null
           client_name: string
           client_phone: string | null
+          consumer_number: string | null
           coordinator_id: string
           created_at: string
+          first_payment_amount: number | null
+          first_payment_date: string | null
           id: string
+          kseb_section: string | null
+          loan_bank_name: string | null
+          notes: string | null
           order_date: string
           plant_capacity: string
+          second_payment_amount: number | null
+          second_payment_date: string | null
           status: Database["public"]["Enums"]["work_order_status"]
           total_cost: number
           updated_at: string
@@ -350,11 +358,19 @@ export type Database = {
           advance_amount?: number | null
           client_name: string
           client_phone?: string | null
+          consumer_number?: string | null
           coordinator_id: string
           created_at?: string
+          first_payment_amount?: number | null
+          first_payment_date?: string | null
           id?: string
+          kseb_section?: string | null
+          loan_bank_name?: string | null
+          notes?: string | null
           order_date?: string
           plant_capacity: string
+          second_payment_amount?: number | null
+          second_payment_date?: string | null
           status?: Database["public"]["Enums"]["work_order_status"]
           total_cost?: number
           updated_at?: string
@@ -364,11 +380,19 @@ export type Database = {
           advance_amount?: number | null
           client_name?: string
           client_phone?: string | null
+          consumer_number?: string | null
           coordinator_id?: string
           created_at?: string
+          first_payment_amount?: number | null
+          first_payment_date?: string | null
           id?: string
+          kseb_section?: string | null
+          loan_bank_name?: string | null
+          notes?: string | null
           order_date?: string
           plant_capacity?: string
+          second_payment_amount?: number | null
+          second_payment_date?: string | null
           status?: Database["public"]["Enums"]["work_order_status"]
           total_cost?: number
           updated_at?: string
@@ -387,19 +411,31 @@ export type Database = {
     Views: {
       projects_list: {
         Row: {
+          advance_amount: number | null
+          amount_received: number | null
+          balance_due: number | null
           client_name: string | null
           completed_at: string | null
+          consumer_number: string | null
           coordinator_id: string | null
           coordinator_name: string | null
           created_at: string | null
           current_stage: Database["public"]["Enums"]["project_stage"] | null
+          first_payment_amount: number | null
+          first_payment_date: string | null
           id: string | null
           is_completed: boolean | null
+          kseb_section: string | null
+          loan_bank_name: string | null
           milestones_done: number | null
           milestones_total: number | null
+          payment_pending: boolean | null
           plant_capacity: string | null
+          second_payment_amount: number | null
+          second_payment_date: string | null
           started_at: string | null
           total_cost: number | null
+          work_order_id: string | null
         }
         Relationships: [
           {
@@ -407,6 +443,20 @@ export type Database = {
             columns: ["coordinator_id"]
             isOneToOne: false
             referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "projects_work_order_id_fkey"
+            columns: ["work_order_id"]
+            isOneToOne: true
+            referencedRelation: "work_orders"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "projects_work_order_id_fkey"
+            columns: ["work_order_id"]
+            isOneToOne: true
+            referencedRelation: "work_orders_list"
             referencedColumns: ["id"]
           },
         ]
@@ -452,17 +502,27 @@ export type Database = {
         Row: {
           address: string | null
           advance_amount: number | null
+          amount_received: number | null
+          balance_due: number | null
           client_name: string | null
           client_phone: string | null
+          consumer_number: string | null
           coordinator_id: string | null
           coordinator_name: string | null
           created_at: string | null
           current_stage: Database["public"]["Enums"]["project_stage"] | null
+          first_payment_amount: number | null
+          first_payment_date: string | null
           id: string | null
           is_completed: boolean | null
+          kseb_section: string | null
+          loan_bank_name: string | null
+          notes: string | null
           order_date: string | null
           plant_capacity: string | null
           project_id: string | null
+          second_payment_amount: number | null
+          second_payment_date: string | null
           status: Database["public"]["Enums"]["work_order_status"] | null
           total_cost: number | null
           updated_at: string | null
@@ -485,12 +545,19 @@ export type Database = {
           active_projects: number
           approved_pipeline: number
           commissioned: number
+          commissioned_unpaid: number
           open_tickets: number
+          outstanding_amount: number
           pending_approvals: number
           total_work_orders: number
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      is_superadmin: { Args: never; Returns: boolean }
+      wo_amount_received: {
+        Args: { advance: number; first_payment: number; second_payment: number }
+        Returns: number
+      }
     }
     Enums: {
       milestone_status: "pending" | "in_progress" | "completed"
@@ -511,7 +578,7 @@ export type Database = {
         | "completed"
         | "cancelled"
       ticket_type: "routine_6m" | "adhoc"
-      user_role: "admin" | "coordinator"
+      user_role: "admin" | "coordinator" | "superadmin"
       work_order_status: "pending" | "approved" | "rejected"
     }
     CompositeTypes: {
@@ -663,7 +730,7 @@ export const Constants = {
         "cancelled",
       ],
       ticket_type: ["routine_6m", "adhoc"],
-      user_role: ["admin", "coordinator"],
+      user_role: ["admin", "coordinator", "superadmin"],
       work_order_status: ["pending", "approved", "rejected"],
     },
   },

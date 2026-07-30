@@ -10,7 +10,9 @@ import {
   type ImportRowResult,
   type ImportState,
 } from "@/lib/domain/import";
+import { paymentSummary } from "@/lib/domain/payment";
 import { PROJECT_STAGES } from "@/lib/constants";
+import { formatCurrency } from "@/lib/format";
 import type { MilestoneStatus, ProjectStage } from "@/lib/types";
 
 const MAX_ROWS = 1000;
@@ -163,6 +165,14 @@ async function runImport(formData: FormData): Promise<ImportState> {
           total_cost: r.total_cost,
           order_date: r.order_date,
           status: "approved",
+          consumer_number: r.consumer_number,
+          kseb_section: r.kseb_section,
+          loan_bank_name: r.loan_bank_name,
+          notes: r.notes,
+          first_payment_amount: r.first_payment_amount,
+          first_payment_date: r.first_payment_date,
+          second_payment_amount: r.second_payment_amount,
+          second_payment_date: r.second_payment_date,
         })
         .select("id")
         .single();
@@ -181,12 +191,15 @@ async function runImport(formData: FormData): Promise<ImportState> {
 
       await applyStage(admin, pr.data.id, r.current_stage, r.is_completed, stageOrder);
       imported++;
+      const { balanceDue } = paymentSummary(r);
       results.push({
         row: rowNo,
         client: label,
         ok: true,
         message: r.is_completed
-          ? "Imported — commissioned"
+          ? balanceDue > 0
+            ? `Imported — commissioned, ${formatCurrency(balanceDue)} outstanding`
+            : "Imported — commissioned, paid in full"
           : `Imported at "${r.current_stage}"`,
       });
     } catch (e) {

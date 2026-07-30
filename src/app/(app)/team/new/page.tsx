@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { requireAdmin } from "@/lib/auth";
+import { profilesRepository } from "@/server/data";
 import { createTeamMember } from "../actions";
+import { isSuperAdminRole, roleOptions } from "@/lib/domain/role";
+import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
 import {
   Page,
   PageHeader,
@@ -20,8 +23,11 @@ export default async function NewTeamMemberPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  await requireAdmin();
+  const me = await requireAdmin();
   const { error } = await searchParams;
+  // Mirrors canGrantSuperAdmin() in team/actions.ts, which re-checks on submit.
+  const canGrantSuperAdmin =
+    isSuperAdminRole(me.role) || !(await profilesRepository.superAdminExists());
 
   return (
     <Page size="tight">
@@ -53,24 +59,30 @@ export default async function NewTeamMemberPage({
               label="Password"
               htmlFor="password"
               required
-              hint="Minimum 6 characters. Share securely with the new member."
+              hint={`Minimum ${MIN_PASSWORD_LENGTH} characters. Share securely with the new member.`}
             >
               <Input
                 id="password"
                 name="password"
                 type="password"
-                minLength={6}
+                minLength={MIN_PASSWORD_LENGTH}
                 required
               />
             </FormField>
-            <FormField label="Role">
+            <FormField
+              label="Role"
+              htmlFor="role"
+              hint={
+                canGrantSuperAdmin
+                  ? "There can only be one Super Admin."
+                  : undefined
+              }
+            >
               <FormSelect
+                id="role"
                 name="role"
                 defaultValue="coordinator"
-                options={[
-                  { value: "coordinator", label: "Coordinator" },
-                  { value: "admin", label: "Admin" },
-                ]}
+                options={roleOptions(canGrantSuperAdmin)}
               />
             </FormField>
           </FormGrid>
