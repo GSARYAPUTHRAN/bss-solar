@@ -102,8 +102,10 @@ create trigger t_profiles_guard_role
 --    existing *_select policies (which already allow is_admin()).
 -- ---------------------------------------------------------------------------
 drop policy if exists profiles_admin_all on public.profiles;
+drop policy if exists profiles_admin_insert on public.profiles;
 create policy profiles_admin_insert on public.profiles
   for insert with check (is_admin());
+drop policy if exists profiles_admin_update on public.profiles;
 create policy profiles_admin_update on public.profiles
   for update using (is_admin()) with check (is_admin());
 drop policy if exists profiles_superadmin_delete on public.profiles;
@@ -111,8 +113,10 @@ create policy profiles_superadmin_delete on public.profiles
   for delete using (is_superadmin());
 
 drop policy if exists proj_admin_write on public.projects;
+drop policy if exists proj_admin_insert on public.projects;
 create policy proj_admin_insert on public.projects
   for insert with check (is_admin());
+drop policy if exists proj_admin_update on public.projects;
 create policy proj_admin_update on public.projects
   for update using (is_admin()) with check (is_admin());
 drop policy if exists proj_superadmin_delete on public.projects;
