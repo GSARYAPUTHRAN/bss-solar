@@ -280,8 +280,10 @@ create policy ticket_admin_write on service_tickets for all using (is_admin());
 -- is NULL) and admins; only a logged-in NON-admin is restricted.
 
 -- Only an admin may change a profile's role (blocks privilege escalation), and
--- only the SuperAdmin may grant/revoke SuperAdmin — except while that seat is
--- vacant, when any admin may appoint the first one (bootstrap / recovery).
+-- the SuperAdmin role is IMMUTABLE from the application: no signed-in user — not
+-- an admin, not even the SuperAdmin themselves — can grant or revoke it. Only a
+-- server-side context (service-role / migration superuser, auth.uid() IS NULL)
+-- can, which is the deliberate provisioning path (production-bootstrap.sql).
 create or replace function guard_profile_role()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
@@ -289,10 +291,8 @@ begin
     if not is_admin() then
       raise exception 'Only an administrator can change a user role' using errcode = '42501';
     end if;
-    if (new.role::text = 'superadmin' or old.role::text = 'superadmin')
-       and not is_superadmin()
-       and exists (select 1 from profiles where role::text = 'superadmin') then
-      raise exception 'Only the SuperAdmin can grant or revoke the SuperAdmin role'
+    if new.role::text = 'superadmin' or old.role::text = 'superadmin' then
+      raise exception 'The SuperAdmin role cannot be granted or revoked from the application'
         using errcode = '42501';
     end if;
   end if;

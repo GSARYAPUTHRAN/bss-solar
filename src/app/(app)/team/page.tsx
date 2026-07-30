@@ -25,14 +25,8 @@ export default async function TeamPage({
     defaultDir: "asc",
   });
 
-  const [pageResult, superAdminExists] = await Promise.all([
-    profilesRepository.page(params),
-    profilesRepository.superAdminExists(),
-  ]);
-
+  const pageResult = await profilesRepository.page(params);
   const isSuperAdmin = isSuperAdminRole(me.role);
-  // Mirrors canGrantSuperAdmin() in team/actions.ts, which re-checks on submit.
-  const canGrantSuperAdmin = isSuperAdmin || !superAdminExists;
 
   return (
     <Page>
@@ -52,7 +46,6 @@ export default async function TeamPage({
       <TeamTable
         profiles={pageResult.rows}
         meId={me.id}
-        canGrantSuperAdmin={canGrantSuperAdmin}
         canDelete={isSuperAdmin}
         server={{
           total: pageResult.total,
@@ -63,16 +56,12 @@ export default async function TeamPage({
       <div className="space-y-1 text-xs text-muted-foreground">
         <p>You cannot change your own role to avoid accidental lock-out.</p>
         <p>
-          There is exactly one <strong>Super Admin</strong>. Only they can delete
-          users, projects and work orders, and only they can hand the seat to
-          someone else — selecting Super Admin for another member transfers it.
+          There is exactly one <strong>Super Admin</strong> — the highest
+          privilege, and the only role that can delete users, projects and work
+          orders. That role is <strong>not editable here by anyone</strong>: it is
+          set directly on the database, so it cannot be granted, revoked or
+          reassigned from the app.
         </p>
-        {!isSuperAdmin && !superAdminExists && (
-          <p>
-            No Super Admin is assigned yet. Any admin can appoint the first one
-            from the role menu.
-          </p>
-        )}
       </div>
     </Page>
   );

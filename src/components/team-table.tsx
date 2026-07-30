@@ -23,14 +23,11 @@ function initials(name: string) {
 export function TeamTable({
   profiles,
   meId,
-  canGrantSuperAdmin = false,
   canDelete = false,
   server,
 }: {
   profiles: Profile[];
   meId: string;
-  /** Offer the SuperAdmin seat in the role picker (server re-checks). */
-  canGrantSuperAdmin?: boolean;
   /** Show the delete action — SuperAdmin only (server re-checks). */
   canDelete?: boolean;
   server?: { total: number; page: number; pageSize: number };
@@ -71,12 +68,7 @@ export function TeamTable({
       id: "role",
       header: "Role",
       cell: (p) => (
-        <RoleEditor
-          userId={p.id}
-          role={p.role}
-          disabled={p.id === meId}
-          canGrantSuperAdmin={canGrantSuperAdmin}
-        />
+        <RoleEditor userId={p.id} role={p.role} disabled={p.id === meId} />
       ),
     },
     {
@@ -84,8 +76,9 @@ export function TeamTable({
       header: "",
       headerClassName: "w-10",
       hidden: !canDelete,
+      // Never offer to delete yourself, nor the Super Admin account.
       cell: (p) =>
-        p.id === meId ? null : (
+        p.id === meId || p.role === "superadmin" ? null : (
           <ConfirmSubmit
             action={deleteTeamMember}
             fields={{ user_id: p.id }}

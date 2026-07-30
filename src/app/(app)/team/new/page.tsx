@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { requireAdmin } from "@/lib/auth";
-import { profilesRepository } from "@/server/data";
 import { createTeamMember } from "../actions";
-import { isSuperAdminRole, roleOptions } from "@/lib/domain/role";
+import { roleOptions } from "@/lib/domain/role";
 import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
 import {
   Page,
@@ -23,11 +22,8 @@ export default async function NewTeamMemberPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  const me = await requireAdmin();
+  await requireAdmin();
   const { error } = await searchParams;
-  // Mirrors canGrantSuperAdmin() in team/actions.ts, which re-checks on submit.
-  const canGrantSuperAdmin =
-    isSuperAdminRole(me.role) || !(await profilesRepository.superAdminExists());
 
   return (
     <Page size="tight">
@@ -72,17 +68,13 @@ export default async function NewTeamMemberPage({
             <FormField
               label="Role"
               htmlFor="role"
-              hint={
-                canGrantSuperAdmin
-                  ? "There can only be one Super Admin."
-                  : undefined
-              }
+              hint="Super Admin is not assignable here — it is set on the database."
             >
               <FormSelect
                 id="role"
                 name="role"
                 defaultValue="coordinator"
-                options={roleOptions(canGrantSuperAdmin)}
+                options={roleOptions()}
               />
             </FormField>
           </FormGrid>

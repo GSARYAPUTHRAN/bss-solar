@@ -20,6 +20,15 @@ test("a plain admin gets no delete affordances", async ({ page }) => {
   await expect(page.getByRole("heading", { name: /team management/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /^delete /i })).toHaveCount(0);
 
+  // The Super Admin's role reads as a locked badge, never as a control an admin
+  // could operate; an ordinary member's row still has its role picker.
+  const seatRow = page.getByRole("row").filter({ hasText: "BSS SuperAdmin" });
+  await expect(seatRow.getByText("Super Admin")).toBeVisible();
+  await expect(seatRow.getByRole("combobox")).toHaveCount(0);
+  await expect(
+    page.getByRole("row").filter({ hasText: "Rahul Menon" }).getByRole("combobox").first(),
+  ).toBeVisible();
+
   await page.goto("/work-orders?status=pending");
   await page.getByRole("row").nth(1).click();
   await expect(page).toHaveURL(/\/work-orders\/[^/?]+/);
@@ -44,6 +53,11 @@ test("the SuperAdmin can delete users, work orders and projects", async ({
   await expect(
     page.getByRole("button", { name: /^delete /i }).first(),
   ).toBeVisible();
+
+  // Even the holder cannot edit or delete their own seat.
+  const seatRow = page.getByRole("row").filter({ hasText: "BSS SuperAdmin" });
+  await expect(seatRow.getByRole("combobox")).toHaveCount(0);
+  await expect(seatRow.getByRole("button", { name: /^delete /i })).toHaveCount(0);
 
   await page.goto("/work-orders?status=pending");
   await page.getByRole("row").nth(1).click();

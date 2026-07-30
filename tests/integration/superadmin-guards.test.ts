@@ -208,6 +208,7 @@ describe("the SuperAdmin seat", () => {
   });
 
   it("holds at most one SuperAdmin", async () => {
+    // Even the privileged provisioning path (service role) cannot mint a second.
     const { error } = await svc
       .from("profiles")
       .update({ role: "superadmin" })
@@ -222,7 +223,7 @@ describe("the SuperAdmin seat", () => {
     expect(count).toBe(1);
   });
 
-  it("blocks an admin from promoting anyone to SuperAdmin while it is taken", async () => {
+  it("blocks an admin from promoting anyone to SuperAdmin", async () => {
     const admin = await clientAs(USERS.admin.email, USERS.admin.password);
     const { error } = await admin
       .from("profiles")
@@ -270,35 +271,81 @@ describe("the SuperAdmin seat", () => {
     expect(data?.role).toBe("coordinator");
   });
 
-  it("lets the SuperAdmin step down, after which any admin may appoint one", async () => {
-    // Step down (only the holder may revoke the seat).
+  it("blocks the SuperAdmin from revoking their OWN seat", async () => {
+    // The seat is the top of the hierarchy: it is immutable from the app for
+    // everyone, including its holder. Only direct SQL can move it.
     const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
-    const stepDown = await su
+    const { error } = await su
       .from("profiles")
       .update({ role: "admin" })
       .eq("id", USERS.superadmin.id);
-    expect(stepDown.error).toBeNull();
+    expect(error).not.toBeNull();
+    expect(error?.message).toMatch(/cannot be granted or revoked/i);
 
-    // Vacant seat: the bootstrap/recovery path opens up for a plain admin.
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
-    const appoint = await admin
+    const { data } = await svc
+      .from("profiles")
+      .select("role")
+      .eq("id", USERS.superadmin.id)
+      .single();
+    expect(data?.role).toBe("superadmin");
+  });
+
+  it("blocks the SuperAdmin from handing the seat to someone else", async () => {
+    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const { error } = await su
       .from("profiles")
       .update({ role: "superadmin" })
       .eq("id", USERS.sneha.id);
-    expect(appoint.error).toBeNull();
+    expect(error).not.toBeNull();
 
     const { data } = await svc
       .from("profiles")
       .select("role")
       .eq("id", USERS.sneha.id)
       .single();
-    expect(data?.role).toBe("superadmin");
+    expect(data?.role).toBe("coordinator");
+  });
 
-    // Restore the seeded arrangement for the remaining suites.
+  it("still lets the SuperAdmin change ordinary roles", async () => {
+    // Immutability is scoped to the seat itself, not to role management at large.
+    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const up = await su
+      .from("profiles")
+      .update({ role: "admin" })
+      .eq("id", USERS.sneha.id);
+    expect(up.error).toBeNull();
+
+    const down = await su
+      .from("profiles")
+      .update({ role: "coordinator" })
+      .eq("id", USERS.sneha.id);
+    expect(down.error).toBeNull();
+  });
+
+  it("allows provisioning by direct SQL (the documented recovery path)", async () => {
+    // auth.uid() is NULL for the service role, which is the one context the guard
+    // permits — this is what production-bootstrap.sql relies on.
+    const demote = await svc
+      .from("profiles")
+      .update({ role: "admin" })
+      .eq("id", USERS.superadmin.id);
+    expect(demote.error).toBeNull();
+
+    const appoint = await svc
+      .from("profiles")
+      .update({ role: "superadmin" })
+      .eq("id", USERS.sneha.id);
+    expect(appoint.error).toBeNull();
+
+    // Put the seeded arrangement back for the remaining suites.
     await svc
       .from("profiles")
       .update({ role: "coordinator" })
       .eq("id", USERS.sneha.id);
+    await svc
+      .from("profiles")
+      .update({ role: "superadmin" })
+      .eq("id", USERS.superadmin.id);
   });
 
   it("still lets the SuperAdmin see and manage everything an admin can", async () => {
