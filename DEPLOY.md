@@ -159,10 +159,15 @@ requirement:
 Vercel builds the Next.js app but does **not** run database migrations. The CI
 workflow includes a `migrate-production` job that runs **only after the whole
 pipeline passes on `master`** and applies pending migrations to the production
-Supabase project with `supabase db push`. Because the migrations are backward
-compatible (additive views/functions/triggers/grants), the schema is made ready
-while the currently-deployed code keeps working; you then merge
-`master → production` to ship the code that uses it.
+Supabase project with `supabase db push`. The migrations are additive
+(columns/views/functions/triggers/grants), so the schema is made ready while the
+currently-deployed code keeps working; you then merge `master → production` to
+ship the code that uses it.
+
+> Where a migration also *tightens* a policy — as the SuperAdmin release does for
+> `DELETE` — the old code fails closed in the gap rather than misbehaving. See
+> [One behaviour change to be aware of](#one-behaviour-change-to-be-aware-of) and
+> keep the gap short by merging to `production` as soon as CI is green.
 
 Enable it once by adding three **repo secrets**
 (Settings → Secrets and variables → Actions):
