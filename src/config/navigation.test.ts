@@ -19,6 +19,13 @@ describe("navForRole", () => {
     expect(hrefs).not.toContain("/team");
     expect(hrefs).not.toContain("/tickets");
   });
+
+  it("gives the SuperAdmin everything an admin gets", () => {
+    // The registry lists only the minimum role, so this pins the inheritance.
+    expect(navForRole("superadmin").map((m) => m.href)).toEqual(
+      navForRole("admin").map((m) => m.href),
+    );
+  });
 });
 
 describe("homeForRole", () => {
@@ -27,5 +34,8 @@ describe("homeForRole", () => {
   });
   it("lands coordinators on work orders", () => {
     expect(homeForRole("coordinator")).toBe("/work-orders");
+  });
+  it("lands the SuperAdmin on the dashboard", () => {
+    expect(homeForRole("superadmin")).toBe("/");
   });
 });

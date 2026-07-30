@@ -76,6 +76,11 @@ export const USERS = {
     password: "Admin@12345",
     id: "00000000-0000-0000-0000-000000000001",
   },
+  superadmin: {
+    email: "super@bsssolar.test",
+    password: "Super@12345",
+    id: "00000000-0000-0000-0000-000000000006",
+  },
   rahul: {
     email: "coord@bsssolar.test",
     password: "Coord@12345",
@@ -85,5 +90,10 @@ export const USERS = {
     email: "priya@bsssolar.test",
     password: "Coord@12345",
     id: "00000000-0000-0000-0000-000000000003",
+  },
+  sneha: {
+    email: "sneha@bsssolar.test",
+    password: "Coord@12345",
+    id: "00000000-0000-0000-0000-000000000005",
   },
 } as const;

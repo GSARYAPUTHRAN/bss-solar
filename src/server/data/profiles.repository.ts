@@ -5,6 +5,7 @@ import {
   type PageParams,
   type PageResult,
 } from "@/lib/pagination";
+import { OFFICE_ROLES } from "@/lib/domain/role";
 import type { Profile, UserRole } from "@/lib/types";
 
 export type Coordinator = Pick<Profile, "id" | "full_name">;
@@ -74,13 +75,37 @@ export const profilesRepository = {
     };
   },
 
-  /** Number of admin accounts (used to prevent locking out the last admin). */
+  /**
+   * Number of accounts with org-wide admin rights — `admin` *and* `superadmin`,
+   * since the SuperAdmin is a strict superset. Used to prevent locking out the
+   * last administrator.
+   */
   async adminCount(): Promise<number> {
     const supabase = await createClient();
     const { count } = await supabase
       .from("profiles")
       .select("id", { count: "exact", head: true })
-      .eq("role", "admin");
+      .in("role", OFFICE_ROLES);
     return count ?? 0;
+  },
+
+  /** Is the SuperAdmin seat currently occupied? */
+  async superAdminExists(): Promise<boolean> {
+    const supabase = await createClient();
+    const { count } = await supabase
+      .from("profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("role", "superadmin");
+    return (count ?? 0) > 0;
+  },
+
+  async byId(id: string): Promise<Profile | null> {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from("profiles")
+      .select("id, full_name, phone, role, created_at")
+      .eq("id", id)
+      .maybeSingle();
+    return (data as Profile) ?? null;
   },
 };

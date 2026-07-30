@@ -5,25 +5,30 @@ import {
   Circle,
   Clock,
   FastForward,
+  Pencil,
   Plus,
   Wrench,
 } from "lucide-react";
 import { requireProfile } from "@/lib/auth";
 import { projectsRepository, ticketsRepository } from "@/server/data";
-import { updateMilestone, advanceProject } from "../actions";
-import { Page, PageHeader, Section, EmptyState, FormError } from "@/components/layout";
+import { updateMilestone, advanceProject, deleteProject } from "../actions";
+import { Page, PageHeader, Section, EmptyState, Field, FieldGrid, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/submit-button";
+import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
 import { FormSelect } from "@/components/form-select";
-import { TicketStatusBadge } from "@/components/status-badges";
+import { PaymentBadge, TicketStatusBadge } from "@/components/status-badges";
 import {
   MILESTONE_STATUS_LABELS,
   STAGE_LABELS,
   TICKET_TYPE_LABELS,
 } from "@/lib/constants";
 import { formatCurrency, formatDate } from "@/lib/format";
+import { paymentSummary } from "@/lib/domain/payment";
+import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
 import type { MilestoneStatus, ProjectMilestone } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -43,7 +48,8 @@ export default async function ProjectDetailPage({
   const profile = await requireProfile();
   const { id } = await params;
   const { error } = await searchParams;
-  const isAdmin = profile.role === "admin";
+  const isAdmin = isOfficeRole(profile.role);
+  const isSuperAdmin = isSuperAdminRole(profile.role);
 
   const project = await projectsRepository.byId(id);
   if (!project) notFound();
@@ -56,7 +62,11 @@ export default async function ProjectDetailPage({
   const tickets = isAdmin
     ? await ticketsRepository.listByProject(id)
     : [];
+  // Read live off the work order — nothing is denormalised, so editing the work
+  // order is reflected here on the next render.
   const wo = project.work_order;
+  const payment = paymentSummary(wo ?? {});
+  const canEditWorkOrder = isAdmin || project.coordinator_id === profile.id;
 
   return (
     <Page size="wide">
@@ -64,7 +74,15 @@ export default async function ProjectDetailPage({
         title={wo?.client_name ?? "Project"}
         description={`${wo?.plant_capacity ?? ""} · Started ${formatDate(project.started_at)}`}
         backHref="/projects"
-      />
+      >
+        {canEditWorkOrder && (
+          <Button variant="outline" asChild>
+            <Link href={`/work-orders/${project.work_order_id}/edit`}>
+              <Pencil className="mr-2 h-4 w-4" /> Edit Details
+            </Link>
+          </Button>
+        )}
+      </PageHeader>
 
       <FormError message={error} />
 
@@ -108,6 +126,19 @@ export default async function ProjectDetailPage({
               <span className="text-muted-foreground">Total cost</span>
               <span className="font-medium">{formatCurrency(wo?.total_cost)}</span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Received</span>
+              <span className="font-medium">
+                {formatCurrency(payment.received)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">Payment</span>
+              <PaymentBadge
+                source={wo ?? {}}
+                isCompleted={project.is_completed}
+              />
+            </div>
             <p className="pt-2 text-xs text-muted-foreground">{wo?.address}</p>
 
             {isAdmin && !project.is_completed && (
@@ -117,6 +148,23 @@ export default async function ProjectDetailPage({
                   <FastForward className="mr-2 h-4 w-4" /> Complete Next Milestone
                 </SubmitButton>
               </form>
+            )}
+
+            {isSuperAdmin && (
+              <>
+                <Separator />
+                <ConfirmSubmit
+                  action={deleteProject}
+                  fields={{ project_id: project.id }}
+                  triggerLabel="Delete project"
+                  triggerVariant="ghost"
+                  triggerClassName="w-full text-destructive hover:text-destructive"
+                  title="Delete this project?"
+                  description="This permanently removes the project and its milestones. Its work order is returned to pending so it can be approved again; service tickets are kept. This cannot be undone."
+                  confirmLabel="Delete project"
+                  loadingText="Deleting…"
+                />
+              </>
             )}
         </Section>
 
@@ -209,6 +257,59 @@ export default async function ProjectDetailPage({
             </ol>
         </Section>
       </div>
+
+      <Section
+        title="Client, KSEB & Payment Details"
+        description="Held on the work order — edit it there and this updates with it."
+        actions={
+          <PaymentBadge source={wo ?? {}} isCompleted={project.is_completed} />
+        }
+        contentClassName="space-y-6"
+      >
+        <FieldGrid cols={3}>
+          <Field label="Client phone" value={wo?.client_phone} />
+          <Field label="KSEB consumer number" value={wo?.consumer_number} />
+          <Field label="KSEB section" value={wo?.kseb_section} />
+          <Field label="Loan bank" value={wo?.loan_bank_name} />
+          <Field label="Order date" value={formatDate(wo?.order_date)} />
+          <Field label="Address" value={wo?.address} />
+        </FieldGrid>
+
+        <Separator />
+
+        <FieldGrid cols={3}>
+          <Field label="Total cost" value={formatCurrency(wo?.total_cost)} />
+          <Field
+            label="Advance collected"
+            value={formatCurrency(wo?.advance_amount)}
+          />
+          <Field
+            label="First payment"
+            value={
+              wo?.first_payment_amount == null
+                ? null
+                : `${formatCurrency(wo.first_payment_amount)} · ${formatDate(wo.first_payment_date)}`
+            }
+          />
+          <Field
+            label="Second payment"
+            value={
+              wo?.second_payment_amount == null
+                ? null
+                : `${formatCurrency(wo.second_payment_amount)} · ${formatDate(wo.second_payment_date)}`
+            }
+          />
+          <Field label="Total received" value={formatCurrency(payment.received)} />
+          <Field label="Balance due" value={formatCurrency(payment.balanceDue)} />
+        </FieldGrid>
+
+        {wo?.notes && (
+          <>
+            <Separator />
+            <Field label="Notes" value={wo.notes} />
+          </>
+        )}
+      </Section>
 
       {isAdmin && (
         <Section

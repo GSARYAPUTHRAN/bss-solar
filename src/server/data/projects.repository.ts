@@ -19,15 +19,20 @@ const PROJECT_SORT_COLUMNS = new Set([
   "client_name",
   "coordinator_name",
   "current_stage",
+  "balance_due",
 ]);
 
+/** Payment columns the board needs to flag a commissioned-but-unpaid project. */
+const WO_PAYMENT_COLUMNS =
+  "total_cost, advance_amount, first_payment_amount, second_payment_amount";
+
 const SELECT_LIST = `*,
-  work_order:work_orders!projects_work_order_id_fkey(client_name, plant_capacity, total_cost),
+  work_order:work_orders!projects_work_order_id_fkey(client_name, plant_capacity, ${WO_PAYMENT_COLUMNS}),
   coordinator:profiles!projects_coordinator_id_fkey(id, full_name),
   milestones:project_milestones(status)`;
 
 const SELECT_DETAIL = `*,
-  work_order:work_orders!projects_work_order_id_fkey(client_name, client_phone, address, plant_capacity, total_cost, advance_amount),
+  work_order:work_orders!projects_work_order_id_fkey(id, client_name, client_phone, address, plant_capacity, order_date, status, consumer_number, notes, kseb_section, loan_bank_name, first_payment_date, second_payment_date, ${WO_PAYMENT_COLUMNS}),
   coordinator:profiles!projects_coordinator_id_fkey(id, full_name),
   milestones:project_milestones(*)`;
 
@@ -84,6 +89,9 @@ export const projectsRepository = {
       query = query.eq("is_completed", false);
     } else if (params.filters.status === "completed") {
       query = query.eq("is_completed", true);
+    } else if (params.filters.status === "payment_pending") {
+      // Commissioned, but the contract value is not fully collected.
+      query = query.eq("payment_pending", true);
     }
     if (params.filters.stage) {
       query = query.eq("current_stage", params.filters.stage as ProjectStage);
@@ -163,6 +171,25 @@ export const projectsRepository = {
       coordinator_id: coordinatorId,
     });
     return { error: error?.message ?? null };
+  },
+
+  /**
+   * Hard-delete a project (cascades to its milestones; service tickets keep
+   * their history with a null project). A DELETE blocked by RLS removes zero
+   * rows without raising, so the affected rows are checked explicitly.
+   */
+  async remove(id: string): Promise<{ error: string | null }> {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("projects")
+      .delete()
+      .eq("id", id)
+      .select("id");
+    if (error) return { error: error.message };
+    if (!data || data.length === 0) {
+      return { error: "Nothing was deleted — only the SuperAdmin can delete." };
+    }
+    return { error: null };
   },
 
   async setProgress(

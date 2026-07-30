@@ -1,6 +1,7 @@
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { homeForRole } from "@/config/navigation";
+import { OFFICE_ROLES } from "@/lib/domain/role";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile, UserRole } from "./types";
 
@@ -31,8 +32,17 @@ export async function requireProfile(): Promise<Profile> {
   return profile;
 }
 
+/**
+ * Office staff or above. The SuperAdmin holds every admin capability, so it must
+ * never be excluded from an admin-gated surface (see lib/domain/role.ts).
+ */
 export async function requireAdmin(): Promise<Profile> {
-  return requireRole("admin");
+  return requireRole(...OFFICE_ROLES);
+}
+
+/** The single privileged account that owns every destructive action. */
+export async function requireSuperAdmin(): Promise<Profile> {
+  return requireRole("superadmin");
 }
 
 /**

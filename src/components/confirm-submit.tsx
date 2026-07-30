@@ -24,6 +24,7 @@ export function ConfirmSubmit({
   action,
   fields = {},
   triggerLabel,
+  triggerAriaLabel,
   triggerVariant = "ghost",
   triggerClassName,
   title,
@@ -34,6 +35,8 @@ export function ConfirmSubmit({
   action: (formData: FormData) => void | Promise<void>;
   fields?: Record<string, string>;
   triggerLabel: React.ReactNode;
+  /** Required when `triggerLabel` is icon-only. */
+  triggerAriaLabel?: string;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
   title: string;
@@ -46,7 +49,12 @@ export function ConfirmSubmit({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button type="button" variant={triggerVariant} className={triggerClassName}>
+        <Button
+          type="button"
+          variant={triggerVariant}
+          className={triggerClassName}
+          aria-label={triggerAriaLabel}
+        >
           {triggerLabel}
         </Button>
       </DialogTrigger>

@@ -11,7 +11,13 @@ vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(),
 }));
 
-import { getProfile, requireProfile, requireRole, requireAdmin } from "./auth";
+import {
+  getProfile,
+  requireProfile,
+  requireRole,
+  requireAdmin,
+  requireSuperAdmin,
+} from "./auth";
 import { createClient } from "@/lib/supabase/server";
 import type { UserRole } from "./types";
 
@@ -107,5 +113,48 @@ describe("requireAdmin", () => {
     );
     const profile = await requireAdmin();
     expect(profile.role).toBe("admin");
+  });
+
+  it("admits the SuperAdmin — it holds every admin capability", async () => {
+    mockedCreateClient.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "s1" },
+        profile: { id: "s1", role: "superadmin", full_name: "Root" },
+      }),
+    );
+    const profile = await requireAdmin();
+    expect(profile.role).toBe("superadmin");
+  });
+});
+
+describe("requireSuperAdmin", () => {
+  it("returns the profile for the SuperAdmin", async () => {
+    mockedCreateClient.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "s1" },
+        profile: { id: "s1", role: "superadmin", full_name: "Root" },
+      }),
+    );
+    expect((await requireSuperAdmin()).role).toBe("superadmin");
+  });
+
+  it("turns a plain admin away (to their dashboard)", async () => {
+    mockedCreateClient.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "a1" },
+        profile: { id: "a1", role: "admin", full_name: "Admin" },
+      }),
+    );
+    await expect(requireSuperAdmin()).rejects.toThrow("REDIRECT:/");
+  });
+
+  it("turns a coordinator away", async () => {
+    mockedCreateClient.mockResolvedValue(
+      fakeSupabase({
+        user: { id: "c1" },
+        profile: { id: "c1", role: "coordinator", full_name: "Coord" },
+      }),
+    );
+    await expect(requireSuperAdmin()).rejects.toThrow("REDIRECT:/work-orders");
   });
 });

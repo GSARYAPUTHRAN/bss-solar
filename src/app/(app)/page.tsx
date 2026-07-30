@@ -1,9 +1,11 @@
 import Link from "next/link";
 import {
+  AlertTriangle,
   ClipboardList,
   Clock,
   KanbanSquare,
   CheckCircle2,
+  Wallet,
   Wrench,
   IndianRupee,
   ArrowRight,
@@ -77,6 +79,23 @@ export default async function DashboardPage() {
           value={formatCurrency(metrics.approvedPipeline)}
           icon={IndianRupee}
           accent="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+        />
+        {/* Commissioned and handed over, but the money is not fully in. */}
+        <StatCard
+          label="Commissioned · Unpaid"
+          value={metrics.commissionedUnpaid}
+          icon={AlertTriangle}
+          accent="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300"
+          hint="Commissioned plants with a balance"
+          href="/projects?view=list&status=payment_pending"
+        />
+        <StatCard
+          label="Outstanding Collections"
+          value={formatCurrency(metrics.outstandingAmount)}
+          icon={Wallet}
+          accent="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300"
+          hint="Balance due on commissioned plants"
+          href="/projects?view=list&status=payment_pending"
         />
       </div>
 
