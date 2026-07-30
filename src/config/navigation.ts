@@ -1,3 +1,4 @@
+import { isOfficeRole } from "@/lib/domain/role";
 import type { UserRole } from "@/lib/types";
 
 /** Icon keys are resolved to components client-side (see nav-icons.tsx). */
@@ -63,10 +64,16 @@ export const MODULES: ModuleNav[] = [
 ];
 
 export function navForRole(role: UserRole): ModuleNav[] {
-  return MODULES.filter((module) => module.roles.includes(role));
+  // Each module lists the *minimum* roles it needs. The SuperAdmin is a strict
+  // superset of admin, so it inherits every admin module without every entry
+  // above having to repeat it.
+  const effective: UserRole[] = isOfficeRole(role) ? [role, "admin"] : [role];
+  return MODULES.filter((module) =>
+    module.roles.some((r) => effective.includes(r)),
+  );
 }
 
 /** Default landing route after sign-in. */
 export function homeForRole(role: UserRole): string {
-  return role === "admin" ? "/" : "/work-orders";
+  return isOfficeRole(role) ? "/" : "/work-orders";
 }

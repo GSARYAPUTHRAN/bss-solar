@@ -46,11 +46,10 @@ npx supabase db push
 
 > Do **not** run `supabase/seed.sql` on production — it is local demo data only.
 
-### Updating an existing production database (this release) ⚠️
+### Updating an existing production database ⚠️
 
-This release ships **security-critical** database changes. Apply them before (or with)
-the matching app deploy. Each migration is idempotent, so on a DB that was provisioned
-from `schema.sql` you can safely paste and run these files in the **SQL Editor** in order:
+Each migration is idempotent, so on a DB that was provisioned from `schema.sql` you can
+safely paste and run these files in the **SQL Editor** in order:
 
 1. `supabase/migrations/20260709120000_security_hardening.sql` — **closes the coordinator
    → admin privilege-escalation hole and the self-approval hole**, and makes approval
@@ -61,8 +60,25 @@ from `schema.sql` you can safely paste and run these files in the **SQL Editor**
 4. `supabase/migrations/20260709150000_ticket_no_sequence.sql` — collision-free ticket numbers.
 5. `supabase/migrations/20260709160000_list_views.sql` — flattened views that
    back server-side pagination/search (RLS-respecting `security_invoker` views).
+6. `supabase/migrations/20260730120000_superadmin_enum.sql` — adds the `superadmin`
+   value to `user_role`. **Must run in its own transaction** (PostgreSQL refuses to
+   *use* a new enum value in the transaction that added it) — run this file alone,
+   then the next one.
+7. `supabase/migrations/20260730120100_superadmin_work_order_fields_payments.sql` —
+   SuperAdmin role + SuperAdmin-only DELETE policies, the extra work-order columns
+   (consumer number, notes, KSEB section, loan bank, two staged payments), the derived
+   payment columns on the list views, and the commissioned-unpaid dashboard KPIs.
 
 Or, if the project is linked to the CLI, run `npx supabase db push`.
+
+#### One behaviour change to be aware of
+
+Migration 7 makes **DELETE SuperAdmin-only** on `work_orders`, `projects` and `profiles`.
+Because the schema is applied *before* the new code deploys, in the gap between the two an
+admin using the currently-deployed build can still press **Delete** — RLS filters the row
+out, so nothing is deleted. The new build detects the zero-row delete and reports it
+instead of showing a false success. Keep the gap short by merging `master → production`
+once CI is green.
 
 ### Collect API keys
 
@@ -143,10 +159,15 @@ requirement:
 Vercel builds the Next.js app but does **not** run database migrations. The CI
 workflow includes a `migrate-production` job that runs **only after the whole
 pipeline passes on `master`** and applies pending migrations to the production
-Supabase project with `supabase db push`. Because the migrations are backward
-compatible (additive views/functions/triggers/grants), the schema is made ready
-while the currently-deployed code keeps working; you then merge
-`master → production` to ship the code that uses it.
+Supabase project with `supabase db push`. The migrations are additive
+(columns/views/functions/triggers/grants), so the schema is made ready while the
+currently-deployed code keeps working; you then merge `master → production` to
+ship the code that uses it.
+
+> Where a migration also *tightens* a policy — as the SuperAdmin release does for
+> `DELETE` — the old code fails closed in the gap rather than misbehaving. See
+> [One behaviour change to be aware of](#one-behaviour-change-to-be-aware-of) and
+> keep the gap short by merging to `production` as soon as CI is green.
 
 Enable it once by adding three **repo secrets**
 (Settings → Secrets and variables → Actions):
@@ -205,6 +226,24 @@ There is no public sign-up page. Create the first admin manually:
 
 4. Use **Team → Add Member** to create coordinator accounts.
 
+5. **Appoint the Super Admin** — the highest privilege, and the only role that can
+   delete users, projects and work orders.
+
+   This role is **not assignable from the app by anyone** (a DB trigger rejects it
+   even for the Super Admin), so it is done in SQL:
+
+   1. **Authentication → Users → Add user** — the Super Admin's email, a strong
+      password you choose, **Auto confirm user** ticked.
+   2. **SQL Editor** — run the *Super Admin* section of
+      [`supabase/production-bootstrap.sql`](supabase/production-bootstrap.sql) after
+      editing the email inside it.
+   3. Sign in and confirm the Team page shows the role as a locked **Super Admin**
+      badge with no dropdown, and that Delete appears on team/work-order/project pages.
+
+   The same statement is how you move the seat later (demote the current holder in the
+   same run — the unique index refuses a second) and how you recover if the account is
+   lost. Nothing in the UI can do it.
+
 ---
 
 ## Step 5 — Smoke test (production)
@@ -217,6 +256,11 @@ There is no public sign-up page. Create the first admin manually:
 | Projects board | Cards appear in correct Kanban columns |
 | Team | Admin adds a coordinator at `/team/new` |
 | PDF | Open a ticket → Download PDF |
+| Work-order edit | Coordinator edits their own order; the project shows the change |
+| Payments | Set a total + partial payments → `Balance` column and badge update |
+| Commissioned · Unpaid | Dashboard KPI links to the filtered project list |
+| Delete | Only the Super Admin sees Delete on team/work orders/projects |
+| Seat locked | The Super Admin's row shows a badge, not a role dropdown, for everyone |
 
 ---
 

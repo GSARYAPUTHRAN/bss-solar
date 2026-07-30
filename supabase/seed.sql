@@ -3,6 +3,7 @@
 -- Runs automatically on `supabase start` (first time) and `supabase db reset`.
 --
 -- Demo credentials (password for all staff: Coord@12345 / Admin@12345):
+--   SuperAdmin   -> super@bsssolar.test   (BSS SuperAdmin)  Super@12345
 --   Admin        -> admin@bsssolar.test
 --   Coordinator  -> coord@bsssolar.test   (Rahul Menon)
 --   Coordinator  -> priya@bsssolar.test   (Priya Suresh)
@@ -18,6 +19,7 @@
 -- coord priya : 00000000-0000-0000-0000-000000000003
 -- coord arun  : 00000000-0000-0000-0000-000000000004
 -- coord sneha : 00000000-0000-0000-0000-000000000005
+-- superadmin  : 00000000-0000-0000-0000-000000000006
 
 -- ---------- Auth users ----------
 insert into auth.users (
@@ -80,6 +82,17 @@ insert into auth.users (
     '{"provider":"email","providers":["email"]}',
     '{"full_name":"Sneha Das"}',
     now(), now(), '', '', '', ''
+  ),
+  (
+    '00000000-0000-0000-0000-000000000000',
+    '00000000-0000-0000-0000-000000000006',
+    'authenticated', 'authenticated',
+    'super@bsssolar.test',
+    crypt('Super@12345', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{"full_name":"BSS SuperAdmin"}',
+    now(), now(), '', '', '', ''
   );
 
 -- ---------- Auth identities ----------
@@ -116,12 +129,23 @@ insert into auth.identities (
     '00000000-0000-0000-0000-000000000005',
     '{"sub":"00000000-0000-0000-0000-000000000005","email":"sneha@bsssolar.test"}',
     'email', now(), now(), now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000006',
+    '00000000-0000-0000-0000-000000000006',
+    '{"sub":"00000000-0000-0000-0000-000000000006","email":"super@bsssolar.test"}',
+    'email', now(), now(), now()
   );
 
 -- ---------- Profiles ----------
 update public.profiles
   set role = 'admin', phone = '+91 471 2439322'
   where id = '00000000-0000-0000-0000-000000000001';
+
+-- The single SuperAdmin (owns deletes for users / projects / work orders).
+update public.profiles
+  set role = 'superadmin', phone = '+91 471 2439300'
+  where id = '00000000-0000-0000-0000-000000000006';
 
 update public.profiles set phone = '+91 98470 10001' where id = '00000000-0000-0000-0000-000000000002';
 update public.profiles set phone = '+91 98470 10002' where id = '00000000-0000-0000-0000-000000000003';
@@ -175,7 +199,41 @@ insert into public.work_orders (
    '3kW', 22000, 198000, current_date - 48, 'approved'),
   ('10000000-0000-0000-0000-000000000013', '00000000-0000-0000-0000-000000000005',
    'Asha Mohan', '+91 98470 40404', 'Varkala, Kerala',
-   '5kW', 28000, 305000, current_date - 12, 'pending');
+   '5kW', 28000, 305000, current_date - 12, 'pending'),
+  -- Commissioned AND fully collected — the counterpart to Mary Jose below.
+  ('10000000-0000-0000-0000-000000000014', '00000000-0000-0000-0000-000000000005',
+   'Latha Krishnan', '+91 98470 50505', 'Kollam, Kerala',
+   '4kW', 30000, 260000, current_date - 120, 'approved');
+
+-- ---------- Extended work-order details (consumer no., KSEB, loan, payments) --
+update public.work_orders set
+  consumer_number = '1156789012345', kseb_section = 'Vytilla',
+  loan_bank_name = 'State Bank of India',
+  notes = 'Roof facing south-west; scaffolding needed for the north array.',
+  first_payment_date = current_date - 20, first_payment_amount = 80000
+  where id = '10000000-0000-0000-0000-000000000001';
+
+update public.work_orders set
+  consumer_number = '1156789054321', kseb_section = 'Aluva',
+  loan_bank_name = 'Federal Bank',
+  first_payment_date = current_date - 12, first_payment_amount = 120000
+  where id = '10000000-0000-0000-0000-000000000004';
+
+-- Mary Jose: plant is COMMISSIONED but ₹1,80,000 is still outstanding.
+update public.work_orders set
+  consumer_number = '1156789099999', kseb_section = 'Pala',
+  loan_bank_name = 'Canara Bank',
+  notes = 'Second instalment pending — customer awaiting subsidy credit.',
+  first_payment_date = current_date - 70, first_payment_amount = 100000
+  where id = '10000000-0000-0000-0000-000000000005';
+
+-- Latha Krishnan: commissioned and paid in full (advance + both instalments).
+update public.work_orders set
+  consumer_number = '1156789077777', kseb_section = 'Kollam',
+  loan_bank_name = 'Union Bank of India',
+  first_payment_date = current_date - 100, first_payment_amount = 130000,
+  second_payment_date = current_date - 60, second_payment_amount = 100000
+  where id = '10000000-0000-0000-0000-000000000014';
 
 -- ---------- Projects (trigger seeds 9 milestones each) ----------
 insert into public.projects (
@@ -196,7 +254,9 @@ insert into public.projects (
   ('20000000-0000-0000-0000-000000000007', '10000000-0000-0000-0000-000000000012',
    '00000000-0000-0000-0000-000000000005', 'kseb_inspection_meter', false, now() - interval '42 days', null),
   ('20000000-0000-0000-0000-000000000008', '10000000-0000-0000-0000-000000000005',
-   '00000000-0000-0000-0000-000000000002', 'plant_commissioning', true, now() - interval '85 days', now() - interval '5 days');
+   '00000000-0000-0000-0000-000000000002', 'plant_commissioning', true, now() - interval '85 days', now() - interval '5 days'),
+  ('20000000-0000-0000-0000-000000000009', '10000000-0000-0000-0000-000000000014',
+   '00000000-0000-0000-0000-000000000005', 'plant_commissioning', true, now() - interval '115 days', now() - interval '40 days');
 
 -- ---------- Milestone progress per project ----------
 -- Helper: complete sort_orders 1..(n-1), set sort_order n in_progress
@@ -241,9 +301,13 @@ update public.project_milestones set status = 'completed', completed_at = now() 
 update public.project_milestones set status = 'in_progress'
   where project_id = '20000000-0000-0000-0000-000000000007' and sort_order = 8;
 
--- P8: plant_commissioning — fully commissioned
+-- P8: plant_commissioning — fully commissioned (payment still outstanding)
 update public.project_milestones set status = 'completed', completed_at = now() - interval '5 days'
   where project_id = '20000000-0000-0000-0000-000000000008';
+
+-- P9: plant_commissioning — fully commissioned and fully paid
+update public.project_milestones set status = 'completed', completed_at = now() - interval '40 days'
+  where project_id = '20000000-0000-0000-0000-000000000009';
 
 -- ---------- Service Tickets ----------
 insert into public.service_tickets (

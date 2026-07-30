@@ -13,11 +13,22 @@ installation tracking, team management, and a maintenance service-ticketing syst
 
 ## Features
 
-- **Auth & RBAC** — Supabase email/password auth with two roles:
-  - `admin` (office staff) — sees and manages all data.
+- **Auth & RBAC** — Supabase email/password auth with three roles:
+  - `superadmin` — **exactly one account**, the highest privilege. Everything an admin
+    can do, plus the only role that can **delete** users, projects and work orders
+    (enforced by RLS, not just the UI). The role itself is not editable from the app by
+    anyone — it is set directly on the database.
+  - `admin` (office staff) — sees and manages all data, but cannot delete.
   - `coordinator` (field sales) — sees only their own work orders/projects/tickets (enforced by RLS).
-- **Work Orders (CRM)** — log client, capacity, advance, total cost, order date. Admin approves/rejects and spawns a project.
+- **Work Orders (CRM)** — log client, capacity, KSEB consumer number & section, loan bank,
+  notes, order date, and the money (advance + two staged payments). Admin approves/rejects
+  and spawns a project. **Coordinators can edit their own orders**; a project reads its
+  details live off the work order, so an edit is reflected on the project immediately.
 - **Project Tracker** — Kanban board (default view) plus a filterable list. Approving a work order creates an active project that auto-seeds the 9 KSEB/ANERT milestones with per-milestone status and notes.
+- **Payment tracking** — amount received and balance due are derived in Postgres, so a
+  **commissioned plant with money still outstanding** is a first-class, queryable state:
+  a dashboard KPI (count + total outstanding), a `Commissioned · payment pending` filter on
+  the project list and board, and a badge everywhere a project or work order is shown.
 - **Service Tickets** — routine 6-month or ad-hoc tickets capturing the full BSS service sheet
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
 - **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
@@ -51,6 +62,7 @@ Open http://localhost:3000 and sign in with the demo accounts:
 
 | Role        | Email                  | Password     |
 | ----------- | ---------------------- | ------------ |
+| Super Admin | `super@bsssolar.test`  | `Super@12345` |
 | Admin       | `admin@bsssolar.test`  | `Admin@12345` |
 | Coordinator | `coord@bsssolar.test`  | `Coord@12345` (Rahul Menon) |
 | Coordinator | `priya@bsssolar.test`  | `Coord@12345` (Priya Suresh) |
@@ -124,13 +136,33 @@ public/brand/                  # Official logo assets from bsssolar.com
 
 ## Roles & Permissions (RLS summary)
 
-| Resource           | Admin            | Coordinator                          |
-| ------------------ | ---------------- | ------------------------------------ |
-| Work Orders        | Full CRUD        | Create + read/update their own       |
-| Projects           | Full + approve   | Read their own                       |
-| Project Milestones | Update           | Read their own                       |
-| Service Tickets    | Full CRUD        | Read tickets on their own projects   |
-| Team / Profiles    | Full + add users | Read own profile only                |
+| Resource           | Super Admin        | Admin                       | Coordinator                        |
+| ------------------ | ------------------ | --------------------------- | ---------------------------------- |
+| Work Orders        | Everything + delete| Create/read/update, approve | Create + read/**edit** their own   |
+| Projects           | Everything + delete| Read/update all, approve    | Read their own                     |
+| Project Milestones | Update             | Update                      | Read their own                     |
+| Service Tickets    | Full CRUD          | Full CRUD                   | Read tickets on their own projects |
+| Team / Profiles    | Add + roles + delete| Add + roles                 | Read own profile only              |
+
+### The Super Admin seat
+
+- There is **exactly one**, enforced by a partial unique index on `profiles`.
+- The role is **immutable from the app**. It is never offered in a role picker, the
+  holder's row renders as a locked badge, and no signed-in user — not an admin, not
+  even the Super Admin themselves — can grant, revoke or reassign it. A database
+  trigger (`guard_profile_role`) rejects any such change independently of the UI.
+- The Super Admin account also cannot be deleted from the app.
+- Appointing or moving the seat is therefore **SQL-only**, via
+  [`supabase/production-bootstrap.sql`](supabase/production-bootstrap.sql) — which is
+  also the recovery path if the account is lost. The one context the trigger permits
+  is a server-side one (`auth.uid()` is `NULL`), matching how every other guard in
+  this schema is written.
+- The Super Admin can still manage ordinary roles (admin ↔ coordinator) as usual;
+  immutability is scoped to the seat itself.
+- Deleting a member who still owns work orders or projects is refused
+  (`on delete restrict`); reassign or delete that business first.
+- Deleting a project returns its work order to `pending`, so the invariant
+  "approved work order ⇒ has a project" always holds and it can be approved again.
 
 ## Scripts
 
@@ -156,8 +188,16 @@ npm run db:types   # Regenerate src/lib/supabase/database.types.ts from local DB
 - **Integration tests** exercise real Row Level Security and DB triggers against a
   local Supabase stack — they assert that a coordinator cannot escalate to admin,
   cannot self-approve work orders, tenant data stays isolated, approval seeds the 9
-  milestones, and ticket numbers are unique.
-- **E2E** covers login/RBAC redirects and work-order creation with Playwright.
+  milestones, ticket numbers are unique, **deletes are refused for anyone but the
+  Super Admin**, the Super Admin seat cannot be duplicated, hijacked, or changed by
+  anyone signed in (including its holder) while ordinary role management still works,
+  a coordinator's edits surface on their project, and the SQL payment maths agrees
+  with `lib/domain/payment.ts`.
+- **E2E** covers login/RBAC redirects, work-order creation and editing, the
+  Super Admin-only delete affordances, the locked Super Admin role row, and the
+  commissioned-but-unpaid dashboard KPI.
+
+> `E2E_PORT=3711 npm run test:e2e` runs the suite on another port if 3100 is taken.
 - CI (`.github/workflows/ci.yml`) runs all of the above on every PR. See
   **[DEPLOY.md](DEPLOY.md)** for the branch-protection setup that gates merges.
 

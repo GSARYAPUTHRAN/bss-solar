@@ -1,5 +1,9 @@
 export { workOrdersRepository } from "./work-orders.repository";
-export type { WorkOrderInput } from "./work-orders.repository";
+export type {
+  WorkOrderDetailsInput,
+  WorkOrderInput,
+  WorkOrderPatch,
+} from "./work-orders.repository";
 export { projectsRepository } from "./projects.repository";
 export type { ProjectOption } from "./projects.repository";
 export { ticketsRepository } from "./tickets.repository";

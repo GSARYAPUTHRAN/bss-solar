@@ -6,8 +6,9 @@ import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { EmptyState } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { WorkOrderStatusBadge } from "@/components/status-badges";
+import { PaymentBadge, WorkOrderStatusBadge } from "@/components/status-badges";
 import { WORK_ORDER_STATUS, statusOptions } from "@/lib/domain/status";
+import { paymentSummary } from "@/lib/domain/payment";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { Coordinator } from "@/server/data";
 import type { WorkOrderListRow } from "@/lib/types";
@@ -34,7 +35,7 @@ export function WorkOrdersTable({
         <>
           <span className="font-medium hover:underline">{w.client_name}</span>
           <div className="text-xs text-muted-foreground">
-            {w.client_phone ?? "—"}
+            {w.consumer_number ?? w.client_phone ?? "—"}
           </div>
         </>
       ),
@@ -64,6 +65,16 @@ export function WorkOrdersTable({
       cell: (w) => formatCurrency(w.total_cost),
     },
     {
+      id: "balance_due",
+      header: "Balance",
+      sortable: true,
+      sortKey: "balance_due",
+      sortAccessor: (w) => paymentSummary(w).balanceDue,
+      className: "text-right tabular-nums",
+      headerClassName: "text-right",
+      cell: (w) => formatCurrency(paymentSummary(w).balanceDue),
+    },
+    {
       id: "order_date",
       header: "Order Date",
       sortable: true,
@@ -74,7 +85,14 @@ export function WorkOrdersTable({
     {
       id: "status",
       header: "Status",
-      cell: (w) => <WorkOrderStatusBadge status={w.status} />,
+      cell: (w) => (
+        <div className="flex flex-col items-start gap-1">
+          <WorkOrderStatusBadge status={w.status} />
+          {w.status === "approved" && (
+            <PaymentBadge source={w} isCompleted={w.is_completed} />
+          )}
+        </div>
+      ),
     },
   ];
 
@@ -88,6 +106,20 @@ export function WorkOrdersTable({
         ...statusOptions(WORK_ORDER_STATUS),
       ],
       predicate: (w, v) => w.status === v,
+    },
+    {
+      id: "payment",
+      placeholder: "Payment",
+      widthClass: "sm:w-48",
+      options: [
+        { value: "all", label: "Any payment state" },
+        { value: "pending", label: "Balance outstanding" },
+        { value: "settled", label: "Paid in full" },
+      ],
+      predicate: (w, v) =>
+        v === "pending"
+          ? !paymentSummary(w).isSettled
+          : paymentSummary(w).isSettled,
     },
     {
       id: "coordinator",
@@ -104,13 +136,20 @@ export function WorkOrdersTable({
   ];
 
   const search: SearchDef<WorkOrderListRow> = {
-    placeholder: "Search client, phone, address…",
-    columns: ["client_name", "client_phone", "address", "coordinator_name"],
+    placeholder: "Search client, phone, consumer no., address…",
+    columns: [
+      "client_name",
+      "client_phone",
+      "address",
+      "coordinator_name",
+      "consumer_number",
+    ],
     predicate: (w, q) =>
       w.client_name.toLowerCase().includes(q) ||
       (w.client_phone ?? "").toLowerCase().includes(q) ||
       (w.address ?? "").toLowerCase().includes(q) ||
-      (w.coordinator_name ?? "").toLowerCase().includes(q),
+      (w.coordinator_name ?? "").toLowerCase().includes(q) ||
+      (w.consumer_number ?? "").toLowerCase().includes(q),
   };
 
   const emptyState = (

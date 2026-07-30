@@ -5,6 +5,7 @@ import {
   type PageParams,
   type PageResult,
 } from "@/lib/pagination";
+import { OFFICE_ROLES } from "@/lib/domain/role";
 import type { Profile, UserRole } from "@/lib/types";
 
 export type Coordinator = Pick<Profile, "id" | "full_name">;
@@ -74,13 +75,54 @@ export const profilesRepository = {
     };
   },
 
-  /** Number of admin accounts (used to prevent locking out the last admin). */
+  /**
+   * Number of accounts with org-wide admin rights — `admin` *and* `superadmin`,
+   * since the SuperAdmin is a strict superset. Used to prevent locking out the
+   * last administrator.
+   */
   async adminCount(): Promise<number> {
     const supabase = await createClient();
     const { count } = await supabase
       .from("profiles")
       .select("id", { count: "exact", head: true })
-      .eq("role", "admin");
+      .in("role", OFFICE_ROLES);
     return count ?? 0;
+  },
+
+  /**
+   * Work owned by a member. `work_orders.coordinator_id` and
+   * `projects.coordinator_id` are `on delete restrict`, so deleting the account
+   * would fail — and GoTrue reports that only as an opaque "Database error
+   * deleting user". Counting first lets the caller refuse with something the
+   * office can act on.
+   */
+  async ownedWorkCount(
+    id: string,
+  ): Promise<{ workOrders: number; projects: number }> {
+    const supabase = await createClient();
+    const [workOrders, projects] = await Promise.all([
+      supabase
+        .from("work_orders")
+        .select("id", { count: "exact", head: true })
+        .eq("coordinator_id", id),
+      supabase
+        .from("projects")
+        .select("id", { count: "exact", head: true })
+        .eq("coordinator_id", id),
+    ]);
+    return {
+      workOrders: workOrders.count ?? 0,
+      projects: projects.count ?? 0,
+    };
+  },
+
+  async byId(id: string): Promise<Profile | null> {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from("profiles")
+      .select("id, full_name, phone, role, created_at")
+      .eq("id", id)
+      .maybeSingle();
+    return (data as Profile) ?? null;
   },
 };
