@@ -138,7 +138,7 @@ export default async function WorkOrderDetailPage({
             </>
           )}
 
-          {(isAdmin || isSuperAdmin) && (
+          {isAdmin && (
             <>
               <Separator />
               <div className="flex flex-wrap items-center gap-2">
