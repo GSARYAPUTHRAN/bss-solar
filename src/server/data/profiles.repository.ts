@@ -99,6 +99,33 @@ export const profilesRepository = {
     return (count ?? 0) > 0;
   },
 
+  /**
+   * Work owned by a member. `work_orders.coordinator_id` and
+   * `projects.coordinator_id` are `on delete restrict`, so deleting the account
+   * would fail — and GoTrue reports that only as an opaque "Database error
+   * deleting user". Counting first lets the caller refuse with something the
+   * office can act on.
+   */
+  async ownedWorkCount(
+    id: string,
+  ): Promise<{ workOrders: number; projects: number }> {
+    const supabase = await createClient();
+    const [workOrders, projects] = await Promise.all([
+      supabase
+        .from("work_orders")
+        .select("id", { count: "exact", head: true })
+        .eq("coordinator_id", id),
+      supabase
+        .from("projects")
+        .select("id", { count: "exact", head: true })
+        .eq("coordinator_id", id),
+    ]);
+    return {
+      workOrders: workOrders.count ?? 0,
+      projects: projects.count ?? 0,
+    };
+  },
+
   async byId(id: string): Promise<Profile | null> {
     const supabase = await createClient();
     const { data } = await supabase

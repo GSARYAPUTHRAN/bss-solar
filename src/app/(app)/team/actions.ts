@@ -176,6 +176,23 @@ export async function deleteTeamMember(formData: FormData) {
     );
   }
 
+  // Refuse up front rather than letting the FK restrict surface as GoTrue's
+  // opaque "Database error deleting user".
+  const owned = await profilesRepository.ownedWorkCount(userId);
+  if (owned.workOrders > 0 || owned.projects > 0) {
+    const parts = [
+      owned.workOrders > 0 &&
+        `${owned.workOrders} work order${owned.workOrders === 1 ? "" : "s"}`,
+      owned.projects > 0 &&
+        `${owned.projects} project${owned.projects === 1 ? "" : "s"}`,
+    ].filter(Boolean);
+    redirect(
+      `/team?error=${encodeURIComponent(
+        `${target.full_name} still owns ${parts.join(" and ")}. Reassign or delete that business first.`,
+      )}`,
+    );
+  }
+
   let admin;
   try {
     admin = createAdminClient();
@@ -187,10 +204,11 @@ export async function deleteTeamMember(formData: FormData) {
 
   const { error } = await admin.auth.admin.deleteUser(userId);
   if (error) {
-    const message = /violates foreign key|restrict/i.test(error.message)
-      ? `${target.full_name} still owns work orders. Delete or reassign those first.`
-      : error.message;
-    redirect(`/team?error=${encodeURIComponent(message)}`);
+    redirect(
+      `/team?error=${encodeURIComponent(
+        `Could not delete ${target.full_name}: ${error.message}`,
+      )}`,
+    );
   }
 
   revalidatePath("/team");

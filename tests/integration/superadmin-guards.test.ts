@@ -145,6 +145,47 @@ describe("delete is SuperAdmin-only", () => {
   });
 });
 
+describe("deleting a team member", () => {
+  it("is refused while they still own work orders (on delete restrict)", async () => {
+    // Rahul owns seeded work orders, so the profile row must be undeletable even
+    // for the privileged path the app uses (service role bypasses RLS entirely).
+    const { error } = await svc
+      .from("profiles")
+      .delete()
+      .eq("id", USERS.rahul.id);
+    expect(error).not.toBeNull();
+
+    const { data } = await svc
+      .from("profiles")
+      .select("id")
+      .eq("id", USERS.rahul.id);
+    expect(data ?? []).toHaveLength(1);
+  });
+
+  it("the SuperAdmin can delete a member who owns nothing", async () => {
+    const created = await svc.auth.admin.createUser({
+      email: `disposable-${Date.now()}@bsssolar.test`,
+      password: "Disposable@12345",
+      email_confirm: true,
+      user_metadata: { full_name: "Disposable Staff" },
+    });
+    expect(created.error).toBeNull();
+    const id = created.data.user!.id;
+
+    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const { data: deleted, error } = await su
+      .from("profiles")
+      .delete()
+      .eq("id", id)
+      .select("id");
+    expect(error).toBeNull();
+    expect(deleted ?? []).toHaveLength(1);
+
+    // Clean up the auth user the profile row was hanging off.
+    await svc.auth.admin.deleteUser(id);
+  });
+});
+
 describe("the SuperAdmin seat", () => {
   beforeEach(async () => {
     // Every test below assumes the seeded seat is occupied by the seeded holder.
