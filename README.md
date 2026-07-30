@@ -189,10 +189,13 @@ npm run db:types   # Regenerate src/lib/supabase/database.types.ts from local DB
   local Supabase stack — they assert that a coordinator cannot escalate to admin,
   cannot self-approve work orders, tenant data stays isolated, approval seeds the 9
   milestones, ticket numbers are unique, **deletes are refused for anyone but the
-  Super Admin**, the Super Admin seat cannot be duplicated or hijacked, a coordinator's
-  edits surface on their project, and the SQL payment maths agrees with `lib/domain/payment.ts`.
+  Super Admin**, the Super Admin seat cannot be duplicated, hijacked, or changed by
+  anyone signed in (including its holder) while ordinary role management still works,
+  a coordinator's edits surface on their project, and the SQL payment maths agrees
+  with `lib/domain/payment.ts`.
 - **E2E** covers login/RBAC redirects, work-order creation and editing, the
-  Super Admin-only delete affordances, and the commissioned-but-unpaid dashboard KPI.
+  Super Admin-only delete affordances, the locked Super Admin role row, and the
+  commissioned-but-unpaid dashboard KPI.
 
 > `E2E_PORT=3711 npm run test:e2e` runs the suite on another port if 3100 is taken.
 - CI (`.github/workflows/ci.yml`) runs all of the above on every PR. See
