@@ -89,16 +89,6 @@ export const profilesRepository = {
     return count ?? 0;
   },
 
-  /** Is the SuperAdmin seat currently occupied? */
-  async superAdminExists(): Promise<boolean> {
-    const supabase = await createClient();
-    const { count } = await supabase
-      .from("profiles")
-      .select("id", { count: "exact", head: true })
-      .eq("role", "superadmin");
-    return (count ?? 0) > 0;
-  },
-
   /**
    * Work owned by a member. `work_orders.coordinator_id` and
    * `projects.coordinator_id` are `on delete restrict`, so deleting the account

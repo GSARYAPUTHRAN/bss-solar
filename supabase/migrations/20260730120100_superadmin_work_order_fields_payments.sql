@@ -3,7 +3,10 @@
 -- ----------------------------------------------------------------------------
 -- 1. SuperAdmin — a single privileged account that owns *destructive* actions
 --    (deleting users, projects and work orders). Regular admins keep every
---    other capability but can no longer delete.
+--    other capability but can no longer delete. The role itself is immutable
+--    from the application: only a server-side context (auth.uid() IS NULL) can
+--    grant or revoke it, which makes production-bootstrap.sql the single
+--    provisioning and recovery path.
 -- 2. Extra work-order fields captured by the office after the sale
 --    (consumer number, KSEB section, loan bank, notes, two staged payments).
 -- 3. Payment tracking — amount received / balance due are derived from the work
@@ -62,9 +65,14 @@ create unique index if not exists uniq_profiles_single_superadmin
   where role = 'superadmin';
 
 -- ---------------------------------------------------------------------------
--- 2. Role-change guard. Non-admins still cannot touch roles at all. Granting or
---    revoking SuperAdmin is reserved to the SuperAdmin — except while the seat
---    is vacant, when any admin may appoint the first one (bootstrap / recovery).
+-- 2. Role-change guard. Non-admins still cannot touch roles at all, and the
+--    SuperAdmin role is IMMUTABLE from the application: no signed-in user —
+--    not an admin, not even the SuperAdmin themselves — can grant or revoke it.
+--
+--    Like the other guards in this schema, a server-side context (service-role
+--    key, or the superuser running migrations/seed, where auth.uid() is NULL) is
+--    still allowed: that is the single, deliberate provisioning and recovery
+--    path, documented in supabase/production-bootstrap.sql.
 -- ---------------------------------------------------------------------------
 create or replace function public.guard_profile_role()
 returns trigger
@@ -79,10 +87,8 @@ begin
         using errcode = '42501';
     end if;
 
-    if (new.role::text = 'superadmin' or old.role::text = 'superadmin')
-       and not public.is_superadmin()
-       and exists (select 1 from profiles where role::text = 'superadmin') then
-      raise exception 'Only the SuperAdmin can grant or revoke the SuperAdmin role'
+    if new.role::text = 'superadmin' or old.role::text = 'superadmin' then
+      raise exception 'The SuperAdmin role cannot be granted or revoked from the application'
         using errcode = '42501';
     end if;
   end if;

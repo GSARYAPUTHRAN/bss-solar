@@ -9,22 +9,26 @@ import { enumValue, str, text } from "@/server/form";
 import { fail, ok, type ActionResult } from "@/lib/result";
 import { withFlash } from "@/lib/flash";
 import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
-import { ROLE_LABELS, isSuperAdminRole, isUserRole } from "@/lib/domain/role";
+import {
+  ROLE_LABELS,
+  isAssignableRole,
+  isSuperAdminRole,
+  isUserRole,
+} from "@/lib/domain/role";
 import type { UserRole } from "@/lib/types";
 
 /**
- * May the caller move the SuperAdmin seat? Only the sitting SuperAdmin can —
- * except while the seat is vacant, when any admin may appoint the first one
- * (bootstrap on a fresh install, and the recovery path if the account is lost).
- * A DB trigger enforces the same rule, and a unique index caps the seat at one.
+ * The SuperAdmin is the top of the hierarchy and is immutable from the app: the
+ * seat cannot be granted, revoked, or reassigned here by anyone — not an admin,
+ * and not the SuperAdmin themselves. A DB trigger rejects it independently, and a
+ * unique index caps the seat at one. Provisioning and recovery are SQL-only; see
+ * supabase/production-bootstrap.sql.
  */
-async function canGrantSuperAdmin(me: { role: UserRole }): Promise<boolean> {
-  if (isSuperAdminRole(me.role)) return true;
-  return !(await profilesRepository.superAdminExists());
-}
+const SUPERADMIN_IMMUTABLE =
+  "The Super Admin role cannot be changed here. It is set directly on the database.";
 
 export async function createTeamMember(formData: FormData) {
-  const me = await requireAdmin();
+  await requireAdmin();
 
   const fullName = text(formData.get("full_name"));
   const email = text(formData.get("email"));
@@ -32,22 +36,19 @@ export async function createTeamMember(formData: FormData) {
   const phone = str(formData.get("phone"));
   const role = enumValue<UserRole>(formData.get("role"), "coordinator");
 
-  if (!isUserRole(role)) {
-    redirect(`/team/new?error=${encodeURIComponent("Invalid role")}`);
+  // The profile row is written with the service-role client below, which bypasses
+  // RLS *and* leaves the DB guard inert (auth.uid() is null), so the SuperAdmin
+  // rule has to be enforced here.
+  if (!isUserRole(role) || !isAssignableRole(role)) {
+    redirect(
+      `/team/new?error=${encodeURIComponent(
+        isSuperAdminRole(role as UserRole) ? SUPERADMIN_IMMUTABLE : "Invalid role",
+      )}`,
+    );
   }
   if (password.length < MIN_PASSWORD_LENGTH) {
     redirect(
       `/team/new?error=${encodeURIComponent(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`)}`,
-    );
-  }
-  // The profile row is written with the service-role client below, which bypasses
-  // RLS *and* leaves the DB guard inert (auth.uid() is null), so the SuperAdmin
-  // rule has to be enforced here.
-  if (isSuperAdminRole(role) && !(await canGrantSuperAdmin(me))) {
-    redirect(
-      `/team/new?error=${encodeURIComponent(
-        "Only the SuperAdmin can create another SuperAdmin. Demote the current one first.",
-      )}`,
     );
   }
 
@@ -86,22 +87,12 @@ export async function createTeamMember(formData: FormData) {
       // Roll back the just-created auth user so it isn't orphaned and the
       // email can be reused on retry.
       await admin.auth.admin.deleteUser(data.user.id);
-      redirect(
-        `/team/new?error=${encodeURIComponent(describeRoleError(profileError.message))}`,
-      );
+      redirect(`/team/new?error=${encodeURIComponent(profileError.message)}`);
     }
   }
 
   revalidatePath("/team");
   redirect(withFlash("/team", "Team member added."));
-}
-
-/** Turn the raw Postgres failure into something an office user can act on. */
-function describeRoleError(message: string): string {
-  if (message.includes("uniq_profiles_single_superadmin")) {
-    return "There can only be one SuperAdmin. Reassign the existing one first.";
-  }
-  return message;
 }
 
 export async function updateUserRole(
@@ -112,7 +103,7 @@ export async function updateUserRole(
 
   if (!isUserRole(role)) return fail("Invalid role");
 
-  // Never let an admin demote themselves (would risk an admin lock-out).
+  // Never let anyone demote themselves (would risk an admin lock-out).
   if (userId === me.id && role !== me.role) {
     return fail("You cannot change your own role.");
   }
@@ -121,11 +112,9 @@ export async function updateUserRole(
   if (!target) return fail("That team member no longer exists.");
   if (target.role === role) return ok(undefined);
 
-  // Only the SuperAdmin may move the seat (see canGrantSuperAdmin).
-  const touchesSuperAdmin =
-    isSuperAdminRole(role) || isSuperAdminRole(target.role);
-  if (touchesSuperAdmin && !(await canGrantSuperAdmin(me))) {
-    return fail("Only the SuperAdmin can grant or revoke the SuperAdmin role.");
+  // The seat is immutable from the app, in both directions and for everyone.
+  if (isSuperAdminRole(role) || isSuperAdminRole(target.role)) {
+    return fail(SUPERADMIN_IMMUTABLE);
   }
 
   // Belt-and-suspenders: never remove the last remaining administrator.
@@ -133,20 +122,8 @@ export async function updateUserRole(
     return fail("At least one administrator is required.");
   }
 
-  // Promoting someone else while holding the seat is a *transfer*: step down
-  // first, because a unique index allows only one SuperAdmin at a time.
-  const isTransfer = isSuperAdminRole(role) && isSuperAdminRole(me.role);
-  if (isTransfer) {
-    const stepDown = await profilesRepository.setRole(me.id, "admin");
-    if (stepDown.error) return fail(describeRoleError(stepDown.error));
-  }
-
   const { error } = await profilesRepository.setRole(userId, role);
-  if (error) {
-    // Restore the seat so a failed transfer cannot leave it vacant.
-    if (isTransfer) await profilesRepository.setRole(me.id, "superadmin");
-    return fail(describeRoleError(error));
-  }
+  if (error) return fail(error);
 
   revalidatePath("/team");
   return ok(undefined);
@@ -173,6 +150,17 @@ export async function deleteTeamMember(formData: FormData) {
   if (!target) {
     redirect(
       `/team?error=${encodeURIComponent("That team member no longer exists.")}`,
+    );
+  }
+
+  // The SuperAdmin account cannot be removed from the app either. Unreachable
+  // today (the seat holds one member and they cannot delete themselves), but the
+  // rule should not depend on that coincidence.
+  if (isSuperAdminRole(target.role)) {
+    redirect(
+      `/team?error=${encodeURIComponent(
+        "The Super Admin account cannot be deleted here.",
+      )}`,
     );
   }
 

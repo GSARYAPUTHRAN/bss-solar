@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  ASSIGNABLE_ROLES,
   OFFICE_ROLES,
   ROLE_LABELS,
+  isAssignableRole,
   isOfficeRole,
   isSuperAdminRole,
   isUserRole,
@@ -30,23 +32,25 @@ describe("isSuperAdminRole", () => {
 });
 
 describe("roleOptions", () => {
-  it("hides the SuperAdmin seat from someone who cannot grant it", () => {
-    expect(roleOptions(false).map((o) => o.value)).toEqual([
-      "coordinator",
-      "admin",
-    ]);
-  });
-  it("offers the SuperAdmin seat when it may be granted", () => {
-    expect(roleOptions(true).map((o) => o.value)).toEqual([
-      "coordinator",
-      "admin",
-      "superadmin",
-    ]);
+  it("never offers the SuperAdmin seat — it is not assignable from the app", () => {
+    expect(roleOptions().map((o) => o.value)).toEqual(["coordinator", "admin"]);
+    expect(roleOptions().map((o) => o.value)).not.toContain("superadmin");
   });
   it("labels every option from the registry", () => {
-    for (const option of roleOptions(true)) {
+    for (const option of roleOptions()) {
       expect(option.label).toBe(ROLE_LABELS[option.value]);
     }
+  });
+});
+
+describe("isAssignableRole", () => {
+  it("excludes superadmin, includes the rest", () => {
+    expect(isAssignableRole("superadmin")).toBe(false);
+    expect(isAssignableRole("admin")).toBe(true);
+    expect(isAssignableRole("coordinator")).toBe(true);
+  });
+  it("agrees with ASSIGNABLE_ROLES", () => {
+    expect(ASSIGNABLE_ROLES).toEqual(["coordinator", "admin"]);
   });
 });
 

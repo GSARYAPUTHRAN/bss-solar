@@ -14,8 +14,10 @@ installation tracking, team management, and a maintenance service-ticketing syst
 ## Features
 
 - **Auth & RBAC** — Supabase email/password auth with three roles:
-  - `superadmin` — **exactly one account**. Everything an admin can do, plus the only
-    role that can **delete** users, projects and work orders (enforced by RLS, not just the UI).
+  - `superadmin` — **exactly one account**, the highest privilege. Everything an admin
+    can do, plus the only role that can **delete** users, projects and work orders
+    (enforced by RLS, not just the UI). The role itself is not editable from the app by
+    anyone — it is set directly on the database.
   - `admin` (office staff) — sees and manages all data, but cannot delete.
   - `coordinator` (field sales) — sees only their own work orders/projects/tickets (enforced by RLS).
 - **Work Orders (CRM)** — log client, capacity, KSEB consumer number & section, loan bank,
@@ -140,17 +142,25 @@ public/brand/                  # Official logo assets from bsssolar.com
 | Projects           | Everything + delete| Read/update all, approve    | Read their own                     |
 | Project Milestones | Update             | Update                      | Read their own                     |
 | Service Tickets    | Full CRUD          | Full CRUD                   | Read tickets on their own projects |
-| Team / Profiles    | Add + roles + delete| Add + roles (not SuperAdmin)| Read own profile only              |
+| Team / Profiles    | Add + roles + delete| Add + roles                 | Read own profile only              |
 
 ### The Super Admin seat
 
 - There is **exactly one**, enforced by a partial unique index on `profiles`.
-- Only the sitting Super Admin can grant or revoke the seat. Choosing *Super Admin*
-  for another member on the Team page **transfers** it (the holder steps down to admin).
-- While the seat is **vacant**, any admin may appoint the first holder — that is the
-  bootstrap path on a fresh install and the recovery path if the account is lost.
-- Deleting a member who still owns work orders is refused (`on delete restrict`);
-  reassign or delete that business first.
+- The role is **immutable from the app**. It is never offered in a role picker, the
+  holder's row renders as a locked badge, and no signed-in user — not an admin, not
+  even the Super Admin themselves — can grant, revoke or reassign it. A database
+  trigger (`guard_profile_role`) rejects any such change independently of the UI.
+- The Super Admin account also cannot be deleted from the app.
+- Appointing or moving the seat is therefore **SQL-only**, via
+  [`supabase/production-bootstrap.sql`](supabase/production-bootstrap.sql) — which is
+  also the recovery path if the account is lost. The one context the trigger permits
+  is a server-side one (`auth.uid()` is `NULL`), matching how every other guard in
+  this schema is written.
+- The Super Admin can still manage ordinary roles (admin ↔ coordinator) as usual;
+  immutability is scoped to the seat itself.
+- Deleting a member who still owns work orders or projects is refused
+  (`on delete restrict`); reassign or delete that business first.
 - Deleting a project returns its work order to `pending`, so the invariant
   "approved work order ⇒ has a project" always holds and it can be approved again.
 

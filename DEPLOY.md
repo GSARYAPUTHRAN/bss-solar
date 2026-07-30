@@ -226,12 +226,23 @@ There is no public sign-up page. Create the first admin manually:
 
 4. Use **Team → Add Member** to create coordinator accounts.
 
-5. **Appoint the Super Admin** (the only role that can delete users, projects and
-   work orders). The seat starts vacant, so any admin can fill it once: **Team →**
-   pick the member **→ role menu → Super Admin**. After that only the sitting
-   Super Admin can move the seat — choosing *Super Admin* for someone else transfers
-   it. `production-bootstrap.sql` has a commented statement for doing it in SQL if
-   the account is ever lost.
+5. **Appoint the Super Admin** — the highest privilege, and the only role that can
+   delete users, projects and work orders.
+
+   This role is **not assignable from the app by anyone** (a DB trigger rejects it
+   even for the Super Admin), so it is done in SQL:
+
+   1. **Authentication → Users → Add user** — the Super Admin's email, a strong
+      password you choose, **Auto confirm user** ticked.
+   2. **SQL Editor** — run the *Super Admin* section of
+      [`supabase/production-bootstrap.sql`](supabase/production-bootstrap.sql) after
+      editing the email inside it.
+   3. Sign in and confirm the Team page shows the role as a locked **Super Admin**
+      badge with no dropdown, and that Delete appears on team/work-order/project pages.
+
+   The same statement is how you move the seat later (demote the current holder in the
+   same run — the unique index refuses a second) and how you recover if the account is
+   lost. Nothing in the UI can do it.
 
 ---
 
@@ -249,6 +260,7 @@ There is no public sign-up page. Create the first admin manually:
 | Payments | Set a total + partial payments → `Balance` column and badge update |
 | Commissioned · Unpaid | Dashboard KPI links to the filtered project list |
 | Delete | Only the Super Admin sees Delete on team/work orders/projects |
+| Seat locked | The Super Admin's row shows a badge, not a role dropdown, for everyone |
 
 ---
 
