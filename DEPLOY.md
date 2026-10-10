@@ -48,8 +48,9 @@ npx supabase db push
 
 ### Updating an existing production database ⚠️
 
-Each migration is idempotent, so on a DB that was provisioned from `schema.sql` you can
-safely paste and run these files in the **SQL Editor** in order:
+Each migration can be re-run: it skips or replaces what already exists, and its one data
+copy (step 10) never duplicates a payment. So on a DB that was provisioned from
+`schema.sql` you can paste and run these files in the **SQL Editor** in order:
 
 1. `supabase/migrations/20260709120000_security_hardening.sql` — **closes the coordinator
    → admin privilege-escalation hole and the self-approval hole**, and makes approval
@@ -68,17 +69,53 @@ safely paste and run these files in the **SQL Editor** in order:
    SuperAdmin role + SuperAdmin-only DELETE policies, the extra work-order columns
    (consumer number, notes, KSEB section, loan bank, two staged payments), the derived
    payment columns on the list views, and the commissioned-unpaid dashboard KPIs.
+8. `supabase/migrations/20261010120000_service_engineer_enum.sql` — adds the
+   `service_engineer` role value. **Run this file alone**, then the rest (same enum rule
+   as step 6).
+9. `20261010120100_roles_financing_capacity.sql` — role helpers, self/loan financing,
+   numeric `plant_capacity_kw` (generated from the capacity label), work-order owner guard,
+   and office-only approval and amounts (see the behaviour changes below).
+10. `20261010120200_payments_ledger.sql` — the payments ledger (any number of stages).
+    The two fixed payment slots are copied into it (each copy marked by
+    `payments.legacy_slot`) and left in place, deprecated; until the next release a
+    temporary trigger mirrors every write to them into the ledger. A re-run copies only a
+    slot that has no ledger row — never a second copy, even after the office edited the
+    first — but it does restore a migrated payment the Super Admin has since deleted, so
+    do not re-run it after deleting one.
+11. `20261010120300_feasibility_incentives.sql` — KSEB feasibility date + 30-day clock,
+    coordinator incentives.
+12. `20261010120400_service_engineer_access.sql` — engineer RLS, status-only guard,
+    `engineer_tickets()`.
+13. `20261010120500_notifications.sql` — notification inbox and the record of alerts
+    already sent, push subscriptions (real push services only, 10 devices per user),
+    realtime.
+14. `20261010120600_list_views_and_metrics.sql` — rebuilt list views + dashboard KPIs.
+15. `20261010120700_import_projects_rpc.sql` — the atomic bulk-import function.
 
-Or, if the project is linked to the CLI, run `npx supabase db push`.
+Or, if the project is linked to the CLI, run `npx supabase db push` (the CLI applies
+each file in its own transaction, so the enum rule takes care of itself).
 
-#### One behaviour change to be aware of
+#### Behaviour changes to be aware of
 
-Migration 7 makes **DELETE SuperAdmin-only** on `work_orders`, `projects` and `profiles`.
-Because the schema is applied *before* the new code deploys, in the gap between the two an
-admin using the currently-deployed build can still press **Delete** — RLS filters the row
-out, so nothing is deleted. The new build detects the zero-row delete and reports it
-instead of showing a false success. Keep the gap short by merging `master → production`
-once CI is green.
+The schema is applied *before* the new code deploys, so for a while the currently-deployed
+build runs against it:
+
+- Migration 7 makes **DELETE SuperAdmin-only** on `work_orders`, `projects` and
+  `profiles`. In the gap an admin using the currently-deployed build can still press
+  **Delete** — RLS filters the row out, so nothing is deleted. The new build detects the
+  zero-row delete and reports it instead of showing a false success.
+- Migration 9 makes **the amounts of an approved work order office-only**. A coordinator
+  still edits everything on a pending work order and the details of an approved one, but
+  changing the advance or the total cost (or, in the old build, a first/second payment)
+  once the order is approved or rejected is refused with *"Only the office can change the
+  amounts of an approved or rejected work order"*. It also refuses a coordinator creating
+  a work order in any status but pending — the app never offered that.
+- Migration 10 keeps **payments entered in the old build**: it still writes the deprecated
+  first/second payment fields, and a temporary trigger copies every such write into the
+  payments ledger (as *Migrated: first/second payment*), so nothing recorded in the gap is
+  lost.
+
+Keep the gap short by merging `master → production` once CI is green.
 
 ### Collect API keys
 
@@ -130,6 +167,23 @@ Keep the **secret / service_role** key private — server-only (Team → Add Mem
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | your `sb_publishable_…` key |
 | `SUPABASE_SERVICE_ROLE_KEY` | your `sb_secret_…` key |
 
+   **Optional — notifications.** The app works without these; each one switches a
+   feature on:
+
+   | Name | Enables | How to get it |
+   | ---- | ------- | ------------- |
+   | `NEXT_PUBLIC_VAPID_PUBLIC_KEY` | Browser push notifications | `node scripts/generate-vapid-keys.mjs` prints a pair |
+   | `VAPID_PRIVATE_KEY` | (pairs with the public key — **secret**) | same command |
+   | `VAPID_SUBJECT` | Contact for push services (defaults to the company email) | e.g. `mailto:bsssolarkerala@gmail.com` |
+   | `CRON_SECRET` | The daily feasibility alert job (`/api/cron/daily`) | any long random string, e.g. `openssl rand -hex 32` |
+
+   Without the VAPID keys, notifications still appear in the in-app bell — only the
+   phone/desktop push is off. Without `CRON_SECRET` the daily job refuses every call
+   (fails closed), so feasibility expiry alerts are not sent. Vercel calls the job at
+   08:00 IST (`vercel.json`) and sends the secret automatically. **Generate the VAPID
+   pair once and never rotate it casually** — every existing device subscription is
+   tied to the public key and would have to re-enable push.
+
 4. Click **Deploy** and wait for the build to finish.
 5. Add custom domain **bss-solar.com** under **Settings → Domains** (already done if purchased on Vercel).
 6. Return to Supabase **URL configuration** (Step 2):
@@ -166,7 +220,7 @@ ship the code that uses it.
 
 > Where a migration also *tightens* a policy — as the SuperAdmin release does for
 > `DELETE` — the old code fails closed in the gap rather than misbehaving. See
-> [One behaviour change to be aware of](#one-behaviour-change-to-be-aware-of) and
+> [Behaviour changes to be aware of](#behaviour-changes-to-be-aware-of) and
 > keep the gap short by merging to `production` as soon as CI is green.
 
 Enable it once by adding three **repo secrets**
@@ -244,6 +298,41 @@ There is no public sign-up page. Create the first admin manually:
    same run — the unique index refuses a second) and how you recover if the account is
    lost. Nothing in the UI can do it.
 
+6. **Add service engineers** — Team → Add Member → role **Service Engineer**. They sign
+   in on their phones, land on *Service Tickets*, and see only tickets assigned to them.
+
+---
+
+## Fresh start: wipe business data, then bulk-import ⚠️
+
+Use this once, to replace trial data with the real project list. It is **destructive and
+irreversible** — take a backup first (**Database → Backups**, or `pg_dump`).
+
+Order matters: the reset script and the importer both rely on this release's schema.
+
+1. **Deploy this release first** (migrations applied, new build live).
+2. **Preview** — paste [`supabase/scripts/reset-business-data-preview.sql`](supabase/scripts/reset-business-data-preview.sql)
+   into the SQL Editor. It changes nothing; it lists the accounts that will be kept and
+   deleted and the row counts that will be wiped.
+3. **Edit the keep-list** at the very top of
+   [`supabase/scripts/reset-business-data.sql`](supabase/scripts/reset-business-data.sql) —
+   the emails of every account to keep (it is pre-filled with `admin@bsssolar.in` and
+   `gsputhran@yahoo.com`). Everything else goes: all other users, work orders, projects,
+   milestones, payments, service tickets, notifications (with the record of alerts already
+   sent) and push subscriptions.
+4. **Run it.** It is a single atomic block: if any keep-list email does not exist (a typo
+   that would otherwise delete the account you meant to keep), if the list is empty, or if
+   no kept account is an admin/Super Admin, it aborts and **deletes nothing**.
+5. **Re-create staff** — Team → Add Member for coordinators and service engineers, so
+   their emails exist before the import assigns projects to them.
+6. **Bulk-import** — Onboarding → *Download template*, fill it in, upload. Every row is
+   imported all-or-nothing; the result table lists imported / skipped / failed rows and
+   *Download failed rows* gives you a CSV of exactly the rows to fix. **Fix and re-upload
+   that file, not the original.** Leave **Skip rows whose consumer number already exists**
+   ticked: it skips a row whose KSEB consumer number is already in the database, but only
+   rows **with** a consumer number are protected — a row without one is imported again
+   every time it is uploaded.
+
 ---
 
 ## Step 5 — Smoke test (production)
@@ -261,6 +350,13 @@ There is no public sign-up page. Create the first admin manually:
 | Commissioned · Unpaid | Dashboard KPI links to the filtered project list |
 | Delete | Only the Super Admin sees Delete on team/work orders/projects |
 | Seat locked | The Super Admin's row shows a badge, not a role dropdown, for everyone |
+| Payments ledger | Record 4+ payments on a project; stages number 1…N and the balance falls |
+| Financing | Set a work order to *Bank loan*; the badge shows on the work order and project |
+| KSEB & feasibility | Set a feasibility date; the project shows valid-until, days left, fees incl. GST |
+| Incentive | Office sets an incentive; the coordinator sees it but cannot edit it |
+| Service engineer | Assign a ticket; the engineer sees only it, can Start / Complete, nothing else |
+| Notifications | The bell counts new items; *Enable push* on a phone, approve a work order, the phone buzzes |
+| Daily job | `curl -H "Authorization: Bearer $CRON_SECRET" https://app.bss-solar.com/api/cron/daily` returns a JSON report |
 
 ---
 
