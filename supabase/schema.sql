@@ -218,26 +218,9 @@ create table work_orders (
   financing_type financing_type not null default 'self',
   loan_bank_name text,
 
-  -- DEPRECATED fixed payment slots, superseded by the payments ledger. Kept
-  -- only so a schema.sql database matches a migrated one; the app never reads
-  -- them, and any write is mirrored into the ledger (mirror_legacy_payment_slots).
-  -- Dropped in the next release (expand/contract).
-  first_payment_date date,
-  first_payment_amount numeric(12,2),
-  second_payment_date date,
-  second_payment_amount numeric(12,2),
-
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-comment on column work_orders.first_payment_amount is
-  'DEPRECATED: superseded by the payments ledger (migrated 2026-10). Drop next release.';
-comment on column work_orders.first_payment_date is
-  'DEPRECATED: superseded by the payments ledger (migrated 2026-10). Drop next release.';
-comment on column work_orders.second_payment_amount is
-  'DEPRECATED: superseded by the payments ledger (migrated 2026-10). Drop next release.';
-comment on column work_orders.second_payment_date is
-  'DEPRECATED: superseded by the payments ledger (migrated 2026-10). Drop next release.';
 
 create index idx_work_orders_coordinator on work_orders(coordinator_id);
 create index idx_work_orders_status on work_orders(status);
@@ -393,8 +376,9 @@ create table payments (
   reference text,
   notes text,
   recorded_by uuid references profiles(id) on delete set null,
-  -- Which deprecated work-order slot (1 = first, 2 = second payment) this row
-  -- carries over; NULL for every payment recorded in the ledger itself.
+  -- Which of the old fixed work-order slots (1 = first, 2 = second payment,
+  -- dropped 2026-10) this row was carried over from; NULL for every payment
+  -- recorded in the ledger itself.
   legacy_slot smallint
     constraint payments_legacy_slot_valid check (legacy_slot in (1, 2)),
   created_at timestamptz not null default now(),
@@ -404,56 +388,6 @@ create index idx_payments_work_order on payments (work_order_id, paid_on);
 create unique index uniq_payments_legacy_slot
   on payments (work_order_id, legacy_slot)
   where legacy_slot is not null;
-
--- TEMPORARY — dropped together with the deprecated work_orders payment slots
--- next release. While a build that still writes those slots may be live, each
--- change is mirrored into the slot's ledger row (a positive amount creates or
--- updates it, a cleared or zero amount removes it). Once an order has left
--- 'pending', only the office may change the slots, as with the advance and the
--- total cost.
-create or replace function mirror_legacy_payment_slots()
-returns trigger language plpgsql security definer set search_path = public as $$
-declare
-  s record;
-begin
-  for s in
-    select v.*
-    from (values
-      (1::smallint, new.first_payment_amount, new.first_payment_date,
-       old.first_payment_amount, old.first_payment_date, 'Migrated: first payment'),
-      (2::smallint, new.second_payment_amount, new.second_payment_date,
-       old.second_payment_amount, old.second_payment_date, 'Migrated: second payment')
-    ) as v (slot, amount, paid_on, old_amount, old_paid_on, note)
-    -- The old edit form re-sends every column: act only on a slot that changed.
-    where (tg_op = 'INSERT' and v.amount > 0)
-       or (tg_op = 'UPDATE'
-           and (v.amount, v.paid_on) is distinct from (v.old_amount, v.old_paid_on))
-  loop
-    if tg_op = 'UPDATE' and old.status <> 'pending'
-       and auth.uid() is not null and not public.is_admin() then
-      raise exception 'Only the office can change the amounts of an approved or rejected work order'
-        using errcode = '42501';
-    end if;
-
-    if s.amount is null or s.amount <= 0 then
-      delete from payments
-       where work_order_id = new.id and legacy_slot = s.slot;
-    else
-      insert into payments (work_order_id, amount, paid_on, method, purpose, notes, legacy_slot)
-      values (new.id, s.amount, coalesce(s.paid_on, new.order_date), 'other', 'contract',
-              s.note, s.slot)
-      on conflict (work_order_id, legacy_slot) where legacy_slot is not null
-      do update set amount = excluded.amount, paid_on = excluded.paid_on;
-    end if;
-  end loop;
-  return null;
-end;
-$$;
-create trigger t_wo_mirror_legacy_payments
-  after insert or update of first_payment_amount, first_payment_date,
-    second_payment_amount, second_payment_date
-  on work_orders
-  for each row execute function mirror_legacy_payment_slots();
 
 -- ============ NOTIFICATIONS (in-app inbox) ============
 -- Rows are written ONLY by trusted server code (service role, through
