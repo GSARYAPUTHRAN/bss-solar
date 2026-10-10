@@ -1,12 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
 import { LIST_QUERY_LIMIT } from "@/lib/constants";
 import {
+  fetchCountedPage,
   rangeFor,
   sanitizeSearch,
   type PageParams,
   type PageResult,
 } from "@/lib/pagination";
+import { isFinancingType } from "@/lib/domain/payment";
+import { oneToOne } from "./embeds";
 import type {
+  FinancingType,
   WorkOrder,
   WorkOrderListRow,
   WorkOrderStatus,
@@ -25,35 +29,34 @@ const WO_SORT_COLUMNS = new Set([
 
 /** Explicit columns + joins needed to render a work order (no SELECT *). */
 const SELECT = `id, coordinator_id, client_name, client_phone, address,
-  plant_capacity, advance_amount, total_cost, order_date, status,
-  consumer_number, notes, kseb_section, loan_bank_name,
-  first_payment_date, first_payment_amount,
-  second_payment_date, second_payment_amount,
+  plant_capacity, plant_capacity_kw, advance_amount, total_cost, order_date,
+  status, consumer_number, notes, kseb_section, financing_type, loan_bank_name,
   created_at, updated_at,
   coordinator:profiles!work_orders_coordinator_id_fkey(id, full_name),
   projects(id, current_stage, is_completed)`;
 
-/** Flatten the one-to-one `projects[]` join into a single `project`. */
+/** Flatten the one-to-one `projects` embed into a single `project`. */
 function mapWorkOrder(row: Record<string, unknown>): WorkOrder {
   const { projects, ...rest } = row as {
-    projects?: WorkOrder["project"][] | null;
+    projects?: WorkOrder["project"] | WorkOrder["project"][] | null;
   } & Record<string, unknown>;
   return {
     ...(rest as unknown as WorkOrder),
-    project: projects && projects.length > 0 ? projects[0] : null,
+    project: oneToOne(projects),
   };
 }
 
-/** The office/field detail fields, shared by create and update. */
+/**
+ * The office/field detail fields, shared by create and update. Collections after
+ * the booking advance live in the payments ledger, never on the work order.
+ */
 export interface WorkOrderDetailsInput {
   consumer_number: string | null;
   notes: string | null;
   kseb_section: string | null;
+  financing_type: FinancingType;
+  /** Null unless `financing_type` is "loan". */
   loan_bank_name: string | null;
-  first_payment_date: string | null;
-  first_payment_amount: number | null;
-  second_payment_date: string | null;
-  second_payment_amount: number | null;
 }
 
 export interface WorkOrderInput extends WorkOrderDetailsInput {
@@ -105,39 +108,54 @@ export const workOrdersRepository = {
     const supabase = await createClient();
     const [from, to] = rangeFor(params.page, params.pageSize);
 
-    let query = supabase.from("work_orders_list").select("*", { count: "exact" });
+    const filtered = (head: boolean) => {
+      let query = supabase
+        .from("work_orders_list")
+        .select("*", { count: "exact", head });
 
-    const q = sanitizeSearch(params.q);
-    if (q) {
-      const like = `%${q}%`;
-      query = query.or(
-        `client_name.ilike.${like},client_phone.ilike.${like},address.ilike.${like},coordinator_name.ilike.${like},consumer_number.ilike.${like}`,
-      );
-    }
-    if (params.filters.status) {
-      query = query.eq("status", params.filters.status as WorkOrderStatus);
-    }
-    if (params.filters.coordinator) {
-      query = query.eq("coordinator_id", params.filters.coordinator);
-    }
-    // "Money still to collect" across the CRM, regardless of project stage.
-    if (params.filters.payment === "pending") {
-      query = query.gt("balance_due", 0);
-    } else if (params.filters.payment === "settled") {
-      query = query.lte("balance_due", 0);
-    }
+      const q = sanitizeSearch(params.q);
+      if (q) {
+        const like = `%${q}%`;
+        query = query.or(
+          `client_name.ilike.${like},client_phone.ilike.${like},address.ilike.${like},coordinator_name.ilike.${like},consumer_number.ilike.${like}`,
+        );
+      }
+      if (params.filters.status) {
+        query = query.eq("status", params.filters.status as WorkOrderStatus);
+      }
+      if (params.filters.coordinator) {
+        query = query.eq("coordinator_id", params.filters.coordinator);
+      }
+      // An unknown value is ignored rather than handed to Postgres as a bad enum.
+      const financing = params.filters.financing;
+      if (financing && isFinancingType(financing)) {
+        query = query.eq("financing_type", financing);
+      }
+      // "Money still to collect" across the CRM, regardless of project stage.
+      if (params.filters.payment === "pending") {
+        query = query.gt("balance_due", 0);
+      } else if (params.filters.payment === "settled") {
+        query = query.lte("balance_due", 0);
+      }
+      return query;
+    };
 
     const sortCol = WO_SORT_COLUMNS.has(params.sort ?? "")
       ? (params.sort as "order_date")
       : "order_date";
-    query = query
-      .order(sortCol, { ascending: params.dir === "asc" })
-      .range(from, to);
-
-    const { data, count } = await query;
+    const { rows, total } = await fetchCountedPage(
+      {
+        rows: () =>
+          filtered(false)
+            .order(sortCol, { ascending: params.dir === "asc" })
+            .range(from, to),
+        countOnly: () => filtered(true),
+      },
+      "work orders",
+    );
     return {
-      rows: (data as WorkOrderListRow[]) ?? [],
-      total: count ?? 0,
+      rows: rows as WorkOrderListRow[],
+      total,
       page: params.page,
       pageSize: params.pageSize,
     };
@@ -153,10 +171,19 @@ export const workOrdersRepository = {
     return data ? mapWorkOrder(data as Record<string, unknown>) : null;
   },
 
-  async create(input: WorkOrderInput): Promise<{ error: string | null }> {
+  /** Insert and return the new id (notifications link to it). */
+  async create(
+    input: WorkOrderInput,
+  ): Promise<{ id: string | null; error: string | null }> {
     const supabase = await createClient();
-    const { error } = await supabase.from("work_orders").insert(input);
-    return { error: error?.message ?? null };
+    const { data, error } = await supabase
+      .from("work_orders")
+      .insert(input)
+      .select("id")
+      .maybeSingle();
+    if (error) return { id: null, error: error.message };
+    if (!data) return { id: null, error: "Work order was not created." };
+    return { id: data.id, error: null };
   },
 
   /**

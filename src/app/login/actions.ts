@@ -5,7 +5,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { homeForRole } from "@/config/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { rateLimit } from "@/lib/rate-limit";
+import { clearRateLimit, rateLimit } from "@/lib/rate-limit";
 import { LOGIN_RATE_LIMIT } from "@/lib/constants";
 import type { UserRole } from "@/lib/types";
 
@@ -15,11 +15,17 @@ export async function login(formData: FormData) {
   const password = String(formData.get("password") ?? "");
 
   // Throttle credential guessing (best-effort; see rate-limit.ts / DEPLOY.md).
+  // The attempt is counted BEFORE GoTrue is awaited (rateLimit() checks and
+  // counts in one synchronous step), so a burst of parallel requests cannot all
+  // pass the check while the earlier ones are still in flight. A success clears
+  // the slate, so only failures add up: signing in correctly (several devices,
+  // sign-out/in) never locks anyone out.
   const hdrs = await headers();
   const ip =
     (hdrs.get("x-forwarded-for") ?? "").split(",")[0].trim() || "unknown";
+  const key = `login:${ip}:${email.toLowerCase()}`;
   const rl = rateLimit(
-    `login:${ip}:${email.toLowerCase()}`,
+    key,
     LOGIN_RATE_LIMIT.max,
     LOGIN_RATE_LIMIT.windowMs,
     Date.now(),
@@ -28,15 +34,15 @@ export async function login(formData: FormData) {
     const mins = Math.ceil(rl.retryAfterSeconds / 60);
     redirect(
       `/login?error=${encodeURIComponent(
-        `Too many sign-in attempts. Please try again in ${mins} minute${mins === 1 ? "" : "s"}.`,
+        `Too many failed sign-in attempts. Please try again in ${mins} minute${mins === 1 ? "" : "s"}.`,
       )}`,
     );
   }
 
   const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) {
-    redirect(`/login?error=${encodeURIComponent(error.message)}`);
-  }
+  // A failure stays counted: the attempt was reserved above.
+  if (error) redirect(`/login?error=${encodeURIComponent(error.message)}`);
+  clearRateLimit(key);
 
   const {
     data: { user },

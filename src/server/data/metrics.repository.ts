@@ -1,4 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
+import type { Database } from "@/lib/supabase/database.types";
+
+type MetricsRow = Database["public"]["Functions"]["dashboard_metrics"]["Returns"][number];
 
 export interface DashboardMetrics {
   totalWorkOrders: number;
@@ -11,6 +14,12 @@ export interface DashboardMetrics {
   commissionedUnpaid: number;
   /** Total balance due across those projects. */
   outstandingAmount: number;
+  /** Active projects within 7 days of their feasibility validity lapsing. */
+  feasibilityExpiring: number;
+  /** Σ renewal fees BSS has borne (₹1,000 per extra 30-day period). */
+  feasibilityExtensionCost: number;
+  /** Σ coordinator incentives set but not yet paid. */
+  incentivePending: number;
 }
 
 const EMPTY: DashboardMetrics = {
@@ -22,7 +31,16 @@ const EMPTY: DashboardMetrics = {
   approvedPipeline: 0,
   commissionedUnpaid: 0,
   outstandingAmount: 0,
+  feasibilityExpiring: 0,
+  feasibilityExtensionCost: 0,
+  incentivePending: 0,
 };
+
+/** bigint/numeric columns may arrive as strings; a null aggregate means 0. */
+function n(value: number | string | null | undefined): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
 
 export const metricsRepository = {
   /** Single aggregate query for the dashboard KPIs (see dashboard_metrics RPC). */
@@ -30,25 +48,19 @@ export const metricsRepository = {
     const supabase = await createClient();
     const { data, error } = await supabase.rpc("dashboard_metrics").single();
     if (error || !data) return EMPTY;
-    const row = data as {
-      total_work_orders: number;
-      pending_approvals: number;
-      active_projects: number;
-      commissioned: number;
-      open_tickets: number;
-      approved_pipeline: number;
-      commissioned_unpaid: number;
-      outstanding_amount: number;
-    };
+    const row = data as MetricsRow;
     return {
-      totalWorkOrders: Number(row.total_work_orders ?? 0),
-      pendingApprovals: Number(row.pending_approvals ?? 0),
-      activeProjects: Number(row.active_projects ?? 0),
-      commissioned: Number(row.commissioned ?? 0),
-      openTickets: Number(row.open_tickets ?? 0),
-      approvedPipeline: Number(row.approved_pipeline ?? 0),
-      commissionedUnpaid: Number(row.commissioned_unpaid ?? 0),
-      outstandingAmount: Number(row.outstanding_amount ?? 0),
+      totalWorkOrders: n(row.total_work_orders),
+      pendingApprovals: n(row.pending_approvals),
+      activeProjects: n(row.active_projects),
+      commissioned: n(row.commissioned),
+      openTickets: n(row.open_tickets),
+      approvedPipeline: n(row.approved_pipeline),
+      commissionedUnpaid: n(row.commissioned_unpaid),
+      outstandingAmount: n(row.outstanding_amount),
+      feasibilityExpiring: n(row.feasibility_expiring),
+      feasibilityExtensionCost: n(row.feasibility_extension_cost),
+      incentivePending: n(row.incentive_pending),
     };
   },
 };

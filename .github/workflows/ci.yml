@@ -16,6 +16,10 @@ env:
   NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
   NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
 
+# The Supabase CLI is a pinned devDependency (package.json), so every job — and
+# every developer machine — runs the exact same version via `npx supabase`.
+# (`setup-cli` with `version: latest` let local and CI drift apart silently.)
+
 jobs:
   quality:
     name: Typecheck · Lint · Unit · Build
@@ -46,24 +50,35 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
       - name: Start Supabase
-        run: supabase start
+        run: npx supabase start
       - name: Export Supabase credentials
         run: |
-          eval "$(supabase status -o env | sed 's/^/export /')"
+          eval "$(npx supabase status -o env | sed 's/^/export /')"
           {
             echo "SUPABASE_URL=$API_URL"
             echo "SUPABASE_ANON_KEY=$ANON_KEY"
             echo "SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY"
+            echo "SUPABASE_DB_URL=$DB_URL"
           } >> "$GITHUB_ENV"
+      # The typed Supabase client is only as good as database.types.ts. Regenerate
+      # it from the migrations just applied and fail if the committed copy differs,
+      # so a schema change can never ship with stale types.
+      - name: Generated DB types are up to date
+        run: |
+          npm run db:types
+          git diff --exit-code -- src/lib/supabase/database.types.ts \
+            || { echo "::error::database.types.ts is stale — run 'npm run db:types' and commit it."; exit 1; }
+      # schema.sql (the fresh-project provisioning path) must build the exact same
+      # public schema as the migrations. Builds both in throwaway databases inside
+      # the local Postgres container and diffs pg_dump output.
+      - name: schema.sql is in sync with the migrations
+        run: node supabase/scripts/check-schema-sync.mjs
       - name: Integration tests
         run: npm run test:integration
       - name: Stop Supabase
         if: always()
-        run: supabase stop --no-backup || true
+        run: npx supabase stop --no-backup || true
 
   e2e:
     name: End-to-end (Playwright)
@@ -75,14 +90,11 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
       - name: Start Supabase
-        run: supabase start
+        run: npx supabase start
       - name: Export Supabase credentials
         run: |
-          eval "$(supabase status -o env | sed 's/^/export /')"
+          eval "$(npx supabase status -o env | sed 's/^/export /')"
           {
             echo "NEXT_PUBLIC_SUPABASE_URL=$API_URL"
             echo "NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY"
@@ -103,12 +115,12 @@ jobs:
           retention-days: 7
       - name: Stop Supabase
         if: always()
-        run: supabase stop --no-backup || true
+        run: npx supabase stop --no-backup || true
 
   # Apply pending migrations to the PRODUCTION database, but only after the full
-  # pipeline passes on master. The migrations in this repo are backward
-  # compatible (additive views/functions/triggers/grants), so the schema is made
-  # ready before the production code deploy. Requires three repo secrets:
+  # pipeline passes on master. Migrations are written expand/contract (additive,
+  # or failing closed for the build that is live while they run), so the schema is
+  # made ready before the production code deploy. Requires three repo secrets:
   #   SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD, SUPABASE_PROJECT_REF
   # (Settings -> Secrets and variables -> Actions).
   migrate-production:
@@ -119,9 +131,11 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
-      - uses: supabase/setup-cli@v1
+      - uses: actions/setup-node@v4
         with:
-          version: latest
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Apply migrations to production
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
@@ -134,12 +148,12 @@ jobs:
             exit 0
           fi
           echo "Applying migrations to production project $PROJECT_REF …"
-          supabase link --project-ref "$PROJECT_REF"
+          npx supabase link --project-ref "$PROJECT_REF"
           # Production was first provisioned from schema.sql, so the CLI has no
           # record of the two original migrations. Mark them as already applied
           # so `db push` only applies the new (idempotent) migrations rather than
           # re-running init (which would fail on "type already exists").
-          supabase migration repair --status applied 20260606212913 || true
-          supabase migration repair --status applied 20260607120000 || true
-          supabase db push
+          npx supabase migration repair --status applied 20260606212913 || true
+          npx supabase migration repair --status applied 20260607120000 || true
+          npx supabase db push --yes
           echo "Production migrations applied."

@@ -1,11 +1,18 @@
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/common/status-badge";
 import { STAGE_LABELS } from "@/lib/constants";
-import { TICKET_STATUS, WORK_ORDER_STATUS } from "@/lib/domain/status";
+import {
+  FEASIBILITY_STATE,
+  FINANCING,
+  TICKET_STATUS,
+  WORK_ORDER_STATUS,
+} from "@/lib/domain/status";
 import { paymentSummary, type PaymentSource } from "@/lib/domain/payment";
+import type { FeasibilityStatus } from "@/lib/domain/kseb";
 import { formatCurrency } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
+  FinancingType,
   ProjectStage,
   TicketStatus,
   WorkOrderStatus,
@@ -13,6 +20,54 @@ import type {
 
 export function WorkOrderStatusBadge({ status }: { status: WorkOrderStatus }) {
   return <StatusBadge registry={WORK_ORDER_STATUS} value={status} />;
+}
+
+/** Self-financed vs bank loan (with the bank, when known). */
+export function FinancingBadge({
+  financing,
+  bank,
+  className,
+}: {
+  financing: FinancingType | null | undefined;
+  bank?: string | null;
+  className?: string;
+}) {
+  const meta = FINANCING[financing ?? "self"];
+  return (
+    <Badge className={cn("border-transparent", meta.badgeClass, className)}>
+      {financing === "loan" && bank ? `Loan · ${bank}` : meta.label}
+    </Badge>
+  );
+}
+
+/**
+ * Feasibility clock state (see lib/domain/kseb.ts). Shows the days left while it
+ * matters, and the renewal count once BSS is paying extensions.
+ */
+export function FeasibilityBadge({
+  status,
+  className,
+}: {
+  status: Pick<FeasibilityStatus, "state" | "daysLeft" | "renewals">;
+  className?: string;
+}) {
+  const meta = FEASIBILITY_STATE[status.state];
+  let label = meta.label;
+  if (status.state === "expiring" && status.daysLeft !== null) {
+    label =
+      status.daysLeft <= 0
+        ? "Feasibility expires today"
+        : `Feasibility · ${status.daysLeft}d left`;
+  } else if (status.state === "extended") {
+    label = `Extended ×${status.renewals}`;
+  } else if (status.state === "closed" && status.renewals > 0) {
+    label = `Closed · ${status.renewals} renewal${status.renewals === 1 ? "" : "s"}`;
+  }
+  return (
+    <Badge className={cn("border-transparent", meta.badgeClass, className)}>
+      {label}
+    </Badge>
+  );
 }
 
 export function TicketStatusBadge({ status }: { status: TicketStatus }) {

@@ -1,5 +1,5 @@
 import { createWorkOrder } from "../actions";
-import { requireProfile } from "@/lib/auth";
+import { requireWorkOrderRole } from "@/lib/auth";
 import { profilesRepository } from "@/server/data";
 import { Page, PageHeader, Section } from "@/components/layout";
 import { WorkOrderForm } from "@/components/work-order-form";
@@ -12,7 +12,7 @@ export default async function NewWorkOrderPage({
 }: {
   searchParams: Promise<{ error?: string }>;
 }) {
-  const profile = await requireProfile();
+  const profile = await requireWorkOrderRole();
   const { error } = await searchParams;
   const isOffice = isOfficeRole(profile.role);
   const coordinators = isOffice ? await profilesRepository.coordinators() : [];
