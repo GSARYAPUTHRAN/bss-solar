@@ -66,10 +66,16 @@ begin
       raise exception 'Service engineers can only change a ticket''s status'
         using errcode = '42501';
     end if;
-    if new.status is distinct from old.status
-       and new.status::text not in ('in_progress', 'completed') then
-      raise exception 'Service engineers can only mark a ticket in progress or completed'
-        using errcode = '42501';
+    if new.status is distinct from old.status then
+      -- A closed ticket stays closed; reopening is an office decision.
+      if old.status::text not in ('open', 'scheduled', 'in_progress') then
+        raise exception 'Service engineers cannot reopen a completed or cancelled ticket'
+          using errcode = '42501';
+      end if;
+      if new.status::text not in ('in_progress', 'completed') then
+        raise exception 'Service engineers can only mark a ticket in progress or completed'
+          using errcode = '42501';
+      end if;
     end if;
   end if;
 

@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
-import { requireProfile } from "@/lib/auth";
+import { requireWorkOrderRole } from "@/lib/auth";
+import { canEditContractTerms } from "@/lib/domain/payment";
 import { workOrdersRepository } from "@/server/data";
 import { updateWorkOrder } from "../../actions";
 import { Page, PageHeader, Section } from "@/components/layout";
@@ -9,7 +10,9 @@ export const metadata = { title: "Edit Work Order" };
 
 /**
  * Open to coordinators for their own orders (RLS returns nothing for anyone
- * else, so an unauthorised id 404s) as well as to the office.
+ * else, so an unauthorised id 404s) as well as to the office. Once the office
+ * has reviewed an order, a coordinator sees its total cost and advance
+ * read-only.
  */
 export default async function EditWorkOrderPage({
   params,
@@ -18,7 +21,7 @@ export default async function EditWorkOrderPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  await requireProfile();
+  const profile = await requireWorkOrderRole();
   const { id } = await params;
   const { error } = await searchParams;
 
@@ -37,6 +40,7 @@ export default async function EditWorkOrderPage({
         <WorkOrderForm
           action={updateWorkOrder}
           workOrder={wo}
+          contractTermsLocked={!canEditContractTerms(profile.role, wo.status)}
           error={error}
           cancelHref={`/work-orders/${wo.id}`}
           submitLabel="Save Changes"

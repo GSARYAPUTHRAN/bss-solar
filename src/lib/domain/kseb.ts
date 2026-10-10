@@ -1,4 +1,5 @@
 import { addDays, diffDays, istDateOf } from "./dates";
+import { round2 } from "./rounding";
 
 /**
  * KSEB charges and the feasibility clock.
@@ -25,9 +26,7 @@ export const KSEB_FEES = {
 /** "Expiring soon" threshold, in days left in the current validity period. */
 export const FEASIBILITY_WARNING_DAYS = 7;
 
-function money(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
+const money = round2;
 
 export interface RegistrationFee {
   kw: number;
@@ -135,16 +134,26 @@ export function feasibilityStatus(input: {
   );
   const extensionCost = renewals * KSEB_FEES.feasibilityRenewalFee;
 
-  if (closed) {
-    return { state: "closed", periods, renewals, validUntil, daysLeft: null, extensionCost };
-  }
-
-  const daysLeft = diffDays(today, validUntil);
-  const state: FeasibilityState =
-    daysLeft <= FEASIBILITY_WARNING_DAYS
-      ? "expiring"
-      : renewals > 0
-        ? "extended"
-        : "on_track";
+  const daysLeft = closed ? null : diffDays(today, validUntil);
+  const state = classifyFeasibility({ hasDate: true, closed, daysLeft, renewals });
   return { state, periods, renewals, validUntil, daysLeft, extensionCost };
+}
+
+/**
+ * The state rule on its own, for callers that already hold the numbers (the
+ * list views precompute days-left and renewals in SQL). Precedence:
+ * not_set → closed → expiring (≤ 7 days left) → extended → on_track.
+ */
+export function classifyFeasibility(input: {
+  hasDate: boolean;
+  closed: boolean;
+  daysLeft: number | null;
+  renewals: number;
+}): FeasibilityState {
+  if (!input.hasDate) return "not_set";
+  if (input.closed) return "closed";
+  if (input.daysLeft !== null && input.daysLeft <= FEASIBILITY_WARNING_DAYS) {
+    return "expiring";
+  }
+  return input.renewals > 0 ? "extended" : "on_track";
 }

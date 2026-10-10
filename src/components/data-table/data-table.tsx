@@ -87,15 +87,15 @@ export function DataTable<T>({
   return (
     <Card className="p-4">
       {hasToolbar && (
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           {search && (
-            <div className="relative flex-1">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <div className="relative flex-1 sm:min-w-64">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 placeholder={search.placeholder ?? "Search…"}
                 value={table.query}
                 onChange={(e) => table.setQuery(e.target.value)}
-                className="pl-8"
+                className="h-10 pl-8 sm:h-8"
               />
             </div>
           )}
@@ -105,7 +105,12 @@ export function DataTable<T>({
               value={table.filterValues[filter.id] ?? "all"}
               onValueChange={(v) => table.setFilterValue(filter.id, v)}
             >
-              <SelectTrigger className={cn("w-full sm:w-44", filter.widthClass)}>
+              <SelectTrigger
+                className={cn(
+                  "w-full data-[size=default]:h-10 sm:w-44 sm:data-[size=default]:h-8",
+                  filter.widthClass,
+                )}
+              >
                 <SelectValue placeholder={filter.placeholder} />
               </SelectTrigger>
               <SelectContent>

@@ -7,9 +7,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { SubmitButton } from "@/components/submit-button";
 import { Section, FormActions } from "@/components/layout";
 import { FormSelect } from "@/components/form-select";
+import { EngineerPicker } from "@/components/tickets/engineer-picker";
 import { updateTicket } from "@/app/(app)/tickets/actions";
 import { formatCurrency } from "@/lib/format";
 import { TICKET_STATUS_LABELS, TICKET_TYPE_LABELS } from "@/lib/constants";
+import type { ServiceEngineer } from "@/server/data/profiles.repository";
 import type {
   MpptReading,
   ServiceTicket,
@@ -72,7 +74,14 @@ function defaultMppt(t: ServiceTicket): MpptReading[] {
   });
 }
 
-export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
+export function ServiceTicketForm({
+  ticket,
+  engineers,
+}: {
+  ticket: ServiceTicket;
+  /** Assignable service engineers (office edits only). */
+  engineers: ServiceEngineer[];
+}) {
   const [spv, setSpv] = useState<SpvStringReading[]>(defaultSpvStrings(ticket));
   const [mppt, setMppt] = useState<MpptReading[]>(defaultMppt(ticket));
   const [serviceCharge, setServiceCharge] = useState(
@@ -148,6 +157,20 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
             type="date"
             defaultValue={ticket.service_date}
           />
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="assigned_to" className="text-xs">
+              Service engineer
+            </Label>
+            <EngineerPicker
+              engineers={engineers}
+              defaultValue={ticket.assigned_to}
+              current={ticket.assignee}
+            />
+            <p className="text-xs text-muted-foreground">
+              Required while the ticket is open. Reassigning an open ticket
+              notifies both engineers.
+            </p>
+          </div>
       </Section>
 
       <Section
@@ -341,7 +364,7 @@ export function ServiceTicketForm({ ticket }: { ticket: ServiceTicket }) {
       </Section>
 
       <Section
-        title="Financials"
+        title="Charges"
         contentClassName="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
       >
           <div className="space-y-1.5">

@@ -16,6 +16,7 @@ import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { FormSelect } from "@/components/form-select";
+import { EngineerPicker } from "@/components/tickets/engineer-picker";
 import { TICKET_TYPE_LABELS } from "@/lib/constants";
 import type { TicketType } from "@/lib/types";
 
@@ -28,16 +29,17 @@ export default async function NewTicketPage({
 }) {
   await requireAdmin();
   const { error, project_id } = await searchParams;
-  const [projects, coordinators] = await Promise.all([
+  const [projects, engineers] = await Promise.all([
     projectsRepository.options(),
-    profilesRepository.coordinators(),
+    profilesRepository.serviceEngineers(),
   ]);
+  const canCreate = projects.length > 0 && engineers.length > 0;
 
   return (
     <Page size="tight">
       <PageHeader
         title="New Service Ticket"
-        description="Raise a routine 6-month check or an ad-hoc service request."
+        description="Raise a routine 6-month check or an ad-hoc service request and assign it to a service engineer."
         backHref="/tickets"
       />
 
@@ -77,21 +79,26 @@ export default async function NewTicketPage({
                 )}
               />
             </FormField>
-            <FormField label="Scheduled date" htmlFor="scheduled_date">
+            <FormField
+              label="Scheduled date"
+              htmlFor="scheduled_date"
+              hint="Setting a visit date marks the ticket Scheduled."
+            >
               <Input id="scheduled_date" name="scheduled_date" type="date" />
             </FormField>
           </FormGrid>
 
-          <FormField label="Assign to" htmlFor="assigned_to">
-            <FormSelect
-              id="assigned_to"
-              name="assigned_to"
-              placeholder="Unassigned"
-              options={coordinators.map((c) => ({
-                value: c.id,
-                label: c.full_name,
-              }))}
-            />
+          <FormField
+            label="Service engineer"
+            htmlFor="assigned_to"
+            required
+            hint={
+              engineers.length > 0
+                ? "They are notified and the ticket appears on their phone."
+                : undefined
+            }
+          >
+            <EngineerPicker engineers={engineers} required />
           </FormField>
 
           <FormField
@@ -110,7 +117,7 @@ export default async function NewTicketPage({
             <Button variant="outline" asChild>
               <Link href="/tickets">Cancel</Link>
             </Button>
-            <SubmitButton loadingText="Creating…" disabled={projects.length === 0}>
+            <SubmitButton loadingText="Creating…" disabled={!canCreate}>
               Create Ticket
             </SubmitButton>
           </FormActions>

@@ -1,9 +1,6 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import Link from "next/link";
-import { CheckCircle2 } from "lucide-react";
-import { Card } from "@/components/ui/card";
 import {
   Select,
   SelectContent,
@@ -11,70 +8,115 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { PaymentBadge } from "@/components/status-badges";
+import { ProjectBoardCard } from "@/components/projects/project-board-card";
 import { PROJECT_STAGES, STAGE_LABELS } from "@/lib/constants";
-import { projectProgress } from "@/lib/domain/project";
-import { isPaymentPending } from "@/lib/domain/payment";
-import { formatCurrency } from "@/lib/format";
+import {
+  FEASIBILITY_FILTERS,
+  FEASIBILITY_FILTER_LABELS,
+  isFeasibilityFilter,
+  matchesFeasibilityFilter,
+} from "@/lib/domain/project-list";
 import type { Coordinator } from "@/server/data";
-import type { Project, ProjectStage } from "@/lib/types";
+import type { ProjectListRow, ProjectStage } from "@/lib/types";
 
+const ALL = "all";
+
+type BoardStatus = "active" | "completed" | "payment_pending" | typeof ALL;
+
+const STATUS_OPTIONS: { value: BoardStatus; label: string }[] = [
+  { value: "active", label: "Active projects" },
+  { value: "completed", label: "Commissioned" },
+  { value: "payment_pending", label: "Commissioned · payment pending" },
+  { value: ALL, label: "All projects" },
+];
+
+function matchesStatus(p: ProjectListRow, status: string): boolean {
+  switch (status) {
+    case "active":
+      return !p.is_completed;
+    case "completed":
+      return p.is_completed;
+    case "payment_pending":
+      return Boolean(p.payment_pending);
+    default:
+      return true;
+  }
+}
+
+// Phones get tall triggers (≥ 40px tap target); desktop keeps the compact size.
+const TRIGGER = "w-full data-[size=default]:h-10 sm:data-[size=default]:h-8";
+
+/**
+ * Kanban of projects by current stage. Filters run on the client over a
+ * bounded set of `projects_list` rows; feasibility badges come from the view's
+ * SQL-computed clock, so they match the list view's filters exactly.
+ */
 export function ProjectsBoard({
   projects,
   coordinators,
   isAdmin,
 }: {
-  projects: Project[];
+  projects: ProjectListRow[];
   coordinators: Coordinator[];
   isAdmin: boolean;
 }) {
-  const [coordinator, setCoordinator] = useState("all");
-  const [showCompleted, setShowCompleted] = useState("active");
+  const [coordinator, setCoordinator] = useState(ALL);
+  const [status, setStatus] = useState<string>("active");
+  const [feasibility, setFeasibility] = useState(ALL);
 
-  const filtered = useMemo(() => {
-    let rows = [...projects];
-    if (coordinator !== "all")
-      rows = rows.filter((p) => p.coordinator_id === coordinator);
-    if (showCompleted === "active") rows = rows.filter((p) => !p.is_completed);
-    if (showCompleted === "completed")
-      rows = rows.filter((p) => p.is_completed);
-    if (showCompleted === "payment_pending")
-      rows = rows.filter((p) => isPaymentPending(p, p.work_order ?? {}));
-    return rows;
-  }, [projects, coordinator, showCompleted]);
+  const filtered = useMemo(
+    () =>
+      projects.filter(
+        (p) =>
+          (coordinator === ALL || p.coordinator_id === coordinator) &&
+          matchesStatus(p, status) &&
+          (!isFeasibilityFilter(feasibility) || matchesFeasibilityFilter(p, feasibility)),
+      ),
+    [projects, coordinator, status, feasibility],
+  );
 
   const byStage = useMemo(() => {
-    const map = new Map<ProjectStage, Project[]>();
+    const map = new Map<ProjectStage, ProjectListRow[]>();
     PROJECT_STAGES.forEach((s) => map.set(s.value, []));
-    filtered.forEach((p) => {
-      map.get(p.current_stage)?.push(p);
-    });
+    filtered.forEach((p) => map.get(p.current_stage)?.push(p));
     return map;
   }, [filtered]);
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <Select value={showCompleted} onValueChange={setShowCompleted}>
-          <SelectTrigger className="w-full sm:w-60">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <Select value={status} onValueChange={setStatus}>
+          <SelectTrigger aria-label="Project status" className={`${TRIGGER} sm:w-60`}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="active">Active projects</SelectItem>
-            <SelectItem value="completed">Commissioned</SelectItem>
-            <SelectItem value="payment_pending">
-              Commissioned · payment pending
-            </SelectItem>
-            <SelectItem value="all">All projects</SelectItem>
+            {STATUS_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>
+                {o.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={feasibility} onValueChange={setFeasibility}>
+          <SelectTrigger aria-label="Feasibility" className={`${TRIGGER} sm:w-56`}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>Any feasibility</SelectItem>
+            {FEASIBILITY_FILTERS.map((f) => (
+              <SelectItem key={f} value={f}>
+                {FEASIBILITY_FILTER_LABELS[f]}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         {isAdmin && (
           <Select value={coordinator} onValueChange={setCoordinator}>
-            <SelectTrigger className="w-full sm:w-52">
+            <SelectTrigger aria-label="Coordinator" className={`${TRIGGER} sm:w-52`}>
               <SelectValue placeholder="Coordinator" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All coordinators</SelectItem>
+              <SelectItem value={ALL}>All coordinators</SelectItem>
               {coordinators.map((c) => (
                 <SelectItem key={c.id} value={c.id}>
                   {c.full_name}
@@ -83,16 +125,21 @@ export function ProjectsBoard({
             </SelectContent>
           </Select>
         )}
-        <p className="text-sm text-muted-foreground sm:ml-auto">
+        <p className="text-sm text-muted-foreground sm:ml-auto" aria-live="polite">
           {filtered.length} projects
         </p>
       </div>
 
-      <div className="flex gap-4 overflow-x-auto pb-4">
+      {/* One column per swipe on phones; the scroll stays inside the board. */}
+      <div className="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-4 sm:snap-none">
         {PROJECT_STAGES.map((stage, idx) => {
           const items = byStage.get(stage.value) ?? [];
           return (
-            <div key={stage.value} className="w-72 shrink-0">
+            <section
+              key={stage.value}
+              aria-label={STAGE_LABELS[stage.value]}
+              className="w-[85vw] max-w-72 shrink-0 snap-start sm:w-72"
+            >
               <div className="mb-2 flex items-center justify-between rounded-md bg-muted px-3 py-2">
                 <div className="flex items-center gap-2">
                   <span className="flex h-5 w-5 items-center justify-center rounded-full bg-amber-500 text-[10px] font-bold text-white">
@@ -107,61 +154,16 @@ export function ProjectsBoard({
                 </span>
               </div>
               <div className="space-y-2">
-                {items.map((p) => {
-                  const prog = projectProgress(p);
-                  return (
-                    <Link
-                      key={p.id}
-                      href={`/projects/${p.id}`}
-                      className="block rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Card className="gap-2 p-3 transition-colors hover:border-amber-400 hover:shadow-sm">
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm font-semibold">
-                            {p.work_order?.client_name ?? "Project"}
-                          </p>
-                          {p.is_completed && (
-                            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground">
-                          {p.work_order?.plant_capacity} ·{" "}
-                          {formatCurrency(p.work_order?.total_cost)}
-                        </p>
-                        {isAdmin && (
-                          <p className="text-xs text-muted-foreground">
-                            {p.coordinator?.full_name}
-                          </p>
-                        )}
-                        {isPaymentPending(p, p.work_order ?? {}) && (
-                          <PaymentBadge
-                            source={p.work_order ?? {}}
-                            isCompleted
-                            className="w-fit text-[10px]"
-                          />
-                        )}
-                        <div className="mt-1">
-                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                            <div
-                              className="h-full rounded-full bg-amber-500"
-                              style={{ width: `${prog.pct}%` }}
-                            />
-                          </div>
-                          <p className="mt-1 text-[10px] text-muted-foreground">
-                            {prog.done}/{prog.total} milestones
-                          </p>
-                        </div>
-                      </Card>
-                    </Link>
-                  );
-                })}
+                {items.map((p) => (
+                  <ProjectBoardCard key={p.id} project={p} showCoordinator={isAdmin} />
+                ))}
                 {items.length === 0 && (
                   <div className="rounded-md border border-dashed py-6 text-center text-xs text-muted-foreground">
                     Empty
                   </div>
                 )}
               </div>
-            </div>
+            </section>
           );
         })}
       </div>

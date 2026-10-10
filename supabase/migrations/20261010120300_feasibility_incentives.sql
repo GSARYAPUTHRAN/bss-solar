@@ -105,8 +105,15 @@ grant execute on function public.feasibility_periods(date, date) to anon, authen
 -- Incentive totals. SECURITY INVOKER: a coordinator's call only ever sums their
 -- own projects; the office may narrow to one coordinator.
 -- ---------------------------------------------------------------------------
-create or replace function public.incentive_summary(p_coordinator uuid default null)
-returns table (projects bigint, total numeric, paid numeric, pending numeric)
+drop function if exists public.incentive_summary(uuid);
+create function public.incentive_summary(p_coordinator uuid default null)
+returns table (
+  projects bigint,
+  pending_projects bigint,
+  total numeric,
+  paid numeric,
+  pending numeric
+)
 language sql
 stable
 security invoker
@@ -114,6 +121,7 @@ set search_path = public
 as $$
   select
     count(*)::bigint,
+    count(*) filter (where incentive_paid_on is null)::bigint,
     coalesce(sum(coordinator_incentive), 0)::numeric,
     coalesce(sum(coordinator_incentive) filter (where incentive_paid_on is not null), 0)::numeric,
     coalesce(sum(coordinator_incentive) filter (where incentive_paid_on is null), 0)::numeric

@@ -34,6 +34,33 @@ export type Database = {
   };
   public: {
     Tables: {
+      notification_dedupe: {
+        Row: {
+          created_at: string;
+          dedupe_key: string;
+          recipient_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          created_at?: string;
+          dedupe_key: string;
+          recipient_id: string;
+        };
+        Update: {
+          created_at?: string;
+          dedupe_key?: string;
+          recipient_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "notification_dedupe_recipient_id_fkey";
+            columns: ["recipient_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notifications: {
         Row: {
           body: string | null;
@@ -84,6 +111,7 @@ export type Database = {
           amount: number;
           created_at: string;
           id: string;
+          legacy_slot: number | null;
           method: Database["public"]["Enums"]["payment_method"];
           notes: string | null;
           paid_on: string;
@@ -98,6 +126,7 @@ export type Database = {
           amount: number;
           created_at?: string;
           id?: string;
+          legacy_slot?: number | null;
           method?: Database["public"]["Enums"]["payment_method"];
           notes?: string | null;
           paid_on: string;
@@ -111,6 +140,7 @@ export type Database = {
           amount?: number;
           created_at?: string;
           id?: string;
+          legacy_slot?: number | null;
           method?: Database["public"]["Enums"]["payment_method"];
           notes?: string | null;
           paid_on?: string;
@@ -805,8 +835,16 @@ export type Database = {
         Returns: {
           paid: number;
           pending: number;
+          pending_projects: number;
           projects: number;
           total: number;
+        }[];
+      };
+      insert_notifications: {
+        Args: { p_rows: Json };
+        Returns: {
+          id: string;
+          recipient_id: string;
         }[];
       };
       is_admin: { Args: Record<PropertyKey, never>; Returns: boolean };

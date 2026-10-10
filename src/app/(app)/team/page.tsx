@@ -32,7 +32,7 @@ export default async function TeamPage({
     <Page>
       <PageHeader
         title="Team Management"
-        description="Manage staff accounts and assign roles. Admins see all data; coordinators see only their own."
+        description="Manage staff accounts and assign roles. Admins see all data; coordinators see only their own work orders and projects; service engineers see only the tickets assigned to them."
       >
         <Button asChild>
           <Link href="/team/new">
@@ -55,6 +55,13 @@ export default async function TeamPage({
       />
       <div className="space-y-1 text-xs text-muted-foreground">
         <p>You cannot change your own role to avoid accidental lock-out.</p>
+        <p>
+          <strong>Service Engineers</strong> sign in on their phones to work the
+          service tickets assigned to them — they can start work and mark a ticket
+          completed, but never see work orders, projects or payments. A member who
+          still holds open tickets must have them reassigned before their role
+          changes or the account is deleted.
+        </p>
         <p>
           There is exactly one <strong>Super Admin</strong> — the highest
           privilege, and the only role that can delete users, projects and work

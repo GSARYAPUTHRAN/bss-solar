@@ -12,6 +12,8 @@
  *   - thousands separators are ignored;
  *   - rounded to 2 decimals; null when the label holds no number.
  */
+import { round2 } from "./rounding";
+
 const CAPACITY_PATTERN = /([0-9]+(?:\.[0-9]+)?)\s*(kwp|kw|k|wp|w)?/;
 
 export function parseCapacityKw(label: string | null | undefined): number | null {
@@ -21,8 +23,7 @@ export function parseCapacityKw(label: string | null | undefined): number | null
 
   let kw = Number(match[1]);
   if (match[2] === "w" || match[2] === "wp") kw /= 1000;
-  // EPSILON nudge so 1.005 rounds to 1.01, matching Postgres round(numeric, 2).
-  return Math.round((kw + Number.EPSILON) * 100) / 100;
+  return round2(kw);
 }
 
 /** True when the label yields a usable, positive capacity. */

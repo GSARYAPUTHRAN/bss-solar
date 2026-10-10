@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
@@ -21,6 +21,25 @@ export const metadata: Metadata = {
   },
   description:
     "B2B operations console for BSS Solar: work orders, KSEB/ANERT project tracking, and service ticketing.",
+  // The web manifest itself is src/app/manifest.ts (linked automatically).
+  applicationName: "BSS Ops",
+  appleWebApp: {
+    capable: true,
+    title: "BSS Ops",
+    statusBarStyle: "default",
+  },
+  icons: {
+    apple: [{ url: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+};
+
+// `--background` of each theme in globals.css, so the browser chrome / status
+// bar of the installed app blends into the header.
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#fdfcf9" },
+    { media: "(prefers-color-scheme: dark)", color: "#120f0c" },
+  ],
 };
 
 export default function RootLayout({

@@ -3,6 +3,10 @@
 import { type ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { PROJECT_LIST_FILTER_KEYS } from "@/lib/domain/project-list";
+
+/** Search/sort/paging state that only means something to the list. */
+const LIST_ONLY_PARAMS = ["q", "sort", "dir", "page", "size"];
 
 /**
  * Board/List tabs whose active tab lives in the URL (`?view=list`), so that
@@ -27,7 +31,7 @@ export function ProjectsTabs({
     if (next === "board") {
       params.delete("view");
       // Leaving the list clears its list-only params.
-      for (const k of ["q", "sort", "dir", "page", "size", "status", "stage", "coordinator"]) {
+      for (const k of [...LIST_ONLY_PARAMS, ...PROJECT_LIST_FILTER_KEYS]) {
         params.delete(k);
       }
     } else {

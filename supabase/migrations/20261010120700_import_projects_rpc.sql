@@ -15,7 +15,7 @@
 --   every payment in the ledger.
 -- A row either lands completely or not at all; one bad row never affects the
 -- others. Runs with the caller's identity for authorisation (office only) and
--- for `payments.recorded_by`.
+-- for `payments.recorded_by`. Concurrent imports run one after the other.
 --
 -- Input row (JSON): row_no, client_name, client_phone, address, plant_capacity,
 --   total_cost, advance_amount, order_date, coordinator_email, current_stage,
@@ -71,6 +71,11 @@ begin
       using errcode = '22023';
   end if;
 
+  -- One import at a time (a double submit, a second tab): a concurrent batch
+  -- waits here until this one commits, so its skip-existing check below sees
+  -- every consumer number this batch imported.
+  perform pg_advisory_xact_lock(hashtext('import_projects'));
+
   for r in select value from jsonb_array_elements(p_rows) loop
     v_row := (r->>'row_no')::integer;
 
@@ -94,9 +99,11 @@ begin
 
       v_consumer := nullif(btrim(r->>'consumer_number'), '');
       if p_skip_existing and v_consumer is not null then
+        -- Compare ignoring whitespace: "1156 789" and "1156789" are one connection.
         select w.client_name into v_existing
         from work_orders w
-        where w.consumer_number = v_consumer
+        where regexp_replace(w.consumer_number, '\s', '', 'g')
+            = regexp_replace(v_consumer, '\s', '', 'g')
         limit 1;
         if found then
           row_no := v_row;

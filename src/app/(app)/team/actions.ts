@@ -15,6 +15,7 @@ import {
   isSuperAdminRole,
   isUserRole,
 } from "@/lib/domain/role";
+import { deletionBlocker, roleChangeBlocker } from "@/lib/domain/team";
 import type { UserRole } from "@/lib/types";
 
 /**
@@ -117,10 +118,20 @@ export async function updateUserRole(
     return fail(SUPERADMIN_IMMUTABLE);
   }
 
-  // Belt-and-suspenders: never remove the last remaining administrator.
-  if (role === "coordinator" && (await profilesRepository.adminCount()) <= 1) {
-    return fail("At least one administrator is required.");
-  }
+  // Never strand anything: the last administrator, a coordinator's business,
+  // or an engineer's open tickets (see lib/domain/team.ts).
+  const [adminCount, owned] = await Promise.all([
+    profilesRepository.adminCount(),
+    profilesRepository.ownedWorkCount(userId),
+  ]);
+  const blocker = roleChangeBlocker({
+    name: target.full_name,
+    from: target.role,
+    to: role,
+    adminCount,
+    owned,
+  });
+  if (blocker) return fail(blocker);
 
   const { error } = await profilesRepository.setRole(userId, role);
   if (error) return fail(error);
@@ -135,6 +146,8 @@ export async function updateUserRole(
  *
  * Work orders reference their coordinator with `on delete restrict`, so a member
  * who still owns business cannot be deleted — reassign or delete that work first.
+ * Tickets reference their engineer with `on delete set null`, so an engineer with
+ * open tickets is refused too, rather than leaving those jobs silently unowned.
  */
 export async function deleteTeamMember(formData: FormData) {
   const me = await requireSuperAdmin();
@@ -165,21 +178,12 @@ export async function deleteTeamMember(formData: FormData) {
   }
 
   // Refuse up front rather than letting the FK restrict surface as GoTrue's
-  // opaque "Database error deleting user".
-  const owned = await profilesRepository.ownedWorkCount(userId);
-  if (owned.workOrders > 0 || owned.projects > 0) {
-    const parts = [
-      owned.workOrders > 0 &&
-        `${owned.workOrders} work order${owned.workOrders === 1 ? "" : "s"}`,
-      owned.projects > 0 &&
-        `${owned.projects} project${owned.projects === 1 ? "" : "s"}`,
-    ].filter(Boolean);
-    redirect(
-      `/team?error=${encodeURIComponent(
-        `${target.full_name} still owns ${parts.join(" and ")}. Reassign or delete that business first.`,
-      )}`,
-    );
-  }
+  // opaque "Database error deleting user" (or, for tickets, silently unassign).
+  const blocker = deletionBlocker(
+    target.full_name,
+    await profilesRepository.ownedWorkCount(userId),
+  );
+  if (blocker) redirect(`/team?error=${encodeURIComponent(blocker)}`);
 
   let admin;
   try {

@@ -14,8 +14,15 @@
 --
 -- Expand/contract: the old first/second payment columns are migrated into the
 -- ledger and left in place (DEPRECATED, unread by the app) so the build that is
--- live while this runs keeps working. Drop them in the next release.
--- Idempotent; safe to re-run.
+-- live while this runs keeps working. Until the code deploy, that old build
+-- still writes them, so a TEMPORARY trigger mirrors every such write into the
+-- ledger. Drop the columns, the trigger and its function in the next release.
+--
+-- Re-runnable. Each migrated slot is keyed by `payments.legacy_slot` (1 or 2),
+-- which the app never edits, so a re-run copies only a slot that has no ledger
+-- row: it never adds a second copy, whatever the office has since changed on
+-- the first (note, amount or date). It does restore a migrated row that has
+-- since been deleted outright, so do not re-run it after such a deletion.
 -- ============================================================================
 
 begin;
@@ -43,12 +50,19 @@ create table if not exists public.payments (
   reference text,
   notes text,
   recorded_by uuid references public.profiles(id) on delete set null,
+  -- Which deprecated work-order slot (1 = first, 2 = second payment) this row
+  -- carries over; NULL for every payment recorded in the ledger itself.
+  legacy_slot smallint
+    constraint payments_legacy_slot_valid check (legacy_slot in (1, 2)),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 create index if not exists idx_payments_work_order
   on public.payments (work_order_id, paid_on);
+create unique index if not exists uniq_payments_legacy_slot
+  on public.payments (work_order_id, legacy_slot)
+  where legacy_slot is not null;
 
 drop trigger if exists t_payment_updated on public.payments;
 create trigger t_payment_updated
@@ -88,29 +102,84 @@ grant select, insert, update, delete on public.payments
   to anon, authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
--- Backfill the two fixed payment slots into the ledger (once per slot).
+-- Backfill the two fixed payment slots into the ledger, at most once per slot.
+-- Writes to work_orders are held off until this migration commits, so no slot
+-- the old build writes can slip between this copy and the mirror below.
 -- ---------------------------------------------------------------------------
-insert into public.payments (work_order_id, amount, paid_on, method, notes)
-select w.id, w.first_payment_amount,
-       coalesce(w.first_payment_date, w.order_date), 'other',
-       'Migrated: first payment'
-from public.work_orders w
-where w.first_payment_amount > 0
-  and not exists (
-    select 1 from public.payments p
-    where p.work_order_id = w.id and p.notes = 'Migrated: first payment'
-  );
+lock table public.work_orders in share row exclusive mode;
 
-insert into public.payments (work_order_id, amount, paid_on, method, notes)
-select w.id, w.second_payment_amount,
-       coalesce(w.second_payment_date, w.order_date), 'other',
-       'Migrated: second payment'
+insert into public.payments (work_order_id, amount, paid_on, method, notes, legacy_slot)
+select w.id, s.amount, coalesce(s.paid_on, w.order_date), 'other', s.note, s.slot
 from public.work_orders w
-where w.second_payment_amount > 0
-  and not exists (
-    select 1 from public.payments p
-    where p.work_order_id = w.id and p.notes = 'Migrated: second payment'
-  );
+cross join lateral (values
+  (1::smallint, w.first_payment_amount, w.first_payment_date, 'Migrated: first payment'),
+  (2::smallint, w.second_payment_amount, w.second_payment_date, 'Migrated: second payment')
+) as s (slot, amount, paid_on, note)
+where s.amount > 0
+on conflict (work_order_id, legacy_slot) where legacy_slot is not null do nothing;
+
+-- ---------------------------------------------------------------------------
+-- TEMPORARY — drop this trigger and its function together with the deprecated
+-- columns next release.
+-- CI applies this migration before the new build deploys, and until then the
+-- old build still writes the two slots (work-order form and edit, onboarding
+-- importer). Each change is mirrored into the slot's ledger row so nothing
+-- recorded in that gap is lost: a positive amount creates or updates the row,
+-- a cleared or zero amount removes it. The new build never writes the slots,
+-- so once it is live this never fires.
+-- The slots now feed the office-only ledger, so they follow the same rule as
+-- the advance and the total cost (guard_work_order_update): once an order has
+-- left 'pending', only the office may change them.
+-- ---------------------------------------------------------------------------
+create or replace function public.mirror_legacy_payment_slots()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  s record;
+begin
+  for s in
+    select v.*
+    from (values
+      (1::smallint, new.first_payment_amount, new.first_payment_date,
+       old.first_payment_amount, old.first_payment_date, 'Migrated: first payment'),
+      (2::smallint, new.second_payment_amount, new.second_payment_date,
+       old.second_payment_amount, old.second_payment_date, 'Migrated: second payment')
+    ) as v (slot, amount, paid_on, old_amount, old_paid_on, note)
+    -- The old edit form re-sends every column: act only on a slot that changed.
+    where (tg_op = 'INSERT' and v.amount > 0)
+       or (tg_op = 'UPDATE'
+           and (v.amount, v.paid_on) is distinct from (v.old_amount, v.old_paid_on))
+  loop
+    if tg_op = 'UPDATE' and old.status <> 'pending'
+       and auth.uid() is not null and not public.is_admin() then
+      raise exception 'Only the office can change the amounts of an approved or rejected work order'
+        using errcode = '42501';
+    end if;
+
+    if s.amount is null or s.amount <= 0 then
+      delete from payments
+       where work_order_id = new.id and legacy_slot = s.slot;
+    else
+      insert into payments (work_order_id, amount, paid_on, method, purpose, notes, legacy_slot)
+      values (new.id, s.amount, coalesce(s.paid_on, new.order_date), 'other', 'contract',
+              s.note, s.slot)
+      on conflict (work_order_id, legacy_slot) where legacy_slot is not null
+      do update set amount = excluded.amount, paid_on = excluded.paid_on;
+    end if;
+  end loop;
+  return null;
+end;
+$$;
+
+drop trigger if exists t_wo_mirror_legacy_payments on public.work_orders;
+create trigger t_wo_mirror_legacy_payments
+  after insert or update of first_payment_amount, first_payment_date,
+    second_payment_amount, second_payment_date
+  on public.work_orders
+  for each row execute function public.mirror_legacy_payment_slots();
 
 comment on column public.work_orders.first_payment_amount is
   'DEPRECATED: superseded by the payments ledger (migrated 2026-10). Drop next release.';

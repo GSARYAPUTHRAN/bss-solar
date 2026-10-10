@@ -12,6 +12,30 @@ export interface PushConfig {
   subject: string;
 }
 
+const DEFAULT_SUBJECT = `mailto:${COMPANY.email}`;
+
+/**
+ * web-push rejects any subject that is not an `https:` or `mailto:` URL, and it
+ * does so per send — so a typo here would leave push "configured" while every
+ * delivery silently failed. Accept a bare e-mail address (the usual mistake) by
+ * adding `mailto:`; fall back to the company contact for anything else.
+ */
+export function normalizeVapidSubject(raw: string | undefined): string {
+  const value = raw?.trim();
+  if (!value) return DEFAULT_SUBJECT;
+  if (/^[^\s@:/]+@[^\s@:/]+\.[^\s@:/]+$/.test(value)) return `mailto:${value}`;
+  try {
+    const url = new URL(value);
+    if (url.protocol === "mailto:" || url.protocol === "https:") return value;
+  } catch {
+    // not a URL at all — fall through
+  }
+  console.warn(
+    `[push] VAPID_SUBJECT "${value}" is not an https: or mailto: URL; using ${DEFAULT_SUBJECT}`,
+  );
+  return DEFAULT_SUBJECT;
+}
+
 export function pushConfig(env: NodeJS.ProcessEnv = process.env): PushConfig | null {
   const publicKey = env.NEXT_PUBLIC_VAPID_PUBLIC_KEY?.trim();
   const privateKey = env.VAPID_PRIVATE_KEY?.trim();
@@ -19,7 +43,7 @@ export function pushConfig(env: NodeJS.ProcessEnv = process.env): PushConfig | n
   return {
     publicKey,
     privateKey,
-    subject: env.VAPID_SUBJECT?.trim() || `mailto:${COMPANY.email}`,
+    subject: normalizeVapidSubject(env.VAPID_SUBJECT),
   };
 }
 

@@ -49,6 +49,13 @@ export const LOGIN_RATE_LIMIT = { max: 5, windowMs: 15 * 60 * 1000 };
  */
 export const LIST_QUERY_LIMIT = 1000;
 
+/**
+ * Shown when a server action call itself fails (offline, dropped mobile
+ * connection, a deploy in between) — as opposed to an error the action returns.
+ */
+export const SERVER_UNREACHABLE_MESSAGE =
+  "Couldn't reach the server — check your connection and try again.";
+
 /** Rows shown in the dashboard's "recent activity" tables. */
 export const DASHBOARD_RECENT = 25;
 
