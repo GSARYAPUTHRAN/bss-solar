@@ -1,7 +1,7 @@
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { homeForRole } from "@/config/navigation";
-import { OFFICE_ROLES } from "@/lib/domain/role";
+import { OFFICE_ROLES, TICKET_ROLES, WORK_ORDER_ROLES } from "@/lib/domain/role";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile, UserRole } from "./types";
 
@@ -43,6 +43,16 @@ export async function requireAdmin(): Promise<Profile> {
 /** The single privileged account that owns every destructive action. */
 export async function requireSuperAdmin(): Promise<Profile> {
   return requireRole("superadmin");
+}
+
+/** The sales pipeline (/work-orders, /projects): coordinators + office. */
+export async function requireWorkOrderRole(): Promise<Profile> {
+  return requireRole(...WORK_ORDER_ROLES);
+}
+
+/** The service-ticket module: engineers (their own tickets) + office. */
+export async function requireTicketRole(): Promise<Profile> {
+  return requireRole(...TICKET_ROLES);
 }
 
 /**

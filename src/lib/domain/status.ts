@@ -1,8 +1,10 @@
 import type {
+  FinancingType,
   MilestoneStatus,
   TicketStatus,
   WorkOrderStatus,
 } from "@/lib/types";
+import type { FeasibilityState } from "./kseb";
 
 /** Presentation metadata for a single enum value. */
 export interface StatusMeta {
@@ -47,6 +49,20 @@ export const MILESTONE_STATUS: StatusRegistry<MilestoneStatus> = {
   pending: { label: "Pending", badgeClass: GRAY },
   in_progress: { label: "In Progress", badgeClass: INDIGO },
   completed: { label: "Completed", badgeClass: EMERALD },
+};
+
+/** Feasibility clock states — see lib/domain/kseb.ts for the rules. */
+export const FEASIBILITY_STATE: StatusRegistry<FeasibilityState> = {
+  not_set: { label: "Feasibility not set", badgeClass: GRAY },
+  on_track: { label: "Feasibility valid", badgeClass: EMERALD },
+  expiring: { label: "Feasibility expiring", badgeClass: RED },
+  extended: { label: "Feasibility extended", badgeClass: AMBER },
+  closed: { label: "Feasibility closed", badgeClass: GRAY },
+};
+
+export const FINANCING: StatusRegistry<FinancingType> = {
+  self: { label: "Self-financed", badgeClass: GRAY },
+  loan: { label: "Bank loan", badgeClass: BLUE },
 };
 
 /** Derive a `value -> label` map from a registry. */
