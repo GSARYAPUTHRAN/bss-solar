@@ -141,7 +141,7 @@ describe("parseWorkOrderForm", () => {
     });
   });
 
-  it("never reads the deprecated fixed payment slots", () => {
+  it("never reads the removed fixed payment slots", () => {
     const res = parseWorkOrderForm(
       form({ ...VALID, first_payment_amount: "1000", second_payment_date: "2026-01-01" }),
       TODAY,
