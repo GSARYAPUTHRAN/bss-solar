@@ -535,8 +535,6 @@ export type Database = {
           coordinator_id: string;
           created_at: string;
           financing_type: Database["public"]["Enums"]["financing_type"];
-          first_payment_amount: number | null;
-          first_payment_date: string | null;
           id: string;
           kseb_section: string | null;
           loan_bank_name: string | null;
@@ -544,8 +542,6 @@ export type Database = {
           order_date: string;
           plant_capacity: string;
           plant_capacity_kw: number | null;
-          second_payment_amount: number | null;
-          second_payment_date: string | null;
           status: Database["public"]["Enums"]["work_order_status"];
           total_cost: number;
           updated_at: string;
@@ -560,8 +556,6 @@ export type Database = {
           coordinator_id: string;
           created_at?: string;
           financing_type?: Database["public"]["Enums"]["financing_type"];
-          first_payment_amount?: number | null;
-          first_payment_date?: string | null;
           id?: string;
           kseb_section?: string | null;
           loan_bank_name?: string | null;
@@ -569,8 +563,6 @@ export type Database = {
           order_date?: string;
           plant_capacity: string;
           plant_capacity_kw?: never;
-          second_payment_amount?: number | null;
-          second_payment_date?: string | null;
           status?: Database["public"]["Enums"]["work_order_status"];
           total_cost?: number;
           updated_at?: string;
@@ -584,8 +576,6 @@ export type Database = {
           coordinator_id?: string;
           created_at?: string;
           financing_type?: Database["public"]["Enums"]["financing_type"];
-          first_payment_amount?: number | null;
-          first_payment_date?: string | null;
           id?: string;
           kseb_section?: string | null;
           loan_bank_name?: string | null;
@@ -593,8 +583,6 @@ export type Database = {
           order_date?: string;
           plant_capacity?: string;
           plant_capacity_kw?: never;
-          second_payment_amount?: number | null;
-          second_payment_date?: string | null;
           status?: Database["public"]["Enums"]["work_order_status"];
           total_cost?: number;
           updated_at?: string;

@@ -77,11 +77,12 @@ copy (step 10) never duplicates a payment. So on a DB that was provisioned from
    and office-only approval and amounts (see the behaviour changes below).
 10. `20261010120200_payments_ledger.sql` — the payments ledger (any number of stages).
     The two fixed payment slots are copied into it (each copy marked by
-    `payments.legacy_slot`) and left in place, deprecated; until the next release a
-    temporary trigger mirrors every write to them into the ledger. A re-run copies only a
-    slot that has no ledger row — never a second copy, even after the office edited the
-    first — but it does restore a migrated payment the Super Admin has since deleted, so
-    do not re-run it after deleting one.
+    `payments.legacy_slot`) and left in place, deprecated; until step 16 a temporary
+    trigger mirrors every write to them into the ledger. A re-run copies only a slot that
+    has no ledger row — never a second copy, even after the office edited the first — but
+    it does restore a migrated payment the Super Admin has since deleted, so do not re-run
+    it after deleting one. Once step 16 has run it cannot be re-run at all: the slots it
+    copies from are gone.
 11. `20261010120300_feasibility_incentives.sql` — KSEB feasibility date + 30-day clock,
     coordinator incentives.
 12. `20261010120400_service_engineer_access.sql` — engineer RLS, status-only guard,
@@ -91,6 +92,12 @@ copy (step 10) never duplicates a payment. So on a DB that was provisioned from
     realtime.
 14. `20261010120600_list_views_and_metrics.sql` — rebuilt list views + dashboard KPIs.
 15. `20261010120700_import_projects_rpc.sql` — the atomic bulk-import function.
+16. `20261010130000_drop_legacy_payment_slots.sql` — drops the four deprecated
+    first/second payment columns and the temporary mirror trigger from step 10.
+    **Run it only once the build that shipped steps 8–15 is live on production** — the
+    build before it writes these columns, and every work-order save would fail. It refuses
+    (and changes nothing) while a filled slot has no ledger row, naming the work orders; if
+    their ledger rows were deleted on purpose, clear those slots and run it again.
 
 Or, if the project is linked to the CLI, run `npx supabase db push` (the CLI applies
 each file in its own transaction, so the enum rule takes care of itself).
@@ -114,6 +121,9 @@ build runs against it:
   first/second payment fields, and a temporary trigger copies every such write into the
   payments ledger (as *Migrated: first/second payment*), so nothing recorded in the gap is
   lost.
+- Migration 16 is the exception to the order above: it is a **contract** step, safe only
+  once the build that stopped using the payment slots is already live. It ships in a later
+  release than migrations 8–15, so CI applies it only after that build is in production.
 
 Keep the gap short by merging `master → production` once CI is green.
 
