@@ -1,4 +1,4 @@
-import { isOfficeRole } from "@/lib/domain/role";
+import { isOfficeRole, isServiceEngineerRole } from "@/lib/domain/role";
 import type { UserRole } from "@/lib/types";
 
 /** Icon keys are resolved to components client-side (see nav-icons.tsx). */
@@ -47,7 +47,8 @@ export const MODULES: ModuleNav[] = [
     href: "/tickets",
     label: "Service Tickets",
     icon: "tickets",
-    roles: ["admin"],
+    // Engineers see only the tickets assigned to them (RLS + engineer_tickets()).
+    roles: ["admin", "service_engineer"],
   },
   {
     href: "/team",
@@ -75,5 +76,7 @@ export function navForRole(role: UserRole): ModuleNav[] {
 
 /** Default landing route after sign-in. */
 export function homeForRole(role: UserRole): string {
-  return isOfficeRole(role) ? "/" : "/work-orders";
+  if (isOfficeRole(role)) return "/";
+  if (isServiceEngineerRole(role)) return "/tickets";
+  return "/work-orders";
 }
