@@ -176,7 +176,7 @@ export function WorkOrdersTable({
   ];
 
   const search: SearchDef<WorkOrderListRow> = {
-    placeholder: "Search client, phone, consumer no., address…",
+    placeholder: "Search client, phone, consumer no.…",
     columns: [
       "client_name",
       "client_phone",
