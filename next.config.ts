@@ -14,7 +14,10 @@ function buildCsp(): string {
   } catch {
     httpsOrigin = "";
   }
-  const wssOrigin = httpsOrigin.replace(/^https/, "wss");
+  // Realtime rides a WebSocket on the same host: https→wss in production,
+  // http→ws for the local stack (otherwise the live notification bell is
+  // blocked in development).
+  const wssOrigin = httpsOrigin.replace(/^http/, "ws");
   const connect = ["'self'", httpsOrigin, wssOrigin].filter(Boolean).join(" ");
 
   // React's dev server uses eval() for debugging; production never does.
@@ -30,6 +33,9 @@ function buildCsp(): string {
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
     `connect-src ${connect}`,
+    // The push service worker (public/sw.js) and the web manifest (app/manifest.ts).
+    "worker-src 'self'",
+    "manifest-src 'self'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -53,14 +59,33 @@ const securityHeaders = [
   { key: "X-DNS-Prefetch-Control", value: "on" },
 ];
 
+/**
+ * The service worker must always be revalidated, or a fix to it could take a
+ * day to reach phones; it is scoped to the whole app.
+ */
+const serviceWorkerHeaders = [
+  { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+  { key: "Service-Worker-Allowed", value: "/" },
+];
+
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   images: {
     formats: ["image/avif", "image/webp"],
   },
+  experimental: {
+    serverActions: {
+      // The onboarding bulk CSV import posts the whole file as one form (the
+      // default limit is 1 MB).
+      bodySizeLimit: "4mb",
+    },
+  },
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders }];
+    return [
+      { source: "/:path*", headers: securityHeaders },
+      { source: "/sw.js", headers: serviceWorkerHeaders },
+    ];
   },
 };
 

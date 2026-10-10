@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Plus } from "lucide-react";
-import { requireProfile } from "@/lib/auth";
+import { requireWorkOrderRole } from "@/lib/auth";
 import { profilesRepository, workOrdersRepository } from "@/server/data";
 import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
@@ -15,11 +15,11 @@ export default async function WorkOrdersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const profile = await requireProfile();
+  const profile = await requireWorkOrderRole();
   const isAdmin = isOfficeRole(profile.role);
 
   const params = parsePageParams(await searchParams, {
-    filterKeys: ["status", "coordinator", "payment"],
+    filterKeys: ["status", "coordinator", "payment", "financing"],
     defaultSort: "order_date",
     defaultDir: "desc",
   });
@@ -39,7 +39,7 @@ export default async function WorkOrdersPage({
             : "Business you have logged."
         }
       >
-        <Button asChild>
+        <Button asChild className="h-10 md:h-8">
           <Link href="/work-orders/new">
             <Plus className="mr-2 h-4 w-4" /> New Work Order
           </Link>

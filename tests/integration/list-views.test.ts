@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { clientAs, serviceClient, USERS } from "./helpers";
+import { signedInAs, serviceClient, USERS } from "./helpers";
 
 /**
  * The flattened list views back server-side pagination. They are SECURITY
@@ -8,7 +8,7 @@ import { clientAs, serviceClient, USERS } from "./helpers";
  */
 describe("list views", () => {
   it("work_orders_list respects RLS (coordinator sees only their own)", async () => {
-    const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+    const rahul = await signedInAs(USERS.rahul);
     const { data, error } = await rahul
       .from("work_orders_list")
       .select("id, coordinator_id, coordinator_name");
@@ -38,7 +38,7 @@ describe("list views", () => {
       .select("client_name")
       .ilike("client_name", "%anand%")
       .range(0, 4);
-    expect((data ?? []).some((r) => /anand/i.test(r.client_name))).toBe(true);
+    expect((data ?? []).some((r) => /anand/i.test(r.client_name ?? ""))).toBe(true);
     expect((data ?? []).length).toBeLessThanOrEqual(5);
   });
 
@@ -65,5 +65,52 @@ describe("list views", () => {
       .not("client_name", "is", null)
       .limit(1);
     expect((data ?? []).length).toBeGreaterThan(0);
+  });
+
+  it("service_tickets_list names the assigned engineer", async () => {
+    const svc = serviceClient();
+    const { data, error } = await svc
+      .from("service_tickets_list")
+      .select("ticket_no, assigned_to, assignee_name")
+      .eq("ticket_no", "BSS-2606-1002")
+      .single();
+    expect(error).toBeNull();
+    expect(data?.assigned_to).toBe(USERS.vineeth.id);
+    expect(data?.assignee_name).toBe("Vineeth Nair");
+  });
+
+  it("work_orders_list exposes financing and the numeric capacity", async () => {
+    const svc = serviceClient();
+    const { data, error } = await svc
+      .from("work_orders_list")
+      .select("client_name, financing_type, loan_bank_name, plant_capacity_kw")
+      .in("client_name", ["Anand Kumar", "George Varghese"])
+      .order("client_name");
+    expect(error).toBeNull();
+    expect(data).toEqual([
+      {
+        client_name: "Anand Kumar",
+        financing_type: "loan",
+        loan_bank_name: "State Bank of India",
+        plant_capacity_kw: 3,
+      },
+      {
+        client_name: "George Varghese",
+        financing_type: "self",
+        loan_bank_name: null,
+        plant_capacity_kw: 5,
+      },
+    ]);
+  });
+
+  it("supports the shared financing filter (?financing=loan)", async () => {
+    const svc = serviceClient();
+    const { data, count, error } = await svc
+      .from("projects_list")
+      .select("financing_type", { count: "exact" })
+      .eq("financing_type", "loan");
+    expect(error).toBeNull();
+    expect(count ?? 0).toBeGreaterThan(0);
+    for (const row of data ?? []) expect(row.financing_type).toBe("loan");
   });
 });

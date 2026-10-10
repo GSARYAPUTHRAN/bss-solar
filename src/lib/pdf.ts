@@ -1,20 +1,31 @@
 import { jsPDF } from "jspdf";
 import { COMPANY } from "./constants";
 import { formatDate } from "./format";
-import type { ServiceTicket } from "./types";
+import type { ServiceTicket, WorkOrder } from "./types";
+
+/** The customer block printed on the sheet. */
+export type ServiceSheetClient = Pick<
+  WorkOrder,
+  "client_name" | "address" | "client_phone"
+>;
 
 /**
  * Builds (but does not save) a PDF that mimics the physical BSS Solar /
  * Bharat Sevak Samaj "Installation / Maintenance / AMC" service sheet.
+ *
+ * `client` defaults to the ticket's joined work order; pass it explicitly when
+ * the viewer cannot read the work order (service engineers).
  */
-export function buildServiceDoc(ticket: ServiceTicket): jsPDF {
+export function buildServiceDoc(
+  ticket: ServiceTicket,
+  client: ServiceSheetClient | null | undefined = ticket.project?.work_order,
+): jsPDF {
   const doc = new jsPDF({ unit: "pt", format: "a4" });
   const W = doc.internal.pageSize.getWidth();
   const L = 24;
   const R = W - 24;
   const CW = R - L;
 
-  const client = ticket.project?.work_order;
   const v = (x: unknown) => (x === null || x === undefined ? "" : String(x));
   const money = (x: number | null | undefined) =>
     x === null || x === undefined ? "" : Number(x).toLocaleString("en-IN");
@@ -439,7 +450,7 @@ export function buildServiceDoc(ticket: ServiceTicket): jsPDF {
   T("Customer Name :", L + 4, y + 16, { size: 8 });
   T(v(client?.client_name), L + 90, y + 16, { size: 8, bold: true });
   T("Name of Engineers", fMid + 6, y + 16, { size: 8, bold: true });
-  T("1.", fMid + 6, y + 30, { size: 8 });
+  T(`1. ${v(ticket.assignee?.full_name)}`, fMid + 6, y + 30, { size: 8 });
   T("2.", fMid + 6, y + 44, { size: 8 });
   T("3.", fMid + 6, y + 58, { size: 8 });
 
@@ -455,7 +466,10 @@ export function buildServiceDoc(ticket: ServiceTicket): jsPDF {
 /**
  * Builds the service sheet and triggers a browser download.
  */
-export function generateServicePdf(ticket: ServiceTicket) {
-  const doc = buildServiceDoc(ticket);
+export function generateServicePdf(
+  ticket: ServiceTicket,
+  client?: ServiceSheetClient | null,
+) {
+  const doc = buildServiceDoc(ticket, client ?? ticket.project?.work_order);
   doc.save(`${ticket.ticket_no ?? "BSS-service-report"}.pdf`);
 }

@@ -6,12 +6,22 @@ import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { EmptyState } from "@/components/layout";
 import { Button } from "@/components/ui/button";
-import { PaymentBadge, WorkOrderStatusBadge } from "@/components/status-badges";
-import { WORK_ORDER_STATUS, statusOptions } from "@/lib/domain/status";
+import {
+  FinancingBadge,
+  PaymentBadge,
+  WorkOrderStatusBadge,
+} from "@/components/status-badges";
+import { FINANCING, WORK_ORDER_STATUS, statusOptions } from "@/lib/domain/status";
 import { paymentSummary } from "@/lib/domain/payment";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { Coordinator } from "@/server/data";
 import type { WorkOrderListRow } from "@/lib/types";
+
+/**
+ * Secondary columns step aside below `md`: a coordinator on a phone sees the
+ * client, the balance and the status without scrolling sideways.
+ */
+const WIDE_ONLY = "hidden md:table-cell";
 
 export function WorkOrdersTable({
   workOrders,
@@ -35,6 +45,7 @@ export function WorkOrdersTable({
         <>
           <span className="font-medium hover:underline">{w.client_name}</span>
           <div className="text-xs text-muted-foreground">
+            <span className="md:hidden">{w.plant_capacity} · </span>
             {w.consumer_number ?? w.client_phone ?? "—"}
           </div>
         </>
@@ -44,14 +55,31 @@ export function WorkOrdersTable({
       id: "coordinator",
       header: "Coordinator",
       hidden: !isAdmin,
+      className: WIDE_ONLY,
+      headerClassName: WIDE_ONLY,
       cell: (w) => w.coordinator_name ?? "—",
     },
-    { id: "capacity", header: "Capacity", cell: (w) => w.plant_capacity },
+    {
+      id: "capacity",
+      header: "Capacity",
+      className: WIDE_ONLY,
+      headerClassName: WIDE_ONLY,
+      cell: (w) => w.plant_capacity,
+    },
+    {
+      id: "financing",
+      header: "Financing",
+      className: WIDE_ONLY,
+      headerClassName: WIDE_ONLY,
+      cell: (w) => (
+        <FinancingBadge financing={w.financing_type} bank={w.loan_bank_name} />
+      ),
+    },
     {
       id: "advance_amount",
       header: "Advance",
-      className: "text-right tabular-nums",
-      headerClassName: "text-right",
+      className: `${WIDE_ONLY} text-right tabular-nums`,
+      headerClassName: `${WIDE_ONLY} text-right`,
       cell: (w) => formatCurrency(w.advance_amount),
     },
     {
@@ -60,8 +88,8 @@ export function WorkOrdersTable({
       sortable: true,
       sortKey: "total_cost",
       sortAccessor: (w) => Number(w.total_cost ?? 0),
-      className: "text-right tabular-nums",
-      headerClassName: "text-right",
+      className: `${WIDE_ONLY} text-right tabular-nums`,
+      headerClassName: `${WIDE_ONLY} text-right`,
       cell: (w) => formatCurrency(w.total_cost),
     },
     {
@@ -80,6 +108,8 @@ export function WorkOrdersTable({
       sortable: true,
       sortKey: "order_date",
       sortAccessor: (w) => new Date(w.order_date).getTime(),
+      className: WIDE_ONLY,
+      headerClassName: WIDE_ONLY,
       cell: (w) => formatDate(w.order_date),
     },
     {
@@ -120,6 +150,16 @@ export function WorkOrdersTable({
         v === "pending"
           ? !paymentSummary(w).isSettled
           : paymentSummary(w).isSettled,
+    },
+    {
+      id: "financing",
+      placeholder: "Financing",
+      column: "financing_type",
+      options: [
+        { value: "all", label: "Any financing" },
+        ...statusOptions(FINANCING),
+      ],
+      predicate: (w, v) => w.financing_type === v,
     },
     {
       id: "coordinator",

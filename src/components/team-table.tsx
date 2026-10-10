@@ -87,7 +87,7 @@ export function TeamTable({
             triggerVariant="ghost"
             triggerClassName="text-destructive hover:text-destructive"
             title={`Delete ${p.full_name}?`}
-            description="This permanently removes the staff account and its sign-in. A member who still owns work orders or projects cannot be deleted — reassign or delete that business first. This cannot be undone."
+            description="This permanently removes the staff account and its sign-in. A member who still owns work orders or projects, or still holds open service tickets, cannot be deleted — reassign that work first. This cannot be undone."
             confirmLabel="Delete member"
             loadingText="Deleting…"
           />

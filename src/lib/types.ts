@@ -1,9 +1,12 @@
 /**
- * `superadmin` is a single privileged account that owns the destructive actions
- * (deleting users, projects and work orders). It holds every `admin` capability
- * on top of that — see lib/domain/role.ts.
+ * Roles — see lib/domain/role.ts for the hierarchy and the predicates every
+ * guard must use.
+ *   coordinator       field sales; their own work orders/projects.
+ *   service_engineer  field service; only the tickets assigned to them.
+ *   admin             office; everything except destructive actions.
+ *   superadmin        exactly one; admin + every delete. Immutable from the app.
  */
-export type UserRole = "admin" | "coordinator" | "superadmin";
+export type UserRole = "admin" | "coordinator" | "superadmin" | "service_engineer";
 export type WorkOrderStatus = "pending" | "approved" | "rejected";
 export type MilestoneStatus = "pending" | "in_progress" | "completed";
 export type TicketType = "routine_6m" | "adhoc";
@@ -13,6 +16,23 @@ export type TicketStatus =
   | "in_progress"
   | "completed"
   | "cancelled";
+
+/** How the customer funds the plant. */
+export type FinancingType = "self" | "loan";
+
+export type PaymentMethod =
+  | "cash"
+  | "upi"
+  | "bank_transfer"
+  | "cheque"
+  | "loan_disbursement"
+  | "other";
+
+/**
+ * What a ledger entry pays for. Only `contract` counts towards the contract
+ * receivable; `kseb_fees` records KSEB charges collected through BSS.
+ */
+export type PaymentPurpose = "contract" | "kseb_fees";
 
 export type ProjectStage =
   | "site_feasibility_survey"
@@ -38,11 +58,8 @@ export interface WorkOrderDetails {
   consumer_number: string | null;
   notes: string | null;
   kseb_section: string | null;
+  financing_type: FinancingType;
   loan_bank_name: string | null;
-  first_payment_date: string | null;
-  first_payment_amount: number | null;
-  second_payment_date: string | null;
-  second_payment_amount: number | null;
 }
 
 export interface WorkOrder extends WorkOrderDetails {
@@ -52,6 +69,9 @@ export interface WorkOrder extends WorkOrderDetails {
   client_phone: string | null;
   address: string | null;
   plant_capacity: string;
+  /** Generated from `plant_capacity` by the database; null if unparseable. */
+  plant_capacity_kw: number | null;
+  /** Collected at booking — the first money in, before the ledger. */
   advance_amount: number | null;
   total_cost: number;
   order_date: string;
@@ -73,20 +93,55 @@ export interface Project {
   completed_at: string | null;
   created_at: string;
   updated_at: string;
+  /** Date KSEB issued feasibility; starts the 30-day validity clock. */
+  feasibility_date: string | null;
+  /** Office-set amount for the coordinator; null = not set. */
+  coordinator_incentive: number | null;
+  incentive_paid_on: string | null;
   // joined
   work_order?: WorkOrder | null;
   coordinator?: Pick<Profile, "id" | "full_name"> | null;
   milestones?: ProjectMilestone[];
 }
 
+/** One collection in the payments ledger. */
+export interface Payment {
+  id: string;
+  work_order_id: string;
+  amount: number;
+  paid_on: string;
+  method: PaymentMethod;
+  purpose: PaymentPurpose;
+  reference: string | null;
+  notes: string | null;
+  recorded_by: string | null;
+  created_at: string;
+  updated_at: string;
+  // joined
+  recorder?: Pick<Profile, "id" | "full_name"> | null;
+}
+
+/** Ledger aggregates exposed by the list views (contract purpose only). */
+export interface LedgerAggregates {
+  /** Σ contract payments in the ledger (excludes the booking advance). */
+  payments_total: number | null;
+  payment_count: number | null;
+  last_payment_on: string | null;
+  /** advance + payments_total. */
+  amount_received: number | null;
+  /** total_cost − amount_received (negative when overpaid). */
+  balance_due: number | null;
+}
+
 /** Flattened rows from the list views (server-side pagination). */
-export interface WorkOrderListRow extends WorkOrderDetails {
+export interface WorkOrderListRow extends WorkOrderDetails, LedgerAggregates {
   id: string;
   coordinator_id: string;
   client_name: string;
   client_phone: string | null;
   address: string | null;
   plant_capacity: string;
+  plant_capacity_kw: number | null;
   advance_amount: number | null;
   total_cost: number;
   order_date: string;
@@ -97,10 +152,6 @@ export interface WorkOrderListRow extends WorkOrderDetails {
   project_id: string | null;
   current_stage: ProjectStage | null;
   is_completed: boolean | null;
-  /** advance + both instalments, computed in the view. */
-  amount_received: number | null;
-  /** total_cost - amount_received (negative when overpaid). */
-  balance_due: number | null;
 }
 
 export interface TicketListRow {
@@ -114,35 +165,67 @@ export interface TicketListRow {
   created_at: string;
   project_id: string | null;
   client_name: string | null;
+  assigned_to: string | null;
+  assignee_name: string | null;
 }
 
-export interface ProjectListRow {
+/**
+ * A service engineer's worklist row (`engineer_tickets()` RPC): the ticket plus
+ * just enough site detail to do the job — never contract money or incentives.
+ */
+export interface EngineerTicketRow {
+  id: string;
+  ticket_no: string | null;
+  ticket_type: TicketType;
+  status: TicketStatus;
+  scheduled_date: string | null;
+  service_date: string | null;
+  nature_of_complaint: string | null;
+  created_at: string;
+  project_id: string | null;
+  client_name: string | null;
+  client_phone: string | null;
+  address: string | null;
+  plant_capacity: string | null;
+  consumer_number: string | null;
+  kseb_section: string | null;
+}
+
+export interface ProjectListRow extends LedgerAggregates {
   id: string;
   coordinator_id: string;
+  work_order_id: string | null;
   current_stage: ProjectStage;
   is_completed: boolean;
   created_at: string;
   started_at: string;
   completed_at: string | null;
   client_name: string | null;
+  client_phone: string | null;
+  address: string | null;
   plant_capacity: string | null;
+  plant_capacity_kw: number | null;
   total_cost: number | null;
+  advance_amount: number | null;
   coordinator_name: string | null;
   milestones_done: number;
   milestones_total: number;
-  work_order_id: string | null;
   consumer_number: string | null;
   kseb_section: string | null;
+  financing_type: FinancingType | null;
   loan_bank_name: string | null;
-  advance_amount: number | null;
-  first_payment_date: string | null;
-  first_payment_amount: number | null;
-  second_payment_date: string | null;
-  second_payment_amount: number | null;
-  amount_received: number | null;
-  balance_due: number | null;
-  /** Commissioned, but money is still outstanding. */
+  /** Commissioned, but the contract is not fully collected. */
   payment_pending: boolean | null;
+  feasibility_date: string | null;
+  feasibility_periods: number | null;
+  feasibility_renewals: number | null;
+  feasibility_valid_until: string | null;
+  /** Days left in the current validity period; null once commissioned. */
+  feasibility_days_left: number | null;
+  /** Renewals × ₹1,000 — borne by BSS. */
+  feasibility_extension_cost: number | null;
+  coordinator_incentive: number | null;
+  incentive_paid_on: string | null;
 }
 
 export interface ProjectMilestone {
@@ -153,6 +236,19 @@ export interface ProjectMilestone {
   status: MilestoneStatus;
   notes: string | null;
   completed_at: string | null;
+}
+
+/** One entry in a user's notification inbox. */
+export interface AppNotification {
+  id: string;
+  recipient_id: string;
+  type: string;
+  title: string;
+  body: string | null;
+  /** In-app path, always starting with "/". */
+  link: string | null;
+  read_at: string | null;
+  created_at: string;
 }
 
 export interface SpvStringReading {

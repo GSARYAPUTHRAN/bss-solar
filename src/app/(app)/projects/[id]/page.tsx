@@ -1,42 +1,27 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import {
-  CheckCircle2,
-  Circle,
-  Clock,
-  FastForward,
-  Pencil,
-  Plus,
-  Wrench,
-} from "lucide-react";
-import { requireProfile } from "@/lib/auth";
+import { FastForward, Pencil } from "lucide-react";
+import { requireWorkOrderRole } from "@/lib/auth";
 import { projectsRepository, ticketsRepository } from "@/server/data";
-import { updateMilestone, advanceProject, deleteProject } from "../actions";
-import { Page, PageHeader, Section, EmptyState, Field, FieldGrid, FormError } from "@/components/layout";
+import { paymentsRepository } from "@/server/data/payments.repository";
+import { advanceProject, deleteProject } from "../actions";
+import { FormError, Page, PageHeader, Section } from "@/components/layout";
 import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
 import { SubmitButton } from "@/components/submit-button";
 import { ConfirmSubmit } from "@/components/confirm-submit";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
-import { FormSelect } from "@/components/form-select";
-import { PaymentBadge, TicketStatusBadge } from "@/components/status-badges";
-import {
-  MILESTONE_STATUS_LABELS,
-  STAGE_LABELS,
-  TICKET_TYPE_LABELS,
-} from "@/lib/constants";
-import { formatCurrency, formatDate } from "@/lib/format";
-import { paymentSummary } from "@/lib/domain/payment";
+import { FeasibilityBadge, FinancingBadge } from "@/components/status-badges";
+import { ProjectPaymentsSection } from "@/components/payments/project-payments-section";
+import { KsebFeasibilitySection } from "@/components/projects/kseb-feasibility-section";
+import { MilestoneTimeline } from "@/components/projects/milestone-timeline";
+import { ProjectClientDetails } from "@/components/projects/project-client-details";
+import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
+import { ProjectSummaryCard } from "@/components/projects/project-summary-card";
+import { ProjectTicketsSection } from "@/components/projects/project-tickets-section";
+import { feasibilityStatus } from "@/lib/domain/kseb";
+import { ledgerTotals, paymentSummary, type PaymentSource } from "@/lib/domain/payment";
 import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
-import type { MilestoneStatus, ProjectMilestone } from "@/lib/types";
-import { cn } from "@/lib/utils";
-
-const STATUS_ICON: Record<MilestoneStatus, React.ReactNode> = {
-  completed: <CheckCircle2 className="h-5 w-5 text-emerald-600" />,
-  in_progress: <Clock className="h-5 w-5 text-amber-600" />,
-  pending: <Circle className="h-5 w-5 text-muted-foreground" />,
-};
+import { formatDate, todayISO } from "@/lib/format";
 
 export default async function ProjectDetailPage({
   params,
@@ -45,28 +30,52 @@ export default async function ProjectDetailPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ error?: string }>;
 }) {
-  const profile = await requireProfile();
+  const profile = await requireWorkOrderRole();
   const { id } = await params;
   const { error } = await searchParams;
-  const isAdmin = isOfficeRole(profile.role);
+  const isOffice = isOfficeRole(profile.role);
   const isSuperAdmin = isSuperAdminRole(profile.role);
 
+  // RLS returns nothing for a coordinator's view of someone else's project.
   const project = await projectsRepository.byId(id);
   if (!project) notFound();
 
-  const milestones = (project.milestones ?? []).sort(
-    (a, b) => a.sort_order - b.sort_order,
-  );
-  const doneCount = milestones.filter((m) => m.status === "completed").length;
+  const [ledger, tickets] = await Promise.all([
+    paymentsRepository.listForWorkOrder(project.work_order_id),
+    isOffice ? ticketsRepository.listByProject(project.id) : Promise.resolve([]),
+  ]);
 
-  const tickets = isAdmin
-    ? await ticketsRepository.listByProject(id)
-    : [];
-  // Read live off the work order — nothing is denormalised, so editing the work
-  // order is reflected here on the next render.
+  const today = todayISO();
   const wo = project.work_order;
-  const payment = paymentSummary(wo ?? {});
-  const canEditWorkOrder = isAdmin || project.coordinator_id === profile.id;
+  const milestones = [...project.milestones].sort((a, b) => a.sort_order - b.sort_order);
+  const done = milestones.filter((m) => m.status === "completed").length;
+
+  // Read live off the work order and the ledger — nothing is denormalised, so
+  // edits elsewhere show here on the next render.
+  const totals = ledgerTotals(ledger);
+  const paymentSource: PaymentSource = {
+    total_cost: wo?.total_cost,
+    advance_amount: wo?.advance_amount,
+    payments_total: totals.contract,
+  };
+  const payment = paymentSummary(paymentSource);
+  const feasibility = feasibilityStatus({
+    feasibilityDate: project.feasibility_date,
+    completedAt: project.completed_at,
+    isCompleted: project.is_completed,
+    today,
+  });
+
+  const isOwner = project.coordinator_id === profile.id;
+  const canEditWorkOrder = isOffice || isOwner;
+  const incentive =
+    isOffice || isOwner
+      ? {
+          label: isOwner ? "Your incentive" : "Coordinator incentive",
+          amount: project.coordinator_incentive,
+          paidOn: project.incentive_paid_on,
+        }
+      : undefined;
 
   return (
     <Page size="wide">
@@ -75,8 +84,10 @@ export default async function ProjectDetailPage({
         description={`${wo?.plant_capacity ?? ""} · Started ${formatDate(project.started_at)}`}
         backHref="/projects"
       >
+        <FinancingBadge financing={wo?.financing_type} bank={wo?.loan_bank_name} />
+        <FeasibilityBadge status={feasibility} />
         {canEditWorkOrder && (
-          <Button variant="outline" asChild>
+          <Button variant="outline" className="h-10 md:h-8" asChild>
             <Link href={`/work-orders/${project.work_order_id}/edit`}>
               <Pencil className="mr-2 h-4 w-4" /> Edit Details
             </Link>
@@ -87,277 +98,83 @@ export default async function ProjectDetailPage({
       <FormError message={error} />
 
       <div className="grid gap-4 md:grid-cols-3">
-        <Section
-          title="Project Summary"
+        <ProjectSummaryCard
           className="md:col-span-1"
-          contentClassName="space-y-3 text-sm"
+          project={project}
+          payment={payment}
+          paymentSource={paymentSource}
+          progress={{ done, total: milestones.length }}
+          incentive={incentive}
         >
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Status</span>
-              {project.is_completed ? (
-                <Badge className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
-                  Commissioned
-                </Badge>
-              ) : (
-                <Badge variant="secondary">In Progress</Badge>
-              )}
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Current stage</span>
-              <span className="text-right font-medium">
-                {STAGE_LABELS[project.current_stage]}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Progress</span>
-              <span className="font-medium">
-                {doneCount}/{milestones.length}
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Coordinator</span>
-              <span className="font-medium">{project.coordinator?.full_name}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Phone</span>
-              <span className="font-medium">{wo?.client_phone ?? "—"}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Total cost</span>
-              <span className="font-medium">{formatCurrency(wo?.total_cost)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Received</span>
-              <span className="font-medium">
-                {formatCurrency(payment.received)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">Payment</span>
-              <PaymentBadge
-                source={wo ?? {}}
-                isCompleted={project.is_completed}
+          {isOffice && !project.is_completed && (
+            <form action={advanceProject} className="pt-2">
+              <input type="hidden" name="project_id" value={project.id} />
+              <SubmitButton variant="outline" className="w-full" loadingText="Updating…">
+                <FastForward className="mr-2 h-4 w-4" /> Complete Next Milestone
+              </SubmitButton>
+            </form>
+          )}
+          {isSuperAdmin && (
+            <>
+              <Separator />
+              <ConfirmSubmit
+                action={deleteProject}
+                fields={{ project_id: project.id }}
+                triggerLabel="Delete project"
+                triggerVariant="ghost"
+                triggerClassName="w-full text-destructive hover:text-destructive"
+                title="Delete this project?"
+                description="This permanently removes the project and its milestones. Its work order is returned to pending so it can be approved again; service tickets are kept. This cannot be undone."
+                confirmLabel="Delete project"
+                loadingText="Deleting…"
               />
-            </div>
-            <p className="pt-2 text-xs text-muted-foreground">{wo?.address}</p>
-
-            {isAdmin && !project.is_completed && (
-              <form action={advanceProject} className="pt-2">
-                <input type="hidden" name="project_id" value={project.id} />
-                <SubmitButton variant="outline" className="w-full" loadingText="Updating…">
-                  <FastForward className="mr-2 h-4 w-4" /> Complete Next Milestone
-                </SubmitButton>
-              </form>
-            )}
-
-            {isSuperAdmin && (
-              <>
-                <Separator />
-                <ConfirmSubmit
-                  action={deleteProject}
-                  fields={{ project_id: project.id }}
-                  triggerLabel="Delete project"
-                  triggerVariant="ghost"
-                  triggerClassName="w-full text-destructive hover:text-destructive"
-                  title="Delete this project?"
-                  description="This permanently removes the project and its milestones. Its work order is returned to pending so it can be approved again; service tickets are kept. This cannot be undone."
-                  confirmLabel="Delete project"
-                  loadingText="Deleting…"
-                />
-              </>
-            )}
-        </Section>
+            </>
+          )}
+        </ProjectSummaryCard>
 
         <Section title="KSEB / ANERT Milestones" className="md:col-span-2">
-            <ol className="space-y-4">
-              {milestones.map((m: ProjectMilestone, i) => (
-                <li key={m.id} className="relative pl-8">
-                  {i < milestones.length - 1 && (
-                    <span className="absolute left-[9px] top-7 h-[calc(100%+4px)] w-px bg-border" />
-                  )}
-                  <span className="absolute left-0 top-0.5">
-                    {STATUS_ICON[m.status]}
-                  </span>
-                  <div className="flex flex-col gap-2 rounded-md border p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <p
-                        className={cn(
-                          "text-sm font-medium",
-                          m.status === "completed" && "text-muted-foreground",
-                        )}
-                      >
-                        {STAGE_LABELS[m.stage]}
-                      </p>
-                      <Badge
-                        variant="outline"
-                        className={cn(
-                          "shrink-0 text-xs",
-                          m.status === "completed" &&
-                            "border-emerald-200 text-emerald-700 dark:border-emerald-500/30 dark:text-emerald-300",
-                          m.status === "in_progress" &&
-                            "border-amber-200 text-amber-700 dark:border-amber-500/30 dark:text-amber-300",
-                        )}
-                      >
-                        {MILESTONE_STATUS_LABELS[m.status]}
-                      </Badge>
-                    </div>
-
-                    {m.completed_at && (
-                      <p className="text-xs text-muted-foreground">
-                        Completed {formatDate(m.completed_at)}
-                      </p>
-                    )}
-
-                    {isAdmin ? (
-                      <form
-                        action={updateMilestone}
-                        className="mt-1 flex flex-col gap-2"
-                      >
-                        <input
-                          type="hidden"
-                          name="project_id"
-                          value={project.id}
-                        />
-                        <input type="hidden" name="milestone_id" value={m.id} />
-                        <div className="flex flex-col gap-2 sm:flex-row">
-                          <FormSelect
-                            name="status"
-                            aria-label={`Status for ${STAGE_LABELS[m.stage]}`}
-                            defaultValue={m.status}
-                            className="w-full sm:w-44"
-                            options={(
-                              Object.keys(
-                                MILESTONE_STATUS_LABELS,
-                              ) as MilestoneStatus[]
-                            ).map((s) => ({
-                              value: s,
-                              label: MILESTONE_STATUS_LABELS[s],
-                            }))}
-                          />
-                          <Textarea
-                            name="notes"
-                            defaultValue={m.notes ?? ""}
-                            placeholder="Notes…"
-                            rows={1}
-                            className="flex-1"
-                          />
-                          <SubmitButton size="sm" variant="secondary" loadingText="Saving…">
-                            Save
-                          </SubmitButton>
-                        </div>
-                      </form>
-                    ) : (
-                      m.notes && (
-                        <p className="text-xs text-muted-foreground">{m.notes}</p>
-                      )
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ol>
+          <MilestoneTimeline
+            projectId={project.id}
+            milestones={milestones}
+            canEdit={isOffice}
+            feasibilityCaptured={Boolean(project.feasibility_date)}
+          />
         </Section>
       </div>
 
-      <Section
-        title="Client, KSEB & Payment Details"
-        description="Held on the work order — edit it there and this updates with it."
-        actions={
-          <PaymentBadge source={wo ?? {}} isCompleted={project.is_completed} />
-        }
-        contentClassName="space-y-6"
-      >
-        <FieldGrid cols={3}>
-          <Field label="Client phone" value={wo?.client_phone} />
-          <Field label="KSEB consumer number" value={wo?.consumer_number} />
-          <Field label="KSEB section" value={wo?.kseb_section} />
-          <Field label="Loan bank" value={wo?.loan_bank_name} />
-          <Field label="Order date" value={formatDate(wo?.order_date)} />
-          <Field label="Address" value={wo?.address} />
-        </FieldGrid>
-
-        <Separator />
-
-        <FieldGrid cols={3}>
-          <Field label="Total cost" value={formatCurrency(wo?.total_cost)} />
-          <Field
-            label="Advance collected"
-            value={formatCurrency(wo?.advance_amount)}
+      <div className="grid gap-4 md:grid-cols-3">
+        <KsebFeasibilitySection
+          className={isOffice ? "md:col-span-2" : "md:col-span-3"}
+          feasibility={feasibility}
+          feasibilityDate={project.feasibility_date}
+          capacityKw={wo?.plant_capacity_kw ?? null}
+          capacityLabel={wo?.plant_capacity ?? null}
+          ksebCollected={totals.ksebFees}
+        />
+        {isOffice && (
+          <ProjectSettingsForm
+            className="md:col-span-1"
+            projectId={project.id}
+            feasibilityDate={project.feasibility_date}
+            incentive={project.coordinator_incentive}
+            incentivePaidOn={project.incentive_paid_on}
+            today={today}
           />
-          <Field
-            label="First payment"
-            value={
-              wo?.first_payment_amount == null
-                ? null
-                : `${formatCurrency(wo.first_payment_amount)} · ${formatDate(wo.first_payment_date)}`
-            }
-          />
-          <Field
-            label="Second payment"
-            value={
-              wo?.second_payment_amount == null
-                ? null
-                : `${formatCurrency(wo.second_payment_amount)} · ${formatDate(wo.second_payment_date)}`
-            }
-          />
-          <Field label="Total received" value={formatCurrency(payment.received)} />
-          <Field label="Balance due" value={formatCurrency(payment.balanceDue)} />
-        </FieldGrid>
-
-        {wo?.notes && (
-          <>
-            <Separator />
-            <Field label="Notes" value={wo.notes} />
-          </>
         )}
-      </Section>
+      </div>
 
-      {isAdmin && (
-        <Section
-          title="Service Tickets"
-          actions={
-            <Button size="sm" asChild>
-              <Link href={`/tickets/new?project_id=${project.id}`}>
-                <Plus className="mr-2 h-4 w-4" /> New Ticket
-              </Link>
-            </Button>
-          }
-        >
-          {tickets.length === 0 ? (
-            <EmptyState
-              icon={Wrench}
-              title="No service tickets yet"
-              description="Service tickets raised for this project will appear here."
-            />
-          ) : (
-            <div className="space-y-2">
-              {tickets.map((t) => (
-                <Link
-                  key={t.id}
-                  href={`/tickets/${t.id}`}
-                  className="flex items-center justify-between rounded-md border p-3 transition-colors hover:border-primary/60 hover:bg-accent/50"
-                >
-                  <div className="flex items-center gap-3">
-                    <Wrench className="h-4 w-4 text-muted-foreground" />
-                    <div>
-                      <p className="text-sm font-medium">
-                        {t.ticket_no ?? t.id.slice(0, 8)}
-                      </p>
-                      <p className="text-xs text-muted-foreground">
-                        {TICKET_TYPE_LABELS[t.ticket_type]} ·{" "}
-                        {formatDate(t.scheduled_date)}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm">{formatCurrency(t.total)}</span>
-                    <TicketStatusBadge status={t.status} />
-                  </div>
-                </Link>
-              ))}
-            </div>
-          )}
-        </Section>
-      )}
+      <ProjectPaymentsSection
+        workOrderId={project.work_order_id}
+        projectId={project.id}
+        totalCost={wo?.total_cost ?? null}
+        advanceAmount={wo?.advance_amount ?? null}
+        isCompleted={project.is_completed}
+        viewer={{ canRecord: isOffice, canEdit: isOffice, canDelete: isSuperAdmin }}
+      />
+
+      <ProjectClientDetails workOrder={wo} />
+
+      {isOffice && <ProjectTicketsSection projectId={project.id} tickets={tickets} />}
     </Page>
   );
 }

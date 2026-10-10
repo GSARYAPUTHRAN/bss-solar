@@ -4,78 +4,73 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   requireAdmin,
-  requireProfile,
   requireSuperAdmin,
+  requireWorkOrderRole,
 } from "@/lib/auth";
-import { projectsRepository, workOrdersRepository } from "@/server/data";
-import type { WorkOrderPatch } from "@/server/data";
-import { dec, num, str, text } from "@/server/form";
+import {
+  loadContract,
+  projectsRepository,
+  workOrdersRepository,
+} from "@/server/data";
+import { text, str } from "@/server/form";
+import { checkContractTerms } from "@/server/forms/payment";
+import { parseWorkOrderForm } from "@/server/forms/work-order";
+import { notify } from "@/server/notifications";
 import { todayISO } from "@/lib/format";
 import { withFlash } from "@/lib/flash";
+import { canEditContractTerms } from "@/lib/domain/payment";
 import { isOfficeRole } from "@/lib/domain/role";
 
-/**
- * Parse the shared work-order body from a form. Returns the patch, or a message
- * when a required field is missing/invalid (money is rejected rather than
- * silently coerced to 0).
- */
-function parseWorkOrderForm(
-  formData: FormData,
-): { patch: WorkOrderPatch } | { error: string } {
-  const clientName = text(formData.get("client_name"));
-  const plantCapacity = text(formData.get("plant_capacity"));
-  const totalCost = dec(formData.get("total_cost"));
+function withError(path: string, message: string): string {
+  return `${path}?error=${encodeURIComponent(message)}`;
+}
 
-  if (!clientName || !plantCapacity || totalCost === null || totalCost < 0) {
-    return {
-      error: "Client name, plant capacity and a valid total cost are required.",
-    };
-  }
-
-  return {
-    patch: {
-      client_name: clientName,
-      client_phone: str(formData.get("client_phone")),
-      address: str(formData.get("address")),
-      plant_capacity: plantCapacity,
-      advance_amount: num(formData.get("advance_amount")),
-      total_cost: totalCost,
-      order_date: text(formData.get("order_date")) || todayISO(),
-      consumer_number: str(formData.get("consumer_number")),
-      notes: str(formData.get("notes")),
-      kseb_section: str(formData.get("kseb_section")),
-      loan_bank_name: str(formData.get("loan_bank_name")),
-      first_payment_date: str(formData.get("first_payment_date")),
-      first_payment_amount: dec(formData.get("first_payment_amount")),
-      second_payment_date: str(formData.get("second_payment_date")),
-      second_payment_amount: dec(formData.get("second_payment_amount")),
-    },
-  };
+/** Every list/detail that renders a work order's figures. */
+function revalidateWorkOrder(id: string, projectId?: string | null) {
+  revalidatePath("/work-orders");
+  revalidatePath(`/work-orders/${id}`);
+  revalidatePath("/projects");
+  if (projectId) revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/");
 }
 
 export async function createWorkOrder(formData: FormData) {
-  const profile = await requireProfile();
+  const profile = await requireWorkOrderRole();
 
-  const parsed = parseWorkOrderForm(formData);
-  if ("error" in parsed) {
-    redirect(`/work-orders/new?error=${encodeURIComponent(parsed.error)}`);
-  }
+  const parsed = parseWorkOrderForm(formData, todayISO());
+  if (!parsed.ok) redirect(withError("/work-orders/new", parsed.error));
 
-  // Admins may log on behalf of a coordinator; coordinators log for themselves.
+  // The office may log on behalf of a coordinator; coordinators log for
+  // themselves (RLS + a DB trigger reject anything else).
   const selectedCoordinator = str(formData.get("coordinator_id"));
   const coordinatorId =
     isOfficeRole(profile.role) && selectedCoordinator
       ? selectedCoordinator
       : profile.id;
 
-  const { error } = await workOrdersRepository.create({
-    ...parsed.patch,
+  const { id, error } = await workOrdersRepository.create({
+    ...parsed.data,
     coordinator_id: coordinatorId,
   });
+  if (error || !id) {
+    redirect(withError("/work-orders/new", error ?? "Work order was not created."));
+  }
 
-  if (error) redirect(`/work-orders/new?error=${encodeURIComponent(error)}`);
+  const base = {
+    actorId: profile.id,
+    actorName: profile.full_name,
+    workOrderId: id,
+    clientName: parsed.data.client_name,
+    capacity: parsed.data.plant_capacity,
+  };
+  notify(
+    coordinatorId === profile.id
+      ? { ...base, type: "work_order.submitted" }
+      : { ...base, type: "work_order.assigned", coordinatorId },
+  );
 
   revalidatePath("/work-orders");
+  revalidatePath("/");
   redirect(withFlash("/work-orders", "Work order created."));
 }
 
@@ -85,53 +80,61 @@ export async function createWorkOrder(formData: FormData) {
  * `status`/`coordinator_id` admin-only, so a coordinator can never approve or
  * reassign through this path.
  *
+ * The total cost and advance decide the balance due, so they obey the payments
+ * rules: once the order has been reviewed only the office changes them (the
+ * coordinator's form leaves them out, and the DB guards the same), and no edit
+ * may overpay the contract against the ledger (`checkContractTerms`, the cap
+ * every ledger write obeys).
+ *
  * A project reads its client, capacity, financials and KSEB details straight
  * from the work order (live joins, nothing denormalised), so an edit here is
  * immediately visible on the project — the project routes are revalidated so no
  * stale render survives the save.
  */
 export async function updateWorkOrder(formData: FormData) {
-  await requireProfile();
+  const profile = await requireWorkOrderRole();
   const id = text(formData.get("id"));
+  const editPath = `/work-orders/${id}/edit`;
 
-  const parsed = parseWorkOrderForm(formData);
-  if ("error" in parsed) {
-    redirect(
-      `/work-orders/${id}/edit?error=${encodeURIComponent(parsed.error)}`,
-    );
+  const contract = await loadContract(id, "Work order not found, or you cannot edit it.");
+  if (!contract.ok) redirect(withError(editPath, contract.error));
+  const { workOrder, ledger } = contract;
+
+  const parsed = parseWorkOrderForm(formData, todayISO(), {
+    lockedTerms: canEditContractTerms(profile.role, workOrder.status) ? null : workOrder,
+  });
+  if (!parsed.ok) redirect(withError(editPath, parsed.error));
+
+  const terms = checkContractTerms({ current: workOrder, terms: parsed.data, ledger });
+  if (!terms.ok) redirect(withError(editPath, terms.error));
+
+  const { error } = await workOrdersRepository.update(id, parsed.data);
+  if (error) redirect(withError(editPath, error));
+
+  // The office approves on these details, so it hears about field edits.
+  if (!isOfficeRole(profile.role)) {
+    notify({
+      type: "work_order.updated",
+      actorId: profile.id,
+      actorName: profile.full_name,
+      workOrderId: id,
+      clientName: parsed.data.client_name,
+    });
   }
 
-  const { error } = await workOrdersRepository.update(id, parsed.patch);
-  if (error) {
-    redirect(`/work-orders/${id}/edit?error=${encodeURIComponent(error)}`);
-  }
-
-  const projectId = (await workOrdersRepository.byId(id))?.project?.id;
-
-  revalidatePath("/work-orders");
-  revalidatePath(`/work-orders/${id}`);
-  revalidatePath("/projects");
-  if (projectId) revalidatePath(`/projects/${projectId}`);
-  revalidatePath("/");
-
+  revalidateWorkOrder(id, workOrder.project?.id);
   redirect(withFlash(`/work-orders/${id}`, "Work order updated."));
 }
 
 export async function approveWorkOrder(formData: FormData) {
-  await requireAdmin();
+  const profile = await requireAdmin();
   const id = text(formData.get("id"));
 
   const wo = await workOrdersRepository.byId(id);
-  if (!wo) {
-    redirect(
-      `/work-orders/${id}?error=${encodeURIComponent("Work order not found")}`,
-    );
-  }
+  if (!wo) redirect(withError(`/work-orders/${id}`, "Work order not found."));
 
   const statusRes = await workOrdersRepository.setStatus(id, "approved");
-  if (statusRes.error) {
-    redirect(`/work-orders/${id}?error=${encodeURIComponent(statusRes.error)}`);
-  }
+  if (statusRes.error) redirect(withError(`/work-orders/${id}`, statusRes.error));
 
   // Create the active project (a DB trigger seeds the 9 milestones).
   // Guard against duplicates if approve is pressed twice.
@@ -140,26 +143,47 @@ export async function approveWorkOrder(formData: FormData) {
       wo.id,
       wo.coordinator_id,
     );
-    if (projRes.error) {
-      redirect(`/work-orders/${id}?error=${encodeURIComponent(projRes.error)}`);
-    }
+    if (projRes.error) redirect(withError(`/work-orders/${id}`, projRes.error));
   }
 
-  revalidatePath("/work-orders");
-  revalidatePath("/projects");
-  revalidatePath(`/work-orders/${id}`);
+  const projectId = (await workOrdersRepository.byId(id))?.project?.id ?? null;
+  // Announce the transition, not a repeated press on an approved order.
+  if (wo.status !== "approved") {
+    notify({
+      type: "work_order.approved",
+      actorId: profile.id,
+      coordinatorId: wo.coordinator_id,
+      workOrderId: wo.id,
+      projectId,
+      clientName: wo.client_name,
+    });
+  }
+
+  revalidateWorkOrder(id, projectId);
   redirect(withFlash(`/work-orders/${id}`, "Work order approved — project created."));
 }
 
 export async function rejectWorkOrder(formData: FormData) {
-  await requireAdmin();
+  const profile = await requireAdmin();
   const id = text(formData.get("id"));
 
-  const { error } = await workOrdersRepository.setStatus(id, "rejected");
-  if (error) redirect(`/work-orders/${id}?error=${encodeURIComponent(error)}`);
+  const wo = await workOrdersRepository.byId(id);
+  if (!wo) redirect(withError(`/work-orders/${id}`, "Work order not found."));
 
-  revalidatePath("/work-orders");
-  revalidatePath(`/work-orders/${id}`);
+  const { error } = await workOrdersRepository.setStatus(id, "rejected");
+  if (error) redirect(withError(`/work-orders/${id}`, error));
+
+  if (wo.status !== "rejected") {
+    notify({
+      type: "work_order.rejected",
+      actorId: profile.id,
+      coordinatorId: wo.coordinator_id,
+      workOrderId: wo.id,
+      clientName: wo.client_name,
+    });
+  }
+
+  revalidateWorkOrder(id);
   redirect(withFlash(`/work-orders/${id}`, "Work order rejected."));
 }
 
@@ -169,7 +193,7 @@ export async function deleteWorkOrder(formData: FormData) {
   const id = text(formData.get("id"));
 
   const { error } = await workOrdersRepository.remove(id);
-  if (error) redirect(`/work-orders/${id}?error=${encodeURIComponent(error)}`);
+  if (error) redirect(withError(`/work-orders/${id}`, error));
 
   revalidatePath("/work-orders");
   revalidatePath("/projects");

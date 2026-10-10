@@ -4,6 +4,8 @@
 --
 -- Demo credentials (password for all staff: Coord@12345 / Admin@12345):
 --   SuperAdmin   -> super@bsssolar.test   (BSS SuperAdmin)  Super@12345
+--   Engineer     -> engineer@bsssolar.test (Anil Kumar)     Engineer@12345
+--   Engineer     -> vineeth@bsssolar.test  (Vineeth Nair)   Engineer@12345
 --   Admin        -> admin@bsssolar.test
 --   Coordinator  -> coord@bsssolar.test   (Rahul Menon)
 --   Coordinator  -> priya@bsssolar.test   (Priya Suresh)
@@ -20,6 +22,8 @@
 -- coord arun  : 00000000-0000-0000-0000-000000000004
 -- coord sneha : 00000000-0000-0000-0000-000000000005
 -- superadmin  : 00000000-0000-0000-0000-000000000006
+-- engineer anil    : 00000000-0000-0000-0000-000000000007
+-- engineer vineeth : 00000000-0000-0000-0000-000000000008
 
 -- ---------- Auth users ----------
 insert into auth.users (
@@ -93,6 +97,28 @@ insert into auth.users (
     '{"provider":"email","providers":["email"]}',
     '{"full_name":"BSS SuperAdmin"}',
     now(), now(), '', '', '', ''
+  ),
+  (
+    '00000000-0000-0000-0000-000000000000',
+    '00000000-0000-0000-0000-000000000007',
+    'authenticated', 'authenticated',
+    'engineer@bsssolar.test',
+    crypt('Engineer@12345', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{"full_name":"Anil Kumar"}',
+    now(), now(), '', '', '', ''
+  ),
+  (
+    '00000000-0000-0000-0000-000000000000',
+    '00000000-0000-0000-0000-000000000008',
+    'authenticated', 'authenticated',
+    'vineeth@bsssolar.test',
+    crypt('Engineer@12345', gen_salt('bf')),
+    now(),
+    '{"provider":"email","providers":["email"]}',
+    '{"full_name":"Vineeth Nair"}',
+    now(), now(), '', '', '', ''
   );
 
 -- ---------- Auth identities ----------
@@ -135,6 +161,18 @@ insert into auth.identities (
     '00000000-0000-0000-0000-000000000006',
     '{"sub":"00000000-0000-0000-0000-000000000006","email":"super@bsssolar.test"}',
     'email', now(), now(), now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000007',
+    '00000000-0000-0000-0000-000000000007',
+    '{"sub":"00000000-0000-0000-0000-000000000007","email":"engineer@bsssolar.test"}',
+    'email', now(), now(), now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000008',
+    '00000000-0000-0000-0000-000000000008',
+    '{"sub":"00000000-0000-0000-0000-000000000008","email":"vineeth@bsssolar.test"}',
+    'email', now(), now(), now()
   );
 
 -- ---------- Profiles ----------
@@ -151,6 +189,14 @@ update public.profiles set phone = '+91 98470 10001' where id = '00000000-0000-0
 update public.profiles set phone = '+91 98470 10002' where id = '00000000-0000-0000-0000-000000000003';
 update public.profiles set phone = '+91 98470 10003' where id = '00000000-0000-0000-0000-000000000004';
 update public.profiles set phone = '+91 98470 10004' where id = '00000000-0000-0000-0000-000000000005';
+
+-- Field service engineers (work the tickets assigned to them).
+update public.profiles
+  set role = 'service_engineer', phone = '+91 98470 20001'
+  where id = '00000000-0000-0000-0000-000000000007';
+update public.profiles
+  set role = 'service_engineer', phone = '+91 98470 20002'
+  where id = '00000000-0000-0000-0000-000000000008';
 
 -- ---------- Work Orders ----------
 insert into public.work_orders (
@@ -205,35 +251,59 @@ insert into public.work_orders (
    'Latha Krishnan', '+91 98470 50505', 'Kollam, Kerala',
    '4kW', 30000, 260000, current_date - 120, 'approved');
 
--- ---------- Extended work-order details (consumer no., KSEB, loan, payments) --
+-- ---------- Extended work-order details (consumer no., KSEB, financing) ------
 update public.work_orders set
   consumer_number = '1156789012345', kseb_section = 'Vytilla',
-  loan_bank_name = 'State Bank of India',
-  notes = 'Roof facing south-west; scaffolding needed for the north array.',
-  first_payment_date = current_date - 20, first_payment_amount = 80000
+  financing_type = 'loan', loan_bank_name = 'State Bank of India',
+  notes = 'Roof facing south-west; scaffolding needed for the north array.'
   where id = '10000000-0000-0000-0000-000000000001';
 
 update public.work_orders set
   consumer_number = '1156789054321', kseb_section = 'Aluva',
-  loan_bank_name = 'Federal Bank',
-  first_payment_date = current_date - 12, first_payment_amount = 120000
+  financing_type = 'loan', loan_bank_name = 'Federal Bank'
   where id = '10000000-0000-0000-0000-000000000004';
 
 -- Mary Jose: plant is COMMISSIONED but ₹1,80,000 is still outstanding.
 update public.work_orders set
   consumer_number = '1156789099999', kseb_section = 'Pala',
-  loan_bank_name = 'Canara Bank',
-  notes = 'Second instalment pending — customer awaiting subsidy credit.',
-  first_payment_date = current_date - 70, first_payment_amount = 100000
+  financing_type = 'loan', loan_bank_name = 'Canara Bank',
+  notes = 'Second instalment pending — customer awaiting subsidy credit.'
   where id = '10000000-0000-0000-0000-000000000005';
 
--- Latha Krishnan: commissioned and paid in full (advance + both instalments).
+-- Latha Krishnan: commissioned and paid in full, in FOUR stages after the advance.
 update public.work_orders set
   consumer_number = '1156789077777', kseb_section = 'Kollam',
-  loan_bank_name = 'Union Bank of India',
-  first_payment_date = current_date - 100, first_payment_amount = 130000,
-  second_payment_date = current_date - 60, second_payment_amount = 100000
+  financing_type = 'self'
   where id = '10000000-0000-0000-0000-000000000014';
+
+-- George Varghese: self-financed.
+update public.work_orders set
+  consumer_number = '1156789033333', kseb_section = 'Angamaly',
+  financing_type = 'self'
+  where id = '10000000-0000-0000-0000-000000000009';
+
+-- ---------- Payments ledger (collections after the booking advance) ----------
+insert into public.payments (
+  work_order_id, amount, paid_on, method, purpose, reference, recorded_by
+) values
+  ('10000000-0000-0000-0000-000000000001', 80000, current_date - 20,
+   'loan_disbursement', 'contract', 'SBI-DISB-4471', '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000004', 120000, current_date - 12,
+   'loan_disbursement', 'contract', 'FED-77120', '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000005', 100000, current_date - 70,
+   'cheque', 'contract', 'CHQ 004512', '00000000-0000-0000-0000-000000000001'),
+  -- Latha: advance 30,000 + 80,000 + 50,000 + 60,000 + 40,000 = 2,60,000 (paid in full)
+  ('10000000-0000-0000-0000-000000000014', 80000, current_date - 100,
+   'bank_transfer', 'contract', 'UTR 2209874411', '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000014', 50000, current_date - 80,
+   'upi', 'contract', 'UPI 6611029934', '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000014', 60000, current_date - 60,
+   'cheque', 'contract', 'CHQ 000981', '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000014', 40000, current_date - 45,
+   'cash', 'contract', null, '00000000-0000-0000-0000-000000000001'),
+  -- KSEB charges collected through BSS (4 kW: 4,720 registration incl. GST + 1,000 feasibility)
+  ('10000000-0000-0000-0000-000000000014', 5720, current_date - 105,
+   'upi', 'kseb_fees', 'UPI 6610023311', '00000000-0000-0000-0000-000000000001');
 
 -- ---------- Projects (trigger seeds 9 milestones each) ----------
 insert into public.projects (
@@ -257,6 +327,31 @@ insert into public.projects (
    '00000000-0000-0000-0000-000000000002', 'plant_commissioning', true, now() - interval '85 days', now() - interval '5 days'),
   ('20000000-0000-0000-0000-000000000009', '10000000-0000-0000-0000-000000000014',
    '00000000-0000-0000-0000-000000000005', 'plant_commissioning', true, now() - interval '115 days', now() - interval '40 days');
+
+-- ---------- KSEB feasibility + coordinator incentives ----------
+-- Feasibility is valid 30 days; each further period costs BSS ₹1,000.
+-- P1: 25 days in  -> 5 days left (expiring soon)
+update public.projects set feasibility_date = current_date - 25,
+  coordinator_incentive = 3000
+  where id = '20000000-0000-0000-0000-000000000001';
+-- P2: 40 days in  -> 2nd period, 1 renewal (₹1,000 BSS cost)
+update public.projects set feasibility_date = current_date - 40
+  where id = '20000000-0000-0000-0000-000000000002';
+-- P5: 10 days in  -> on track
+update public.projects set feasibility_date = current_date - 10,
+  coordinator_incentive = 5000
+  where id = '20000000-0000-0000-0000-000000000005';
+-- P6: 45 days in  -> 2nd period, 1 renewal
+update public.projects set feasibility_date = current_date - 45
+  where id = '20000000-0000-0000-0000-000000000006';
+-- P8 (Mary, commissioned 5 days ago): 65 days on the clock -> 2 renewals; incentive paid
+update public.projects set feasibility_date = current_date - 70,
+  coordinator_incentive = 5000, incentive_paid_on = current_date - 2
+  where id = '20000000-0000-0000-0000-000000000008';
+-- P9 (Latha, commissioned 40 days ago): 60 days on the clock -> 1 renewal; incentive pending
+update public.projects set feasibility_date = current_date - 100,
+  coordinator_incentive = 4000
+  where id = '20000000-0000-0000-0000-000000000009';
 
 -- ---------- Milestone progress per project ----------
 -- Helper: complete sort_orders 1..(n-1), set sort_order n in_progress
@@ -326,7 +421,7 @@ insert into public.service_tickets (
     '30000000-0000-0000-0000-000000000001',
     '20000000-0000-0000-0000-000000000001',
     'BSS-2606-1001', 'routine_6m', 'completed',
-    '00000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000007',
     current_date - 5, current_date - 5,
     '3kW', 'Luminous', 'NXG-3000', 'SN-3KW-00123',
     '150AH', 'Exide', 2, 1,
@@ -344,7 +439,7 @@ insert into public.service_tickets (
     '30000000-0000-0000-0000-000000000002',
     '20000000-0000-0000-0000-000000000005',
     'BSS-2606-1002', 'adhoc', 'in_progress',
-    '00000000-0000-0000-0000-000000000004',
+    '00000000-0000-0000-0000-000000000008',
     current_date - 1, null,
     '5kW', 'Microtek', 'MSUN-5000', 'SN-5KW-00456',
     '200AH', 'Luminous', 4, 1,
@@ -360,7 +455,7 @@ insert into public.service_tickets (
     '30000000-0000-0000-0000-000000000003',
     '20000000-0000-0000-0000-000000000008',
     'BSS-2606-1003', 'routine_6m', 'completed',
-    '00000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000007',
     current_date - 30, current_date - 30,
     '5kW', 'Su-Kam', 'Shark 5000', 'SN-5KW-00789',
     '150AH', 'Exide', 4, 1,
@@ -378,7 +473,7 @@ insert into public.service_tickets (
     '30000000-0000-0000-0000-000000000004',
     '20000000-0000-0000-0000-000000000007',
     'BSS-2606-1004', 'routine_6m', 'scheduled',
-    '00000000-0000-0000-0000-000000000005',
+    '00000000-0000-0000-0000-000000000008',
     current_date + 7, null,
     '3kW', 'Luminous', 'NXG-3000', 'SN-3KW-00234',
     '150AH', 'Exide', 2, 1,
@@ -390,3 +485,21 @@ insert into public.service_tickets (
     0, 0, 0, 0,
     '00000000-0000-0000-0000-000000000001'
   );
+
+-- ---------- Notifications (demo inbox) ----------
+insert into public.notifications (recipient_id, type, title, body, link, created_at) values
+  ('00000000-0000-0000-0000-000000000001', 'work_order.submitted',
+   'New work order from Rahul Menon', 'Joseph Thomas · 8kW',
+   '/work-orders/10000000-0000-0000-0000-000000000003', now() - interval '3 days'),
+  ('00000000-0000-0000-0000-000000000006', 'work_order.submitted',
+   'New work order from Rahul Menon', 'Joseph Thomas · 8kW',
+   '/work-orders/10000000-0000-0000-0000-000000000003', now() - interval '3 days'),
+  ('00000000-0000-0000-0000-000000000002', 'work_order.approved',
+   'Work order approved', 'Anand Kumar is now an active project.',
+   '/projects/20000000-0000-0000-0000-000000000001', now() - interval '25 days'),
+  ('00000000-0000-0000-0000-000000000002', 'incentive.updated',
+   'Incentive set: ₹5,000', 'Mary Jose — paid',
+   '/projects/20000000-0000-0000-0000-000000000008', now() - interval '2 days'),
+  ('00000000-0000-0000-0000-000000000008', 'ticket.assigned',
+   'New service ticket BSS-2606-1002', 'George Varghese — inverter fault E05',
+   '/tickets/30000000-0000-0000-0000-000000000002', now() - interval '1 day');
