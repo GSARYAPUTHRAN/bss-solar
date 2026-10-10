@@ -68,7 +68,8 @@ export function RoleEditor({
           });
         }}
       >
-        <SelectTrigger className="w-40">
+        {/* Wide enough for the longest label ("Service Engineer"). */}
+        <SelectTrigger className="w-44">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

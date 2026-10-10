@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, beforeEach } from "vitest";
-import { clientAs, serviceClient, USERS } from "./helpers";
+import { signedInAs, serviceClient, USERS } from "./helpers";
 
 /**
  * The SuperAdmin owns every destructive action. These pin the two halves of that
@@ -45,7 +45,7 @@ describe("delete is SuperAdmin-only", () => {
   it("an admin cannot delete a work order", async () => {
     const { workOrderId } = await makeFixture("Admin Delete Attempt");
     try {
-      const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+      const admin = await signedInAs(USERS.admin);
       const { error } = await admin
         .from("work_orders")
         .delete()
@@ -67,7 +67,7 @@ describe("delete is SuperAdmin-only", () => {
   it("an admin cannot delete a project", async () => {
     const { workOrderId, projectId } = await makeFixture("Admin Project Delete");
     try {
-      const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+      const admin = await signedInAs(USERS.admin);
       await admin.from("projects").delete().eq("id", projectId);
 
       const { data } = await svc.from("projects").select("id").eq("id", projectId);
@@ -80,7 +80,7 @@ describe("delete is SuperAdmin-only", () => {
   it("a coordinator cannot delete their own work order", async () => {
     const { workOrderId } = await makeFixture("Coordinator Delete Attempt");
     try {
-      const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+      const rahul = await signedInAs(USERS.rahul);
       await rahul.from("work_orders").delete().eq("id", workOrderId);
 
       const { data } = await svc
@@ -94,7 +94,7 @@ describe("delete is SuperAdmin-only", () => {
   });
 
   it("an admin cannot delete a profile", async () => {
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+    const admin = await signedInAs(USERS.admin);
     await admin.from("profiles").delete().eq("id", USERS.sneha.id);
 
     const { data } = await svc
@@ -107,10 +107,7 @@ describe("delete is SuperAdmin-only", () => {
   it("the SuperAdmin can delete a project (cascading its milestones)", async () => {
     const { workOrderId, projectId } = await makeFixture("Super Project Delete");
     try {
-      const su = await clientAs(
-        USERS.superadmin.email,
-        USERS.superadmin.password,
-      );
+      const su = await signedInAs(USERS.superadmin);
       const { data: deleted, error } = await su
         .from("projects")
         .delete()
@@ -131,7 +128,7 @@ describe("delete is SuperAdmin-only", () => {
 
   it("the SuperAdmin can delete a work order (cascading its project)", async () => {
     const { workOrderId, projectId } = await makeFixture("Super WO Delete");
-    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const su = await signedInAs(USERS.superadmin);
     const { data: deleted, error } = await su
       .from("work_orders")
       .delete()
@@ -172,7 +169,7 @@ describe("deleting a team member", () => {
     expect(created.error).toBeNull();
     const id = created.data.user!.id;
 
-    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const su = await signedInAs(USERS.superadmin);
     const { data: deleted, error } = await su
       .from("profiles")
       .delete()
@@ -224,7 +221,7 @@ describe("the SuperAdmin seat", () => {
   });
 
   it("blocks an admin from promoting anyone to SuperAdmin", async () => {
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+    const admin = await signedInAs(USERS.admin);
     const { error } = await admin
       .from("profiles")
       .update({ role: "superadmin" })
@@ -240,7 +237,7 @@ describe("the SuperAdmin seat", () => {
   });
 
   it("blocks an admin from demoting the SuperAdmin", async () => {
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+    const admin = await signedInAs(USERS.admin);
     const { error } = await admin
       .from("profiles")
       .update({ role: "admin" })
@@ -256,7 +253,7 @@ describe("the SuperAdmin seat", () => {
   });
 
   it("blocks a coordinator from claiming the seat", async () => {
-    const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+    const rahul = await signedInAs(USERS.rahul);
     const { error } = await rahul
       .from("profiles")
       .update({ role: "superadmin" })
@@ -274,7 +271,7 @@ describe("the SuperAdmin seat", () => {
   it("blocks the SuperAdmin from revoking their OWN seat", async () => {
     // The seat is the top of the hierarchy: it is immutable from the app for
     // everyone, including its holder. Only direct SQL can move it.
-    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const su = await signedInAs(USERS.superadmin);
     const { error } = await su
       .from("profiles")
       .update({ role: "admin" })
@@ -291,7 +288,7 @@ describe("the SuperAdmin seat", () => {
   });
 
   it("blocks the SuperAdmin from handing the seat to someone else", async () => {
-    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const su = await signedInAs(USERS.superadmin);
     const { error } = await su
       .from("profiles")
       .update({ role: "superadmin" })
@@ -308,7 +305,7 @@ describe("the SuperAdmin seat", () => {
 
   it("still lets the SuperAdmin change ordinary roles", async () => {
     // Immutability is scoped to the seat itself, not to role management at large.
-    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const su = await signedInAs(USERS.superadmin);
     const up = await su
       .from("profiles")
       .update({ role: "admin" })
@@ -349,7 +346,7 @@ describe("the SuperAdmin seat", () => {
   });
 
   it("still lets the SuperAdmin see and manage everything an admin can", async () => {
-    const su = await clientAs(USERS.superadmin.email, USERS.superadmin.password);
+    const su = await signedInAs(USERS.superadmin);
     const orders = await su
       .from("work_orders")
       .select("id", { count: "exact", head: true });
@@ -361,7 +358,7 @@ describe("the SuperAdmin seat", () => {
     const isSuper = await su.rpc("is_superadmin");
     expect(isSuper.data).toBe(true);
 
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+    const admin = await signedInAs(USERS.admin);
     expect((await admin.rpc("is_superadmin")).data).toBe(false);
     expect((await admin.rpc("is_admin")).data).toBe(true);
   });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { clientAs, anonClient, USERS } from "./helpers";
+import { signedInAs, anonClient, USERS } from "./helpers";
 
 /**
  * Row Level Security: coordinators must only ever see their OWN data; admins see
@@ -7,7 +7,7 @@ import { clientAs, anonClient, USERS } from "./helpers";
  */
 describe("RLS read isolation", () => {
   it("a coordinator sees only their own work orders", async () => {
-    const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+    const rahul = await signedInAs(USERS.rahul);
     const { data, error } = await rahul.from("work_orders").select("id, coordinator_id");
     expect(error).toBeNull();
     expect(data && data.length).toBeGreaterThan(0);
@@ -17,7 +17,7 @@ describe("RLS read isolation", () => {
   });
 
   it("a different coordinator sees a disjoint set", async () => {
-    const priya = await clientAs(USERS.priya.email, USERS.priya.password);
+    const priya = await signedInAs(USERS.priya);
     const { data } = await priya.from("work_orders").select("id, coordinator_id");
     for (const row of data ?? []) {
       expect(row.coordinator_id).toBe(USERS.priya.id);
@@ -25,8 +25,8 @@ describe("RLS read isolation", () => {
   });
 
   it("an admin sees all work orders", async () => {
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
-    const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+    const admin = await signedInAs(USERS.admin);
+    const rahul = await signedInAs(USERS.rahul);
     const { count: adminCount } = await admin
       .from("work_orders")
       .select("id", { count: "exact", head: true });
@@ -37,7 +37,7 @@ describe("RLS read isolation", () => {
   });
 
   it("a coordinator sees only projects they own", async () => {
-    const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+    const rahul = await signedInAs(USERS.rahul);
     const { data } = await rahul.from("projects").select("id, coordinator_id");
     for (const row of data ?? []) {
       expect(row.coordinator_id).toBe(USERS.rahul.id);
@@ -45,7 +45,7 @@ describe("RLS read isolation", () => {
   });
 
   it("a coordinator only sees service tickets on their own projects", async () => {
-    const rahul = await clientAs(USERS.rahul.email, USERS.rahul.password);
+    const rahul = await signedInAs(USERS.rahul);
     const { data } = await rahul
       .from("service_tickets")
       .select("id, project:projects(coordinator_id)");
@@ -56,7 +56,7 @@ describe("RLS read isolation", () => {
     }
 
     // Admin sees strictly more (all seeded tickets).
-    const admin = await clientAs(USERS.admin.email, USERS.admin.password);
+    const admin = await signedInAs(USERS.admin);
     const { count } = await admin
       .from("service_tickets")
       .select("id", { count: "exact", head: true });

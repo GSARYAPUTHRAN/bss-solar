@@ -2,8 +2,12 @@ import type {
   FinancingType,
   PaymentMethod,
   PaymentPurpose,
+  UserRole,
+  WorkOrderStatus,
 } from "@/lib/types";
+import { isOfficeRole } from "./role";
 import { FINANCING, statusLabels } from "./status";
+import { round2 } from "./rounding";
 
 /**
  * Collections against a work order.
@@ -51,10 +55,6 @@ export function amount(value: Amount): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-function round2(n: number): number {
-  return Math.round((n + Number.EPSILON) * 100) / 100;
-}
-
 export function paymentSummary(source: PaymentSource): PaymentSummary {
   const totalCost = amount(source.total_cost);
   const advance = amount(source.advance_amount);
@@ -82,11 +82,37 @@ export function isPaymentPending(
   return Boolean(project.is_completed) && paymentSummary(source).balanceDue > 0;
 }
 
+/**
+ * Who may change a work order's contract terms — its total cost and booking
+ * advance. They decide the balance due, and collections are kept by the office,
+ * so once the office has reviewed an order only the office changes them
+ * (guard_work_order_update enforces the same in the database). While the order
+ * is pending, the coordinator who logged it may still correct them.
+ */
+export function canEditContractTerms(
+  role: UserRole,
+  status: WorkOrderStatus,
+): boolean {
+  return isOfficeRole(role) || status === "pending";
+}
+
+/** The booking advance is part of the contract value, never more than it. */
+export const ADVANCE_OVER_TOTAL_ERROR = "The advance cannot be more than the total cost.";
+
 /** Share of the contract value collected so far, 0-100. */
 export function collectedPct(source: PaymentSource): number {
-  const { totalCost, received } = paymentSummary(source);
-  if (totalCost <= 0) return 100;
-  return Math.min(100, Math.max(0, Math.round((received / totalCost) * 100)));
+  const { totalCost, received, isSettled } = paymentSummary(source);
+  // Only a settled contract reads 100% — ₹500 outstanding on ₹2,00,000 must not
+  // round up to "100%" (that is exactly the commissioned-unpaid case).
+  if (isSettled || totalCost <= 0) return 100;
+  // Divide whole paise, not binary fractions of rupees: 57000 / 100000 * 100 is
+  // 56.99999999999999, which would floor a whole point away.
+  const pct = Math.floor((paise(received) * 100) / paise(totalCost));
+  return Math.min(99, Math.max(0, pct));
+}
+
+function paise(rupees: number): number {
+  return Math.round(rupees * 100);
 }
 
 /** A ledger entry, as far as the maths is concerned. */
@@ -126,6 +152,23 @@ export function ledgerTotals(entries: readonly LedgerEntry[]): LedgerTotals {
   return { contract: round2(contract), ksebFees: round2(ksebFees), count, lastPaidOn };
 }
 
+/** Plain code-unit order — ISO dates sort correctly, independent of locale. */
+function byCodeUnit(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Order by instant, not by text: Postgres omits the fraction on a whole-second
+ * timestamp, so "…09:00:00+00:00" and "…09:00:00.5+00:00" compare wrongly as
+ * strings. Unparseable or missing values tie (the sort is stable).
+ */
+function byInstant(a: string | null | undefined, b: string | null | undefined): number {
+  const ta = a ? Date.parse(a) : Number.NaN;
+  const tb = b ? Date.parse(b) : Number.NaN;
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+  return ta - tb;
+}
+
 /**
  * Ledger in collection order with a 1-based stage number per purpose — the
  * advance is "stage 0", so the first ledger payment is stage 1, matching how the
@@ -136,8 +179,7 @@ export function withStages<T extends LedgerEntry>(
 ): (T & { stage: number })[] {
   const ordered = [...entries].sort(
     (a, b) =>
-      a.paid_on.localeCompare(b.paid_on) ||
-      (a.created_at ?? "").localeCompare(b.created_at ?? ""),
+      byCodeUnit(a.paid_on, b.paid_on) || byInstant(a.created_at, b.created_at),
   );
   const counters = new Map<PaymentPurpose, number>();
   return ordered.map((e) => {

@@ -13,6 +13,17 @@ export interface NewNotification {
 }
 
 /**
+ * register_push_subscription keeps each user's 10 most recently seen devices
+ * (migration 20261010120500), and PostgREST returns at most 1000 rows per
+ * request (`max_rows`, supabase/config.toml). Looking up at most 100 users per
+ * request therefore always returns every device: one user's devices can never
+ * crowd another recipient's out of a truncated response.
+ */
+const MAX_DEVICES_PER_USER = 10;
+const MAX_ROWS_PER_REQUEST = 1000;
+const USERS_PER_LOOKUP = MAX_ROWS_PER_REQUEST / MAX_DEVICES_PER_USER;
+
+/**
  * Persistence for notification fan-out. Writes go through the service role
  * because the actor is rarely the recipient (and users have no INSERT policy
  * on their own inbox — see migration 20261010120500). Server-only.
@@ -21,7 +32,8 @@ export interface NotificationStore {
   /** Every admin + the SuperAdmin. */
   officeIds(): Promise<string[]>;
   /**
-   * Insert rows; a row whose (recipient, dedupe_key) already exists is skipped.
+   * Insert rows; a row whose (recipient, dedupe_key) was ever sent before is
+   * skipped, even if the user has since deleted it from their inbox.
    * Returns the recipient ids actually inserted (the ones to push to).
    */
   insert(rows: readonly NewNotification[]): Promise<string[]>;
@@ -44,27 +56,39 @@ export function serviceRoleStore(): NotificationStore {
 
     async insert(rows) {
       if (rows.length === 0) return [];
-      // ON CONFLICT (recipient_id, dedupe_key) DO NOTHING — NULL keys never
-      // conflict, so one-off notifications always land.
-      const { data, error } = await db
-        .from("notifications")
-        .upsert([...rows], {
-          onConflict: "recipient_id,dedupe_key",
-          ignoreDuplicates: true,
-        })
-        .select("recipient_id");
+      // Claims each dedupe_key in notification_dedupe and writes only the rows
+      // it claimed, in one statement; NULL keys never conflict, so one-off
+      // notifications always land.
+      const { data, error } = await db.rpc("insert_notifications", {
+        p_rows: rows.map((r) => ({
+          recipient_id: r.recipient_id,
+          type: r.type,
+          title: r.title,
+          body: r.body,
+          link: r.link,
+          dedupe_key: r.dedupe_key,
+        })),
+      });
       if (error) throw new Error(`notification insert failed: ${error.message}`);
       return (data ?? []).map((r) => r.recipient_id);
     },
 
     async subscriptionsFor(userIds) {
-      if (userIds.length === 0) return [];
-      const { data, error } = await db
-        .from("push_subscriptions")
-        .select("id, endpoint, p256dh, auth")
-        .in("user_id", [...userIds]);
-      if (error) throw new Error(`subscription lookup failed: ${error.message}`);
-      return data ?? [];
+      const subscriptions: StoredSubscription[] = [];
+      for (let i = 0; i < userIds.length; i += USERS_PER_LOOKUP) {
+        const users = userIds.slice(i, i + USERS_PER_LOOKUP);
+        const { data, error } = await db
+          .from("push_subscriptions")
+          .select("id, endpoint, p256dh, auth")
+          .in("user_id", users)
+          .order("user_id")
+          .order("last_seen_at", { ascending: false })
+          .order("id")
+          .limit(users.length * MAX_DEVICES_PER_USER);
+        if (error) throw new Error(`subscription lookup failed: ${error.message}`);
+        subscriptions.push(...(data ?? []));
+      }
+      return subscriptions;
     },
 
     async removeSubscriptions(ids) {

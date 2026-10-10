@@ -111,16 +111,16 @@ export function ServerDataTable<T>({
   return (
     <Card className="p-4">
       {hasToolbar && (
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           {search && (
-            <div className="relative flex-1">
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <div className="relative flex-1 sm:min-w-64">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 aria-label="Search"
                 placeholder={search.placeholder ?? "Search…"}
                 value={term}
                 onChange={(e) => onSearch(e.target.value)}
-                className="pl-8"
+                className="h-10 pl-8 sm:h-8"
               />
             </div>
           )}
@@ -132,7 +132,12 @@ export function ServerDataTable<T>({
             >
               <SelectTrigger
                 aria-label={filter.placeholder}
-                className={cn("w-full sm:w-44", filter.widthClass)}
+                className={cn(
+                  // Phones get a full-width, 40px tap target; the row wraps
+                  // on wider screens so many filters never get clipped.
+                  "w-full data-[size=default]:h-10 sm:w-44 sm:data-[size=default]:h-8",
+                  filter.widthClass,
+                )}
               >
                 <SelectValue placeholder={filter.placeholder} />
               </SelectTrigger>

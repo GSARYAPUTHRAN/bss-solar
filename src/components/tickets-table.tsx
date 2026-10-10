@@ -8,16 +8,22 @@ import { EmptyState } from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { TicketStatusBadge } from "@/components/status-badges";
+import { AssigneeLabel } from "@/components/tickets/assignee-label";
 import { TICKET_TYPE_LABELS } from "@/lib/constants";
 import { TICKET_STATUS, statusOptions } from "@/lib/domain/status";
+import { UNASSIGNED_ENGINEER_FILTER } from "@/lib/domain/ticket-workflow";
 import { formatCurrency, formatDate } from "@/lib/format";
+import type { ServiceEngineer } from "@/server/data/profiles.repository";
 import type { TicketListRow, TicketType } from "@/lib/types";
 
+/** The office's ticket list (engineers get their own worklist instead). */
 export function TicketsTable({
   tickets,
+  engineers,
   server,
 }: {
   tickets: TicketListRow[];
+  engineers: ServiceEngineer[];
   server?: { total: number; page: number; pageSize: number };
 }) {
   const columns: ColumnDef<TicketListRow>[] = [
@@ -37,6 +43,11 @@ export function TicketsTable({
       id: "client",
       header: "Client",
       cell: (t) => t.client_name ?? "—",
+    },
+    {
+      id: "engineer",
+      header: "Engineer",
+      cell: (t) => <AssigneeLabel name={t.assignee_name} status={t.status} />,
     },
     {
       id: "type",
@@ -97,6 +108,19 @@ export function TicketsTable({
       ],
       predicate: (t, v) => t.status === v,
     },
+    {
+      id: "engineer",
+      placeholder: "Engineer",
+      column: "assigned_to",
+      widthClass: "sm:w-52",
+      options: [
+        { value: "all", label: "All engineers" },
+        { value: UNASSIGNED_ENGINEER_FILTER, label: "Unassigned" },
+        ...engineers.map((e) => ({ value: e.id, label: e.full_name })),
+      ],
+      predicate: (t, v) =>
+        v === UNASSIGNED_ENGINEER_FILTER ? t.assigned_to === null : t.assigned_to === v,
+    },
   ];
 
   const search: SearchDef<TicketListRow> = {
@@ -111,7 +135,7 @@ export function TicketsTable({
     <EmptyState
       icon={Wrench}
       title="No service tickets yet"
-      description="Raise a routine 6-month check or an ad-hoc service request for a commissioned site."
+      description="Raise a routine 6-month check or an ad-hoc service request and assign it to a service engineer."
       action={
         <Button asChild>
           <Link href="/tickets/new">

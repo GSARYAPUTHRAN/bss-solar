@@ -9,6 +9,9 @@ import {
   Wrench,
   IndianRupee,
   ArrowRight,
+  CalendarClock,
+  Repeat,
+  HandCoins,
 } from "lucide-react";
 import { requireAdmin } from "@/lib/auth";
 import {
@@ -23,6 +26,16 @@ import { ProjectsTable } from "@/components/projects-table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatCurrency } from "@/lib/format";
 import { DASHBOARD_RECENT } from "@/lib/constants";
+import { FEASIBILITY_WARNING_DAYS } from "@/lib/domain/kseb";
+
+/** Icon tints for the KPI tiles (light + dark variants). */
+const ACCENT = {
+  amber: "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300",
+  indigo: "bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300",
+  emerald: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+  blue: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
+  red: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+} as const;
 
 export default async function DashboardPage() {
   const profile = await requireAdmin();
@@ -44,48 +57,53 @@ export default async function DashboardPage() {
         description="Office overview across all coordinators."
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <KpiGroup title="Pipeline">
         <StatCard
           label="Total Work Orders"
           value={metrics.totalWorkOrders}
           icon={ClipboardList}
+          href="/work-orders"
         />
         <StatCard
           label="Pending Approvals"
           value={metrics.pendingApprovals}
           icon={Clock}
-          accent="bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300"
+          accent={ACCENT.amber}
+          href="/work-orders?status=pending"
         />
         <StatCard
           label="Active Projects"
           value={metrics.activeProjects}
           icon={KanbanSquare}
-          accent="bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"
+          accent={ACCENT.indigo}
         />
         <StatCard
           label="Commissioned"
           value={metrics.commissioned}
           icon={CheckCircle2}
-          accent="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+          accent={ACCENT.emerald}
         />
         <StatCard
           label="Open Tickets"
           value={metrics.openTickets}
           icon={Wrench}
-          accent="bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300"
+          accent={ACCENT.blue}
         />
         <StatCard
           label="Approved Pipeline"
           value={formatCurrency(metrics.approvedPipeline)}
           icon={IndianRupee}
-          accent="bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300"
+          accent={ACCENT.emerald}
         />
+      </KpiGroup>
+
+      <KpiGroup title="Needs attention">
         {/* Commissioned and handed over, but the money is not fully in. */}
         <StatCard
           label="Commissioned · Unpaid"
           value={metrics.commissionedUnpaid}
           icon={AlertTriangle}
-          accent="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300"
+          accent={ACCENT.red}
           hint="Commissioned plants with a balance"
           href="/projects?view=list&status=payment_pending"
         />
@@ -93,11 +111,38 @@ export default async function DashboardPage() {
           label="Outstanding Collections"
           value={formatCurrency(metrics.outstandingAmount)}
           icon={Wallet}
-          accent="bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300"
+          accent={ACCENT.red}
           hint="Balance due on commissioned plants"
           href="/projects?view=list&status=payment_pending"
         />
-      </div>
+        {/* Commission inside the validity, or BSS pays the next ₹1,000 renewal. */}
+        <StatCard
+          label="Feasibility Expiring"
+          value={metrics.feasibilityExpiring}
+          icon={CalendarClock}
+          accent={ACCENT.red}
+          hint={`Validity ends within ${FEASIBILITY_WARNING_DAYS} days`}
+          href="/projects?view=list&feasibility=expiring"
+        />
+        {/* Every project, commissioned ones too: a renewal fee stays a cost
+            after the clock stops, and the "extended" filter lists the same set. */}
+        <StatCard
+          label="Feasibility Extension Cost"
+          value={formatCurrency(metrics.feasibilityExtensionCost)}
+          icon={Repeat}
+          accent={ACCENT.amber}
+          hint="Renewal fees borne by BSS"
+          href="/projects?view=list&feasibility=extended"
+        />
+        <StatCard
+          label="Incentives Pending"
+          value={formatCurrency(metrics.incentivePending)}
+          icon={HandCoins}
+          accent={ACCENT.indigo}
+          hint="Coordinator incentives not yet paid"
+          href="/projects?view=list&incentive=pending"
+        />
+      </KpiGroup>
 
       <Tabs defaultValue="work-orders">
         <TabsList>
@@ -122,6 +167,27 @@ export default async function DashboardPage() {
         </TabsContent>
       </Tabs>
     </Page>
+  );
+}
+
+function KpiGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  const id = `kpi-${title.toLowerCase().replace(/\s+/g, "-")}`;
+  return (
+    <section aria-labelledby={id} className="space-y-3">
+      <h2
+        id={id}
+        className="text-xs font-semibold uppercase tracking-wide text-muted-foreground"
+      >
+        {title}
+      </h2>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
+    </section>
   );
 }
 

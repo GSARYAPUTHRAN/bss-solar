@@ -5,10 +5,14 @@ import {
   type PageParams,
   type PageResult,
 } from "@/lib/pagination";
-import { OFFICE_ROLES } from "@/lib/domain/role";
+import { OFFICE_ROLES, WORK_ORDER_OWNER_ROLES } from "@/lib/domain/role";
+import { ACTIVE_TICKET_STATUSES } from "@/lib/domain/ticket-workflow";
+import type { OwnedWork } from "@/lib/domain/team";
 import type { Profile, UserRole } from "@/lib/types";
 
+/** A member as a picker/filter option. */
 export type Coordinator = Pick<Profile, "id" | "full_name">;
+export type ServiceEngineer = Pick<Profile, "id" | "full_name">;
 
 const PROFILE_SORT_COLUMNS = new Set(["full_name", "created_at"]);
 
@@ -22,13 +26,30 @@ export const profilesRepository = {
     return (data as Profile[]) ?? [];
   },
 
+  /**
+   * Members who can own a work order — backs every "coordinator" picker and
+   * filter. Service engineers are deliberately excluded (the DB rejects them as
+   * owners too).
+   */
   async coordinators(): Promise<Coordinator[]> {
     const supabase = await createClient();
     const { data } = await supabase
       .from("profiles")
       .select("id, full_name")
+      .in("role", WORK_ORDER_OWNER_ROLES)
       .order("full_name", { ascending: true });
     return (data as Coordinator[]) ?? [];
+  },
+
+  /** Members a service ticket may be assigned to. */
+  async serviceEngineers(): Promise<ServiceEngineer[]> {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from("profiles")
+      .select("id, full_name")
+      .eq("role", "service_engineer")
+      .order("full_name", { ascending: true });
+    return (data as ServiceEngineer[]) ?? [];
   },
 
   async setRole(
@@ -90,17 +111,17 @@ export const profilesRepository = {
   },
 
   /**
-   * Work owned by a member. `work_orders.coordinator_id` and
+   * Work attached to a member. `work_orders.coordinator_id` and
    * `projects.coordinator_id` are `on delete restrict`, so deleting the account
    * would fail — and GoTrue reports that only as an opaque "Database error
-   * deleting user". Counting first lets the caller refuse with something the
-   * office can act on.
+   * deleting user". `service_tickets.assigned_to` is `on delete set null`, so
+   * deleting an engineer would instead silently orphan their open tickets.
+   * Counting first lets the caller refuse with something the office can act on
+   * (see lib/domain/team.ts).
    */
-  async ownedWorkCount(
-    id: string,
-  ): Promise<{ workOrders: number; projects: number }> {
+  async ownedWorkCount(id: string): Promise<OwnedWork> {
     const supabase = await createClient();
-    const [workOrders, projects] = await Promise.all([
+    const [workOrders, projects, activeTickets] = await Promise.all([
       supabase
         .from("work_orders")
         .select("id", { count: "exact", head: true })
@@ -109,10 +130,16 @@ export const profilesRepository = {
         .from("projects")
         .select("id", { count: "exact", head: true })
         .eq("coordinator_id", id),
+      supabase
+        .from("service_tickets")
+        .select("id", { count: "exact", head: true })
+        .eq("assigned_to", id)
+        .in("status", ACTIVE_TICKET_STATUSES),
     ]);
     return {
       workOrders: workOrders.count ?? 0,
       projects: projects.count ?? 0,
+      activeTickets: activeTickets.count ?? 0,
     };
   },
 

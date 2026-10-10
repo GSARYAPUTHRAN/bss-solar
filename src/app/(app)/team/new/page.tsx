@@ -29,7 +29,7 @@ export default async function NewTeamMemberPage({
     <Page size="tight">
       <PageHeader
         title="Add Team Member"
-        description="Create a coordinator or admin account for your staff."
+        description="Create a coordinator, service engineer or admin account for your staff."
         backHref="/team"
       />
 
@@ -68,7 +68,7 @@ export default async function NewTeamMemberPage({
             <FormField
               label="Role"
               htmlFor="role"
-              hint="Super Admin is not assignable here — it is set on the database."
+              hint="Coordinators log sales; service engineers work their assigned tickets; admins run the office. Super Admin is not assignable here — it is set on the database."
             >
               <FormSelect
                 id="role"

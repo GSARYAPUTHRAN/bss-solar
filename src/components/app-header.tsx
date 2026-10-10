@@ -23,6 +23,8 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { NotificationBell } from "@/components/notifications/notification-bell";
+import { forgetThisDevice } from "@/components/notifications/push-device";
 import { SidebarNav } from "./sidebar-nav";
 import type { ModuleNav } from "@/config/navigation";
 import { COMPANY } from "@/lib/constants";
@@ -49,12 +51,24 @@ export function AppHeader({
 }) {
   const [open, setOpen] = useState(false);
 
+  // Stop this phone receiving the outgoing user's pushes before the session
+  // ends (the server-side removal needs it). Time-boxed: never blocks sign-out.
+  async function handleSignOut() {
+    await forgetThisDevice();
+    await signOutAction();
+  }
+
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur">
       {/* Mobile menu */}
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetTrigger asChild>
-          <Button variant="ghost" size="icon" className="md:hidden">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-10 md:hidden"
+            aria-label="Open menu"
+          >
             <Menu className="h-5 w-5" />
           </Button>
         </SheetTrigger>
@@ -77,6 +91,8 @@ export function AppHeader({
       <div className="flex-1" />
 
       <ThemeToggle />
+
+      <NotificationBell />
 
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -107,7 +123,7 @@ export function AppHeader({
             {profile.phone ?? "No phone on file"}
           </DropdownMenuLabel>
           <DropdownMenuSeparator />
-          <form action={signOutAction}>
+          <form action={handleSignOut}>
             <DropdownMenuItem
               asChild
               className="text-destructive focus:text-destructive"

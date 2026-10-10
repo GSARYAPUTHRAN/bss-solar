@@ -63,3 +63,41 @@ export function rangeFor(page: number, pageSize: number): [number, number] {
   const from = (page - 1) * pageSize;
   return [from, from + pageSize - 1];
 }
+
+/** PostgREST's code for HTTP 416, "Requested range not satisfiable". */
+export const RANGE_NOT_SATISFIABLE = "PGRST103";
+
+/** What a counted supabase-js query resolves to, as far as paging needs it. */
+interface CountedResponse<T> {
+  data: T[] | null;
+  count: number | null;
+  error: { code?: string; message: string } | null;
+}
+
+/**
+ * Run a counted page query (`count: "exact"` + `.range()`).
+ *
+ * PostgREST does not answer a page past the end with an empty page: it returns
+ * HTTP 416 (PGRST103) and no count. That is an ordinary state for a list — a
+ * stale `?page=` after rows were read, cleared or completed — so it comes back
+ * as no rows with the real total, read by `countOnly` (a `head: true` count
+ * with the same filters), and the page can offer a way back. Any other failure
+ * throws: an empty list would claim there is nothing there.
+ */
+export async function fetchCountedPage<T>(
+  query: {
+    rows: () => PromiseLike<CountedResponse<T>>;
+    countOnly: () => PromiseLike<Omit<CountedResponse<unknown>, "data">>;
+  },
+  what: string,
+): Promise<{ rows: T[]; total: number }> {
+  const res = await query.rows();
+  if (!res.error) return { rows: res.data ?? [], total: res.count ?? 0 };
+  if (res.error.code !== RANGE_NOT_SATISFIABLE) {
+    throw new Error(`Could not load ${what}: ${res.error.message}`);
+  }
+
+  const head = await query.countOnly();
+  if (head.error) throw new Error(`Could not load ${what}: ${head.error.message}`);
+  return { rows: [], total: head.count ?? 0 };
+}

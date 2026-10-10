@@ -56,6 +56,15 @@ export function rateLimit(
   };
 }
 
+/**
+ * Forget `key`. Throttling only FAILED attempts (sign-in) means counting every
+ * attempt up front with `rateLimit()` — never after an await, or parallel
+ * requests all pass the check — and clearing the key once one succeeds.
+ */
+export function clearRateLimit(key: string): void {
+  buckets.delete(key);
+}
+
 /** Test-only: clear all buckets. */
 export function __resetRateLimiter(): void {
   buckets.clear();

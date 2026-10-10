@@ -31,6 +31,16 @@ const INDIGO =
   "bg-indigo-100 text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-300";
 const GRAY = "bg-gray-100 text-gray-700 dark:bg-gray-500/15 dark:text-gray-300";
 
+/** The badge tones, for registries defined outside this file. */
+export const TONES = {
+  amber: AMBER,
+  emerald: EMERALD,
+  red: RED,
+  blue: BLUE,
+  indigo: INDIGO,
+  gray: GRAY,
+} as const;
+
 export const WORK_ORDER_STATUS: StatusRegistry<WorkOrderStatus> = {
   pending: { label: "Pending", badgeClass: AMBER },
   approved: { label: "Approved", badgeClass: EMERALD },

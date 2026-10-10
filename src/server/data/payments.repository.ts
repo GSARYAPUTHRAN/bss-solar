@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { createClient } from "@/lib/supabase/server";
 import type { Payment, PaymentMethod, PaymentPurpose } from "@/lib/types";
 
@@ -23,18 +24,28 @@ export interface PaymentInput {
  * filtered out by RLS affects zero rows WITHOUT raising, so every write checks
  * the affected rows and reports instead of claiming a false success.
  */
+/**
+ * A work order's ledger in collection order (oldest first).
+ *
+ * Throws on a failed read rather than returning `[]`: the overpayment cap is
+ * computed from this ledger, and an empty ledger would let a payment through.
+ * Wrapped in React `cache()` so one request (e.g. the project page, which shows
+ * both the ledger and the KSEB-fees-collected figure) reads it once.
+ */
+const listForWorkOrder = cache(async (workOrderId: string): Promise<Payment[]> => {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("payments")
+    .select(SELECT)
+    .eq("work_order_id", workOrderId)
+    .order("paid_on", { ascending: true })
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`Could not read the payment ledger: ${error.message}`);
+  return (data as unknown as Payment[]) ?? [];
+});
+
 export const paymentsRepository = {
-  /** A work order's ledger in collection order (oldest first). */
-  async listForWorkOrder(workOrderId: string): Promise<Payment[]> {
-    const supabase = await createClient();
-    const { data } = await supabase
-      .from("payments")
-      .select(SELECT)
-      .eq("work_order_id", workOrderId)
-      .order("paid_on", { ascending: true })
-      .order("created_at", { ascending: true });
-    return (data as unknown as Payment[]) ?? [];
-  },
+  listForWorkOrder,
 
   async byId(id: string): Promise<Payment | null> {
     const supabase = await createClient();

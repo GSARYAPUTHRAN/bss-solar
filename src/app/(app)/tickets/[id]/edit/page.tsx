@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { requireAdmin } from "@/lib/auth";
-import { ticketsRepository } from "@/server/data";
+import { profilesRepository, ticketsRepository } from "@/server/data";
 import { Page, PageHeader, FormError } from "@/components/layout";
 import { ServiceTicketForm } from "@/components/service-ticket-form";
 
@@ -15,7 +15,10 @@ export default async function EditTicketPage({
   const { id } = await params;
   const { error } = await searchParams;
 
-  const ticket = await ticketsRepository.byId(id);
+  const [ticket, engineers] = await Promise.all([
+    ticketsRepository.byId(id),
+    profilesRepository.serviceEngineers(),
+  ]);
   if (!ticket) notFound();
 
   return (
@@ -28,7 +31,7 @@ export default async function EditTicketPage({
 
       <FormError message={error} />
 
-      <ServiceTicketForm ticket={ticket} />
+      <ServiceTicketForm ticket={ticket} engineers={engineers} />
     </Page>
   );
 }

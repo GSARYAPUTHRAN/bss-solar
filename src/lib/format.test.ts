@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   formatCurrency,
+  formatCurrencyWhole,
   formatDate,
   formatDateTime,
   todayISO,
@@ -13,6 +14,18 @@ describe("todayISO", () => {
 
   it("accepts an explicit time zone", () => {
     expect(todayISO("UTC")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("formatCurrencyWhole", () => {
+  it("drops the paise and keeps Indian grouping", () => {
+    expect(formatCurrencyWhole(125000)).toBe("₹1,25,000");
+    expect(formatCurrencyWhole(12500.4)).toBe("₹12,500");
+  });
+
+  it("treats null/undefined as zero", () => {
+    expect(formatCurrencyWhole(null)).toBe("₹0");
+    expect(formatCurrencyWhole(undefined)).toBe("₹0");
   });
 });
 
