@@ -25,14 +25,46 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
     payments (enforced by RLS, not just the UI). The role itself is not editable from the
     app by anyone — it is set directly on the database.
   - `admin` (office staff) — sees and manages all data, but cannot delete.
-  - `coordinator` (field sales) — sees only their own work orders/projects (enforced by RLS).
+  - `coordinator` (field sales) — sees only the sales they are on: their own, and ones
+    they **share** with other coordinators (enforced by RLS).
   - `service_engineer` (field service) — sees **only the service tickets assigned to them**,
     and can move them to *in progress* or *completed*. Nothing else in the CRM.
 - **Work Orders (CRM)** — client, capacity, KSEB consumer number & section, **financing
   (self-financed or bank loan + bank)**, notes, order date, total cost and the booking
-  advance. Admin approves/rejects and spawns a project. **Coordinators can edit their own
-  orders**; a project reads its details live off the work order, so an edit is reflected on
-  the project immediately.
+  advance. Admin approves/rejects and spawns a project. **Coordinators can edit the orders
+  they are on**; a project reads its details live off the work order, so an edit is
+  reflected on the project immediately.
+- **Shared coordinators** — a sale made by several people can have up to **five**
+  coordinators. The one who logs a work order can add other **coordinators** as partners
+  while it is still pending (the new-work-order form has an *Add partner* picker); office
+  accounts (admins, the Super Admin) are the office's to add, and after approval only the
+  office changes who shares a sale. Everyone on a sale sees and edits its work order and project,
+  sees its payments, milestones and service history, and gets its notifications; the
+  office is told when partners are added. The first coordinator stays the work order's
+  owner of record, and names read "Ravi & Abhijith" wherever a sale is listed. Each
+  person's **incentive is private** — the office sets one per person, and a coordinator
+  sees only their own. Taking someone off a sale is refused while an incentive is set for
+  them, and tells them they were removed.
+  *Accepted exposure:* partners on a sale can read each other's profile row — **name, role
+  and phone** (they need to call each other) — and nobody else's. A partner is not asked, so
+  a coordinator can add any other coordinator to a sale they log, which shows that person's
+  profile to everyone else on it and puts the sale on their list; the office can take them
+  off again (once any incentive set for them is cleared). They cannot add admins or the
+  Super Admin.
+- **Solar plants and custom plans** — a work order is a *solar plant* (capacity such as
+  `3kW`, priced per kW for KSEB fees) or a *custom plan* ("1 panel", "Inverter + panel")
+  where the capacity field holds what was sold instead. A custom plan has no KSEB
+  registration estimate, no feasibility clock and a single **Handover** milestone; it is
+  listed in its own *Custom plans* lane on the board. The plan is fixed once the project
+  exists. A solar capacity needs a unit on its first number (`3kW`, `5 kWp`, `3000W`),
+  so "1 panel" can no longer be mistaken for 1 kW.
+- **Cancelled and refunded projects** — the office marks a project *cancelled* or
+  *refunded* with remarks (for a refund: how much, when, how) and can **reinstate** it. It
+  leaves the active pipeline, the dashboard KPIs and "payment pending"; the payments ledger
+  is never rewritten, the money already collected stays on record, the KSEB feasibility
+  clock stops on the day it was cancelled (renewal fees already paid still count), and its
+  milestones are frozen until it is reinstated (with an optional new feasibility date).
+  The dashboard has a *Cancelled / Refunded* tile, and the lists filter on both.
 - **Project Tracker** — Kanban board (default view) plus a filterable list. Approving a work order creates an active project that auto-seeds the 9 KSEB/ANERT milestones with per-milestone status and notes.
 - **Payments ledger** — after the booking advance, the office records **any number of
   instalments** against a project, each with its date, method (cash, UPI, bank transfer,
@@ -46,9 +78,10 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
   and on the dashboard, with alerts when a week is left, again on the last day, and when a
   new period starts. The customer-paid
   fees are itemised too: feasibility **₹1,000** + registration **₹1,000 per kW + 18% GST**.
-- **Coordinator incentives** — the office sets an incentive per project and marks it paid;
-  coordinators see their own (per project and as a summary), the dashboard shows what is
-  still pending.
+- **Coordinator incentives** — the office sets an incentive **per coordinator** on a project
+  and marks it paid; coordinators see only their own (per project and as a summary), the
+  dashboard shows what is still pending (everyone's for the office, their own for a
+  coordinator).
 - **Service Tickets** — routine 6-month or ad-hoc tickets capturing the full BSS service sheet
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
   Every ticket is **assigned to a service engineer**, who works it from a phone-first worklist
@@ -56,19 +89,31 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
 - **Notifications** — a bell with an unread badge and a small panel on every page, a full
   `/notifications` inbox, live updates over Supabase Realtime, and **browser push** to phones
   and PCs (new work order, approval, payment recorded, ticket assigned / started / completed,
-  feasibility expiring or extended, incentive set or paid). Each person gets only what
-  concerns them. On iPhone, push works once the app is added to the Home Screen
-  (Safari → Share → *Add to Home Screen*, iOS 16.4+).
+  feasibility expiring or extended, incentive set or paid, being added to a sale, a project
+  cancelled, refunded or reinstated). Being taken off a sale appears in the bell and the
+  inbox only — it sends no push. Each person gets only what concerns them — every
+  coordinator on a shared sale, never someone who is not on it. On iPhone, push works once
+  the app is added to the Home Screen (Safari → Share → *Add to Home Screen*, iOS 16.4+).
 - **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
 - **Team Management** — admins can add staff accounts (coordinators, service engineers,
   admins), assign roles, and search/filter the team list.
 - **Onboarding import** — admins bulk-load existing projects from a CSV (paste or upload);
   each row creates an approved work order + project at the given stage, including financing,
   feasibility date, incentive and **any number of dated payments** (`payment_1_*`,
-  `payment_2_*`, … — the template shows four). Every problem in a row is
-  reported together, re-uploads skip rows already imported, and failed rows download as a
-  fix-and-retry CSV.
-- **Dashboard** — KPI cards (single aggregate query) plus recent-activity tables.
+  `payment_2_*`, … — the template shows four). The `coordinator` cell takes one or
+  several people — names or e-mails (`Ravi + Abhijith`) — matched against the team's
+  accounts: an exact name, or a first name that is unique; a close-but-wrong spelling is
+  only ever *suggested*, never guessed, and a blank cell fails unless a default coordinator
+  is chosen on purpose (it starts at *No default*). Rows can be a `custom` plan, or
+  `cancelled` / `refunded` with remarks; amounts may be sums (`235000+23500`); dates the
+  sheet does not give are never invented. **Check file** validates everything and shows
+  which account each name resolved to, with warnings (rows with no consumer number, likely
+  duplicates), **without writing anything**; **Import projects** then loads it. Every
+  problem in a row is reported together, re-uploads skip rows already imported, and failed
+  rows download as a fix-and-retry CSV.
+- **Dashboard** — KPI cards (single aggregate query) plus recent-activity tables. Cancelled
+  and refunded projects are left out of *Active Projects* and the approved pipeline and
+  counted in their own tile.
 - **Scalable lists** — every list paginates, filters, sorts and searches **server-side** (URL-driven) via RLS-respecting Postgres views, so they hold up at large data volumes.
 - **Installable app** — a web manifest and icons, so field staff can add it to their home screen.
 - **Light / dark theme** — system-aware with a toggle; preference persists.
@@ -105,6 +150,11 @@ Open http://localhost:3000 and sign in with the demo accounts:
 | Coordinator | `sneha@bsssolar.test`  | `Coord@12345` (Sneha Das) |
 | Service Engineer | `engineer@bsssolar.test` | `Engineer@12345` (Anil Kumar) |
 | Service Engineer | `vineeth@bsssolar.test`  | `Engineer@12345` (Vineeth Nair) |
+
+The demo data includes a few sales that show the newer features: *Harikrishnan Nair*
+(shared by Rahul and Priya, with a different incentive for each), *Sreedevi Amma* (a custom
+plan, "Inverter + panel", under Arun), *Thomas Kurian* (cancelled, Sneha) and *Ibrahim Kutty*
+(refunded, Priya).
 
 Reset demo data anytime:
 
@@ -163,7 +213,8 @@ supabase/
   schema.sql                   # Full PostgreSQL schema + RLS (CI checks it matches the migrations)
   seed.sql                     # Local demo data + test accounts
   production-bootstrap.sql     # Appoint the Super Admin (SQL-only)
-  scripts/                     # reset-business-data(-preview).sql, check-schema-sync.mjs
+  scripts/                     # wipe-business-data(-preview).sql, reset-business-data(-preview).sql,
+                               # check-schema-sync.mjs
 public/sw.js                   # Push service worker (shows alerts, opens the right page)
 scripts/                       # generate-vapid-keys.mjs, generate-icons.mjs
 vercel.json                    # Daily cron (08:00 IST) for feasibility alerts
@@ -187,8 +238,8 @@ src/
     bss-logo.tsx               # Official BSS Solar branding
   app/(app)/                   # Authenticated routes
     page.tsx                   # Dashboard
-    work-orders/               # CRM list, detail, create
-    projects/                  # Board (default) + list, detail
+    work-orders/               # CRM list, detail, create (plan, coordinators)
+    projects/                  # Board (default) + list, detail (status, incentives)
     tickets/                   # Service tickets (office table / engineer worklist), detail, edit, create
     notifications/             # Inbox
     payments/                  # Payments ledger server actions
@@ -204,14 +255,15 @@ public/brand/                  # Official logo assets from bsssolar.com
 
 | Resource | Super Admin | Admin | Coordinator | Service Engineer |
 | -------- | ----------- | ----- | ----------- | ---------------- |
-| Work Orders | Everything + delete | Create/read/update, approve | Create + read/**edit** their own | — |
-| Projects | Everything + delete | Read/update all, approve | Read their own | — |
-| Project Milestones | Update | Update | Read their own | — |
-| Payments ledger | Record/edit + delete | Record/edit | Read their own projects' | — |
-| Feasibility / incentive | Set | Set | Read their own | — |
-| Service Tickets | Full CRUD | Full CRUD | Read tickets on their own projects | Read + set *in progress* / *completed* on **their own** only |
+| Work Orders | Everything + delete | Create/read/update, approve, change who shares a sale | Create + read/**edit** the sales they are on (details, not amounts or status after approval); add partners to their own *pending* order | — |
+| Projects | Everything + delete | Read/update all, approve, cancel / refund / reinstate | Read the sales they are on (a cancelled or refunded one stays visible, read-only) | — |
+| Project Milestones | Update | Update | Read their sales' | — |
+| Payments ledger | Record/edit + delete | Record/edit | Read their sales' | — |
+| Feasibility | Set | Set | Read their sales' | — |
+| Incentives | Set + delete with the sale | Set (amount, paid date) | Read **their own** only, never a partner's | — |
+| Service Tickets | Full CRUD | Full CRUD | Read tickets on their sales' projects | Read + set *in progress* / *completed* on **their own** only |
 | Notifications | Own inbox | Own inbox | Own inbox | Own inbox |
-| Team / Profiles | Add + roles + delete | Add + roles | Read own profile only | Read own profile only |
+| Team / Profiles | Add + roles + delete | Add + roles | Read own profile, and the name, role and phone of whoever shares a sale with them | Read own profile only |
 
 ### The Super Admin seat
 
@@ -228,8 +280,10 @@ public/brand/                  # Official logo assets from bsssolar.com
   this schema is written.
 - The Super Admin can still manage ordinary roles (admin ↔ coordinator) as usual;
   immutability is scoped to the seat itself.
-- Deleting a member who still owns work orders or projects is refused
-  (`on delete restrict`); reassign or delete that business first.
+- Deleting a member who still owns or shares work orders or projects is refused
+  (`on delete restrict`); take them off those sales (*Change coordinators* on each work
+  order) or delete that business first. Deleting a work order also deletes its
+  coordinators and their incentives.
 - Deleting a project returns its work order to `pending`, so the invariant
   "approved work order ⇒ has a project" always holds and it can be approved again.
 
@@ -247,15 +301,25 @@ npm run db:types   # Regenerate src/lib/supabase/database.types.ts from local DB
 node scripts/generate-vapid-keys.mjs   # One VAPID key pair for push
 ```
 
-### Wiping business data (keep only the named admins)
+### Wiping business data
 
-[`supabase/scripts/reset-business-data.sql`](supabase/scripts/reset-business-data.sql) deletes
-every work order, project, payment, ticket, notification and every user **except** the e-mails
-in its keep-list, then restarts the ticket numbering. Run
-[`reset-business-data-preview.sql`](supabase/scripts/reset-business-data-preview.sql) first to see
-what would go, take a backup, then run the reset in the Supabase SQL Editor. It aborts without
-deleting anything if a keep-list e-mail is missing or no office account would remain. Then
-recreate staff accounts and bulk-import. See **[DEPLOY.md](DEPLOY.md)** → *Fresh start*.
+Two scripts for the SQL Editor, each with a read-only preview. Take a backup first.
+
+- [`supabase/scripts/wipe-business-data.sql`](supabase/scripts/wipe-business-data.sql) deletes
+  every work order, project, milestone, payment, ticket, coordinator assignment, incentive and
+  notification and **keeps every account** (and push subscriptions), then restarts the ticket
+  numbering. It ships locked — type `WIPE ALL BUSINESS DATA` into its `confirm` line to run
+  it — and aborts without deleting anything if a table it does not know about exists or no
+  office account would remain. Run
+  [`wipe-business-data-preview.sql`](supabase/scripts/wipe-business-data-preview.sql) first.
+- [`supabase/scripts/reset-business-data.sql`](supabase/scripts/reset-business-data.sql) does the
+  same **and** deletes every user except the e-mails in its keep-list. Run
+  [`reset-business-data-preview.sql`](supabase/scripts/reset-business-data-preview.sql) first. It
+  aborts without deleting anything if a keep-list e-mail is missing or no office account
+  would remain.
+
+Then make sure the team's accounts exist, **Check file**, and bulk-import. See
+**[DEPLOY.md](DEPLOY.md)** → *Fresh start*.
 
 ## Testing
 
@@ -273,12 +337,16 @@ recreate staff accounts and bulk-import. See **[DEPLOY.md](DEPLOY.md)** → *Fre
   anyone signed in (including its holder) while ordinary role management still works,
   a coordinator's edits surface on their project, the SQL payment, capacity and
   feasibility maths agree with `lib/domain/`, service engineers see and change only their
-  own tickets, notifications reach only their recipients, and the import RPC and the reset
-  script behave row by row.
-- **E2E** covers login/RBAC redirects, work-order creation and editing, the payments
-  ledger, KSEB feasibility and incentives, the service engineer's phone workflow, the
-  notification bell and inbox, the bulk import, the Super Admin-only delete affordances,
-  and the commissioned-but-unpaid dashboard KPI. Every spec owns the data it changes, so
+  own tickets, notifications reach only their recipients, a sale's coordinators (and only
+  they) see and edit it while each one's incentive stays private, custom plans and
+  cancelled / refunded projects behave in the lists, KPIs and feasibility clock exactly as
+  `lib/domain/` says, the views still answer the previous build identically, and the import
+  RPC and the wipe and reset scripts behave row by row.
+- **E2E** covers login/RBAC redirects, work-order creation and editing, shared
+  coordinators, custom plans, cancelled / refunded projects, the payments ledger, KSEB
+  feasibility and per-person incentives, the service engineer's phone workflow, the
+  notification bell and inbox, the bulk import (including *Check file*), the Super
+  Admin-only delete affordances, and the commissioned-but-unpaid dashboard KPI. Every spec owns the data it changes, so
   the suite can be re-run without resetting the database.
 
 > `E2E_PORT=3711 npm run test:e2e` runs the suite on another port if 3100 is taken.
