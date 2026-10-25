@@ -64,7 +64,12 @@ export function createFixtures(db: Db = serviceClient()) {
    * here (its insert trigger seeds the 9 milestones).
    */
   async function approvedProject(
-    opts: { workOrder?: WorkOrderValues; project?: ProjectValues } = {},
+    opts: {
+      workOrder?: WorkOrderValues;
+      project?: ProjectValues;
+      /** Further coordinators of the sale, after the first (`workOrder.coordinator_id`, default Rahul). */
+      partners?: readonly string[];
+    } = {},
   ): Promise<{ workOrderId: string; projectId: string }> {
     const coordinatorId = opts.workOrder?.coordinator_id ?? USERS.rahul.id;
     const workOrderId = await workOrder({
@@ -72,6 +77,9 @@ export function createFixtures(db: Db = serviceClient()) {
       coordinator_id: coordinatorId,
       status: "approved",
     });
+    if (opts.partners?.length) {
+      await team(workOrderId, [coordinatorId, ...opts.partners]);
+    }
     const { id: projectId } = must(
       await db
         .from("projects")
@@ -85,6 +93,51 @@ export function createFixtures(db: Db = serviceClient()) {
       "fixture project",
     );
     return { workOrderId, projectId };
+  }
+
+  /**
+   * Who shares a sale, through the one write path (set_work_order_coordinators).
+   * As the service role there is no signed-in user, which the function treats as
+   * a server context — the office's authority. Returns who was added / removed.
+   */
+  async function team(
+    workOrderId: string,
+    coordinatorIds: readonly string[],
+  ): Promise<{ added: string[]; removed: string[] }> {
+    const rows = must(
+      await db.rpc("set_work_order_coordinators", {
+        p_work_order_id: workOrderId,
+        p_coordinator_ids: [...coordinatorIds],
+      }),
+      "fixture team",
+    );
+    return {
+      added: rows.filter((r) => r.change === "added").map((r) => r.coordinator_id),
+      removed: rows
+        .filter((r) => r.change === "removed")
+        .map((r) => r.coordinator_id),
+    };
+  }
+
+  /** Sets one coordinator's incentive on a sale (what the office does on the project page). */
+  async function incentive(
+    workOrderId: string,
+    coordinatorId: string,
+    values: { amount: number | null; paid_on?: string | null },
+  ): Promise<void> {
+    const rows = must(
+      await db
+        .from("coordinator_incentives")
+        .update({ amount: values.amount, paid_on: values.paid_on ?? null })
+        .eq("work_order_id", workOrderId)
+        .eq("coordinator_id", coordinatorId)
+        .select("work_order_id"),
+      "fixture incentive",
+    );
+    // No row means that person is not on the sale: fail loudly, not silently.
+    if (rows.length !== 1) {
+      throw new Error(`fixture incentive: ${coordinatorId} has no row on ${workOrderId}`);
+    }
   }
 
   async function payment(
@@ -186,6 +239,8 @@ export function createFixtures(db: Db = serviceClient()) {
   return {
     workOrder,
     approvedProject,
+    team,
+    incentive,
     payment,
     ticket,
     notification,

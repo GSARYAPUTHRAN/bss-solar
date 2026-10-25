@@ -27,6 +27,8 @@ const SHIPPED_KEEP_LIST = ["admin@bsssolar.in", "gsputhran@yahoo.com"];
 const BUSINESS_TABLES = [
   "notification_dedupe",
   "notifications",
+  "coordinator_incentives",
+  "work_order_coordinators",
   "payments",
   "service_tickets",
   "project_milestones",
@@ -147,6 +149,9 @@ describe("reset-business-data.sql", () => {
       const before = await snapshotCounts();
       expect(before.work_orders).toBeGreaterThan(0);
       expect(before.notification_dedupe).toBeGreaterThan(0);
+      // Who shares each sale, and each person's incentive, go with the sales.
+      expect(before.work_order_coordinators).toBeGreaterThanOrEqual(before.work_orders);
+      expect(before.coordinator_incentives).toBe(before.work_order_coordinators);
       await addPushSubscription(USERS.admin.id, "https://push.test/kept-admin-device");
       await addPushSubscription(USERS.rahul.id, "https://push.test/removed-coordinator-device");
 

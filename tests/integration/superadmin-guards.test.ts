@@ -140,6 +140,51 @@ describe("delete is SuperAdmin-only", () => {
     const project = await svc.from("projects").select("id").eq("id", projectId);
     expect(project.data ?? []).toHaveLength(0);
   });
+
+  it("deleting a shared work order takes its coordinators and their incentives with it", async () => {
+    const { workOrderId } = await makeFixture("Super Shared Delete");
+    await svc.rpc("set_work_order_coordinators", {
+      p_work_order_id: workOrderId,
+      p_coordinator_ids: [USERS.rahul.id, USERS.priya.id],
+    });
+    await svc
+      .from("coordinator_incentives")
+      .update({ amount: 1500 })
+      .eq("work_order_id", workOrderId);
+
+    const su = await signedInAs(USERS.superadmin);
+    const { error } = await su.from("work_orders").delete().eq("id", workOrderId);
+    expect(error).toBeNull();
+
+    const members = await svc
+      .from("work_order_coordinators")
+      .select("coordinator_id")
+      .eq("work_order_id", workOrderId);
+    const incentives = await svc
+      .from("coordinator_incentives")
+      .select("coordinator_id")
+      .eq("work_order_id", workOrderId);
+    expect(members.data ?? []).toEqual([]);
+    expect(incentives.data ?? []).toEqual([]);
+  });
+
+  it("nobody below the SuperAdmin can delete a sale's coordinators or incentives", async () => {
+    const { workOrderId } = await makeFixture("Admin Shared Delete");
+    try {
+      const admin = await signedInAs(USERS.admin);
+      for (const table of ["work_order_coordinators", "coordinator_incentives"] as const) {
+        const { error } = await admin.from(table).delete().eq("work_order_id", workOrderId);
+        expect(error?.code, table).toBe("42501");
+      }
+      const left = await svc
+        .from("work_order_coordinators")
+        .select("coordinator_id")
+        .eq("work_order_id", workOrderId);
+      expect(left.data ?? []).toHaveLength(1);
+    } finally {
+      await cleanup(workOrderId);
+    }
+  });
 });
 
 describe("deleting a team member", () => {

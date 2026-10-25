@@ -13,11 +13,12 @@ import { todayISO } from "@/lib/format";
 
 /**
  * The KSEB feasibility clock exists twice: in SQL (`feasibility_periods()`, the
- * `projects_list` columns, the dashboard KPIs — migrations 20261010120300/0600)
- * and in `lib/domain/kseb.ts`, which pages use to badge a project. A day of
- * drift between them means a project shows "valid" while the daily alert says
- * "expiring", or BSS's renewal cost is mis-reported. These tests pin the two
- * together, using the database's own IST "today".
+ * `projects_list` columns, the dashboard KPIs — migrations 20261010120300/0600,
+ * and 20261022120200 for cancelled / refunded projects, whose clock stops on the
+ * day they were cancelled) and in `lib/domain/kseb.ts`, which pages use to
+ * badge a project. A day of drift between them means a project shows "valid"
+ * while the daily alert says "expiring", or BSS's renewal cost is mis-reported.
+ * These tests pin the two together, using the database's own IST "today".
  */
 const svc = serviceClient();
 const fx = createFixtures(svc);
@@ -114,6 +115,10 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
       renewals: number | null;
     },
     completedAt: string | null = null,
+    cancel: {
+      cancellation: "cancelled" | "refunded";
+      cancelled_on: string | null;
+    } | null = null,
   ) {
     expected.set(name, want);
     await fx.approvedProject({
@@ -125,6 +130,7 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
           current_stage: "plant_commissioning",
           completed_at: completedAt,
         }),
+        ...cancel,
       },
     });
   }
@@ -183,6 +189,48 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
       { state: "closed", daysLeft: null, renewals: 1 },
       `${addDays(start, 30)}T20:00:00Z`,
     );
+
+    // A cancelled or refunded project's clock stops on the day it was
+    // cancelled: day 30 is still the first period, day 31 the second.
+    const cancelledState = { state: "closed", daysLeft: null } as const;
+    await project(
+      "Feasibility Cancelled Day 30",
+      ago(60),
+      { ...cancelledState, renewals: 0 },
+      null,
+      { cancellation: "cancelled", cancelled_on: ago(30) },
+    );
+    await project(
+      "Feasibility Cancelled Day 31",
+      ago(60),
+      { ...cancelledState, renewals: 1 },
+      null,
+      { cancellation: "refunded", cancelled_on: ago(29) },
+    );
+    // Long after the clock stopped: the open clock would be on period 5.
+    await project(
+      "Feasibility Cancelled Long Ago",
+      ago(130),
+      { ...cancelledState, renewals: 1 },
+      null,
+      { cancellation: "cancelled", cancelled_on: ago(99) },
+    );
+    // Cancelled after commissioning: the earlier of the two stops it.
+    await project(
+      "Feasibility Cancelled After Commissioning",
+      ago(100),
+      { ...cancelledState, renewals: 1 },
+      `${addDays(ago(100), 40)}T06:30:00Z`,
+      { cancellation: "refunded", cancelled_on: ago(5) },
+    );
+    // An import that never knew the date, and has no clock to stop.
+    await project(
+      "Feasibility Cancelled No Clock",
+      null,
+      { state: "not_set", daysLeft: null, renewals: null },
+      null,
+      { cancellation: "cancelled", cancelled_on: null },
+    );
   });
 
   afterAll(() => fx.cleanup());
@@ -192,7 +240,7 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
       await svc
         .from("projects_list")
         .select(
-          "client_name, is_completed, completed_at, feasibility_date, feasibility_periods, feasibility_renewals, feasibility_valid_until, feasibility_days_left, feasibility_extension_cost",
+          "client_name, is_completed, completed_at, feasibility_date, cancellation, cancelled_on, feasibility_periods, feasibility_renewals, feasibility_valid_until, feasibility_days_left, feasibility_extension_cost",
         ),
       "projects_list",
     );
@@ -203,6 +251,8 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
         feasibilityDate: row.feasibility_date,
         completedAt: row.completed_at,
         isCompleted: row.is_completed,
+        cancelledOn: row.cancelled_on,
+        isCancelled: row.cancellation !== null,
         today,
       });
       expect({
@@ -229,7 +279,7 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
       await svc
         .from("projects_list")
         .select(
-          "client_name, is_completed, completed_at, feasibility_date, feasibility_renewals, feasibility_days_left, feasibility_extension_cost",
+          "client_name, is_completed, completed_at, feasibility_date, cancellation, cancelled_on, feasibility_renewals, feasibility_days_left, feasibility_extension_cost",
         )
         .in("client_name", [...expected.keys()]),
       "fixture projects",
@@ -242,6 +292,8 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
         feasibilityDate: row.feasibility_date,
         completedAt: row.completed_at,
         isCompleted: row.is_completed,
+        cancelledOn: row.cancelled_on,
+        isCancelled: row.cancellation !== null,
         today,
       });
       expect({ client: row.client_name, state: app.state }).toEqual({
@@ -267,7 +319,7 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
       await svc
         .from("projects")
         .select(
-          "feasibility_date, completed_at, is_completed, coordinator_incentive, incentive_paid_on",
+          "work_order_id, feasibility_date, completed_at, is_completed, cancellation, cancelled_on",
         ),
       "projects",
     );
@@ -276,16 +328,26 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
         feasibilityDate: p.feasibility_date,
         completedAt: p.completed_at,
         isCompleted: p.is_completed,
+        cancelledOn: p.cancelled_on,
+        isCancelled: p.cancellation !== null,
         today,
       }),
     );
     const expiring = statuses.filter((s) => s.state === "expiring").length;
     const extensionCost = statuses.reduce((sum, s) => sum + s.extensionCost, 0);
-    const incentivePending = projects
-      .filter(
-        (p) => p.coordinator_incentive !== null && p.incentive_paid_on === null,
-      )
-      .reduce((sum, p) => sum + Number(p.coordinator_incentive), 0);
+    // Every coordinator's unpaid incentive on a sale that has a project.
+    const sold = new Set(projects.map((p) => p.work_order_id));
+    const incentives = must(
+      await svc
+        .from("coordinator_incentives")
+        .select("work_order_id, amount")
+        .not("amount", "is", null)
+        .is("paid_on", null),
+      "incentives",
+    );
+    const incentivePending = incentives
+      .filter((i) => sold.has(i.work_order_id))
+      .reduce((sum, i) => sum + Number(i.amount), 0);
 
     // Two expiring fixtures plus the seeded project five days from expiry.
     expect(expiring).toBeGreaterThanOrEqual(3);
