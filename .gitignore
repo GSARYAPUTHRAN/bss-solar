@@ -35,6 +35,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# The template documents each variable with placeholders only; real values
+# live in the ignored .env.local.
+!.env.local.example
 
 # vercel
 .vercel
