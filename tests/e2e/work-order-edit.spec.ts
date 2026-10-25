@@ -1,16 +1,11 @@
 import { test, expect } from "@playwright/test";
+import { ACCOUNTS, signIn, signedInPage } from "./support/accounts";
 import { expectFlash } from "./support/flash";
-
-const COORD = { email: "coord@bsssolar.test", password: "Coord@12345" };
 
 test("a coordinator can edit their own work order, including the new fields", async ({
   page,
 }) => {
-  await page.goto("/login");
-  await page.getByLabel("Email address").fill(COORD.email);
-  await page.getByLabel("Password").fill(COORD.password);
-  await page.getByRole("button", { name: /sign in/i }).click();
-  await expect(page).toHaveURL(/\/work-orders/);
+  await signIn(page, ACCOUNTS.rahul);
 
   // Create one to edit, so the test owns its data.
   const client = `E2E Edit ${Date.now()}`;
@@ -59,4 +54,57 @@ test("a coordinator can edit their own work order, including the new fields", as
   // And the consumer number is searchable from the list.
   await page.goto(`/work-orders?q=${encodeURIComponent(consumerNumber)}`);
   await expect(page.getByText(client).first()).toBeVisible();
+});
+
+test("the plan is chosen while the order is pending and fixed once the project exists", async ({
+  browser,
+}) => {
+  test.setTimeout(90_000);
+  const client = `E2E Plan ${Date.now()}`;
+  const listUrl = `/work-orders?q=${encodeURIComponent(client)}`;
+
+  // A custom plan, logged by the coordinator.
+  const rahul = await signedInPage(browser, ACCOUNTS.rahul);
+  await rahul.goto("/work-orders/new");
+  await rahul.getByLabel(/client name/i).fill(client);
+  await rahul.locator("label", { hasText: "Custom plan" }).click();
+  await rahul.getByLabel(/what was sold/i).fill("1 panel");
+  await rahul.getByLabel(/total cost/i).fill("32000");
+  await rahul.getByRole("button", { name: /create work order/i }).click();
+  await expectFlash(rahul, "Work order created.");
+
+  // While pending the plan is still a choice — and each plan keeps its own label.
+  await rahul.goto(listUrl);
+  await rahul.getByRole("row").filter({ hasText: client }).click();
+  await rahul.getByRole("link", { name: /^edit$/i }).click();
+  await expect(rahul.getByRole("radio", { name: "Custom plan" })).toBeChecked();
+  await rahul.locator("label", { hasText: "Solar plant" }).click();
+  // "1 panel" did not follow it into the solar capacity.
+  await expect(rahul.getByLabel(/plant capacity/i)).toHaveValue("");
+  await rahul.locator("label", { hasText: "Custom plan" }).click();
+  await expect(rahul.getByLabel(/what was sold/i)).toHaveValue("1 panel");
+  await rahul.getByLabel(/what was sold/i).fill("Inverter + panel");
+  await rahul.getByRole("button", { name: /save changes/i }).click();
+  await expectFlash(rahul, "Work order updated.");
+  await expect(rahul.getByText("Inverter + panel").first()).toBeVisible();
+
+  // The office approves: the project exists, so the plan is fixed.
+  const admin = await signedInPage(browser, ACCOUNTS.admin);
+  await admin.goto(listUrl);
+  await admin.getByRole("row").filter({ hasText: client }).click();
+  await admin.getByRole("button", { name: /approve & create project/i }).click();
+  await expectFlash(admin, /work order approved/i);
+
+  await rahul.reload();
+  await rahul.getByRole("link", { name: /^edit$/i }).click();
+  await expect(rahul.getByRole("radio")).toHaveCount(0);
+  await expect(
+    rahul.getByText(/Custom plan — fixed once the project has started\./),
+  ).toBeVisible();
+  // What was sold can still be corrected; the money is the office's by now.
+  await expect(rahul.getByLabel(/total cost/i)).toHaveAttribute("readonly", "");
+  await rahul.getByLabel(/what was sold/i).fill("Inverter + 2 panels");
+  await rahul.getByRole("button", { name: /save changes/i }).click();
+  await expectFlash(rahul, "Work order updated.");
+  await expect(rahul.getByText("Inverter + 2 panels").first()).toBeVisible();
 });

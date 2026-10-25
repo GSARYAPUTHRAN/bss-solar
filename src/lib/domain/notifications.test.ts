@@ -32,12 +32,13 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
     workOrderId: "wo-1",
     clientName: "Anil Kumar",
     capacity: "3kW",
+    partnerNames: [],
   },
   "work_order.assigned": {
     type: "work_order.assigned",
     actorId: "admin-1",
     actorName: "Office",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     workOrderId: "wo-1",
     clientName: "Anil Kumar",
     capacity: "3kW",
@@ -46,13 +47,14 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
     type: "work_order.updated",
     actorId: "coord-1",
     actorName: "Rahul",
+    coordinatorIds: ["coord-1", "coord-2"],
     workOrderId: "wo-1",
     clientName: "Anil Kumar",
   },
   "work_order.approved": {
     type: "work_order.approved",
     actorId: "admin-1",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     workOrderId: "wo-1",
     projectId: "pr-1",
     clientName: "Anil Kumar",
@@ -60,14 +62,33 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
   "work_order.rejected": {
     type: "work_order.rejected",
     actorId: "admin-1",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     workOrderId: "wo-1",
+    clientName: "Anil Kumar",
+  },
+  "work_order.coordinator_added": {
+    type: "work_order.coordinator_added",
+    actorId: "coord-1",
+    actorName: "Rahul",
+    addedIds: ["coord-2"],
+    notifyOffice: true,
+    workOrderId: "wo-1",
+    projectId: null,
+    clientName: "Anil Kumar",
+    capacity: "3kW",
+    teamNames: ["Rahul", "Priya"],
+  },
+  "work_order.coordinator_removed": {
+    type: "work_order.coordinator_removed",
+    actorId: "admin-1",
+    actorName: "Office",
+    removedIds: ["coord-2"],
     clientName: "Anil Kumar",
   },
   "project.milestone_completed": {
     type: "project.milestone_completed",
     actorId: "admin-1",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     projectId: "pr-1",
     clientName: "Anil Kumar",
     stage: "panel_installation",
@@ -75,19 +96,38 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
   "project.commissioned": {
     type: "project.commissioned",
     actorId: "admin-1",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     projectId: "pr-1",
     clientName: "Anil Kumar",
+    planType: "solar",
+  },
+  "project.cancelled": {
+    type: "project.cancelled",
+    actorId: "admin-1",
+    coordinatorIds: ["coord-1"],
+    projectId: "pr-1",
+    clientName: "Anil Kumar",
+    cancellation: "cancelled",
+    remarks: "Customer withdrew after the survey.",
+  },
+  "project.reinstated": {
+    type: "project.reinstated",
+    actorId: "admin-1",
+    coordinatorIds: ["coord-1"],
+    projectId: "pr-1",
+    clientName: "Anil Kumar",
+    previous: "refunded",
   },
   "payment.recorded": {
     type: "payment.recorded",
     actorId: "admin-1",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     workOrderId: "wo-1",
     projectId: "pr-1",
     clientName: "Anil Kumar",
     amount: 50000,
     balanceDue: 25000,
+    cancellation: null,
   },
   "incentive.updated": {
     type: "incentive.updated",
@@ -138,7 +178,7 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
   "feasibility.expiring": {
     type: "feasibility.expiring",
     actorId: null,
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     projectId: "pr-1",
     clientName: "Anil Kumar",
     daysLeft: 7,
@@ -149,7 +189,7 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
   "feasibility.extended": {
     type: "feasibility.extended",
     actorId: null,
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     projectId: "pr-1",
     clientName: "Anil Kumar",
     renewals: 1,
@@ -164,8 +204,16 @@ const ALL_EVENTS: NotificationEvent[] = Object.values(EVENTS);
 const VARIANTS: NotificationEvent[] = [
   ...ALL_EVENTS,
   { ...EVENTS["work_order.approved"], projectId: null },
+  { ...EVENTS["work_order.submitted"], partnerNames: ["Priya", "Arun"] },
+  { ...EVENTS["work_order.coordinator_added"], projectId: "pr-1" },
+  { ...EVENTS["project.commissioned"], planType: "custom" },
+  { ...EVENTS["project.cancelled"], cancellation: "refunded", remarks: null },
+  { ...EVENTS["project.cancelled"], remarks: "x".repeat(500) },
+  { ...EVENTS["project.reinstated"], previous: "cancelled" },
   { ...EVENTS["payment.recorded"], projectId: null, balanceDue: 0 },
   { ...EVENTS["payment.recorded"], balanceDue: -100 },
+  { ...EVENTS["payment.recorded"], balanceDue: 0, cancellation: "cancelled" },
+  { ...EVENTS["payment.recorded"], balanceDue: 0, cancellation: "refunded" },
   { ...EVENTS["incentive.updated"], amount: null },
   { ...EVENTS["incentive.updated"], paidOn: "2026-10-01" },
   { ...EVENTS["incentive.updated"], amount: 0 },
@@ -196,12 +244,39 @@ describe("NOTIFICATION_TYPES", () => {
     }
   });
 
-  it("pushes everything except the two in-app-only types (per the catalogue)", () => {
+  it("pushes everything except the three in-app-only types (per the catalogue)", () => {
     const inAppOnly = Object.entries(NOTIFICATION_TYPES)
       .filter(([, entry]) => !entry.push)
       .map(([type]) => type)
       .sort();
-    expect(inAppOnly).toEqual(["project.milestone_completed", "work_order.updated"]);
+    expect(inAppOnly).toEqual([
+      "project.milestone_completed",
+      "work_order.coordinator_removed",
+      "work_order.updated",
+    ]);
+  });
+
+  it("catalogues the sale-team and cancellation events", () => {
+    expect(NOTIFICATION_TYPES["work_order.coordinator_added"]).toEqual({
+      label: "Added to a sale",
+      push: true,
+      category: "sales",
+    });
+    expect(NOTIFICATION_TYPES["work_order.coordinator_removed"]).toEqual({
+      label: "Removed from a sale",
+      push: false,
+      category: "sales",
+    });
+    expect(NOTIFICATION_TYPES["project.cancelled"]).toEqual({
+      label: "Project cancelled or refunded",
+      push: true,
+      category: "project",
+    });
+    expect(NOTIFICATION_TYPES["project.reinstated"]).toEqual({
+      label: "Project reinstated",
+      push: true,
+      category: "project",
+    });
   });
 });
 
@@ -226,11 +301,15 @@ describe("audienceFor", () => {
   it.each<[NotificationType, { office: boolean; users: string[] }]>([
     ["work_order.submitted", { office: true, users: [] }],
     ["work_order.assigned", { office: false, users: ["coord-1"] }],
-    ["work_order.updated", { office: true, users: [] }],
+    ["work_order.updated", { office: true, users: ["coord-1", "coord-2"] }],
     ["work_order.approved", { office: false, users: ["coord-1"] }],
     ["work_order.rejected", { office: false, users: ["coord-1"] }],
+    ["work_order.coordinator_added", { office: true, users: ["coord-2"] }],
+    ["work_order.coordinator_removed", { office: false, users: ["coord-2"] }],
     ["project.milestone_completed", { office: false, users: ["coord-1"] }],
     ["project.commissioned", { office: true, users: ["coord-1"] }],
+    ["project.cancelled", { office: true, users: ["coord-1"] }],
+    ["project.reinstated", { office: true, users: ["coord-1"] }],
     ["payment.recorded", { office: false, users: ["coord-1"] }],
     ["incentive.updated", { office: false, users: ["coord-1"] }],
     ["ticket.assigned", { office: false, users: ["eng-1"] }],
@@ -246,6 +325,91 @@ describe("audienceFor", () => {
   it("never sends a service engineer's event to a coordinator or vice versa", () => {
     expect(audienceFor(EVENTS["ticket.assigned"]).users).not.toContain("coord-1");
     expect(audienceFor(EVENTS["payment.recorded"]).users).not.toContain("eng-1");
+  });
+
+  describe("on a sale shared by two coordinators", () => {
+    const TEAM = ["coord-1", "coord-2"];
+    const OFFICE = ["admin-1", "super-1"];
+    const shared = {
+      "work_order.assigned": { ...EVENTS["work_order.assigned"], coordinatorIds: TEAM },
+      "work_order.updated": { ...EVENTS["work_order.updated"], coordinatorIds: TEAM },
+      "work_order.approved": { ...EVENTS["work_order.approved"], coordinatorIds: TEAM },
+      "work_order.rejected": { ...EVENTS["work_order.rejected"], coordinatorIds: TEAM },
+      "project.milestone_completed": {
+        ...EVENTS["project.milestone_completed"],
+        coordinatorIds: TEAM,
+      },
+      "project.commissioned": { ...EVENTS["project.commissioned"], coordinatorIds: TEAM },
+      "project.cancelled": { ...EVENTS["project.cancelled"], coordinatorIds: TEAM },
+      "project.reinstated": { ...EVENTS["project.reinstated"], coordinatorIds: TEAM },
+      "payment.recorded": { ...EVENTS["payment.recorded"], coordinatorIds: TEAM },
+      "feasibility.expiring": { ...EVENTS["feasibility.expiring"], coordinatorIds: TEAM },
+      "feasibility.extended": { ...EVENTS["feasibility.extended"], coordinatorIds: TEAM },
+    } as const;
+
+    /** Whether each event also reaches the office. */
+    const OFFICE_TOO: Record<keyof typeof shared, boolean> = {
+      "work_order.assigned": false,
+      "work_order.updated": true,
+      "work_order.approved": false,
+      "work_order.rejected": false,
+      "project.milestone_completed": false,
+      "project.commissioned": true,
+      "project.cancelled": true,
+      "project.reinstated": true,
+      "payment.recorded": false,
+      "feasibility.expiring": true,
+      "feasibility.extended": true,
+    };
+
+    const heard = (event: NotificationEvent, actorId: string | null) =>
+      resolveRecipients(audienceFor(event), { officeIds: OFFICE, actorId }).sort();
+
+    it.each(Object.entries(shared) as [keyof typeof shared, NotificationEvent][])(
+      "%s reaches every coordinator (and the office where it should)",
+      (type, event) => {
+        const expected = OFFICE_TOO[type] ? [...TEAM, ...OFFICE] : TEAM;
+        expect(heard(event, null)).toEqual([...expected].sort());
+      },
+    );
+
+    it.each(Object.entries(shared) as [keyof typeof shared, NotificationEvent][])(
+      "%s leaves the actor out — a coordinator acting, or the office",
+      (type, event) => {
+        const withoutCoordinator = heard(event, "coord-1");
+        expect(withoutCoordinator).not.toContain("coord-1");
+        expect(withoutCoordinator).toContain("coord-2");
+        expect(heard(event, "admin-1")).not.toContain("admin-1");
+      },
+    );
+
+    it("tells the actor's partner and the office when a coordinator edits the order", () => {
+      expect(heard(shared["work_order.updated"], "coord-1")).toEqual(
+        ["admin-1", "coord-2", "super-1"].sort(),
+      );
+    });
+
+    it("keeps an incentive with its one person", () => {
+      const incentive = EVENTS["incentive.updated"];
+      expect(audienceFor(incentive)).toEqual({ office: false, users: ["coord-1"] });
+      expect("coordinatorIds" in incentive).toBe(false);
+    });
+
+    it("sends added and removed people their own events only", () => {
+      const added = { ...EVENTS["work_order.coordinator_added"], addedIds: ["coord-2", "coord-3"] };
+      expect(heard({ ...added, notifyOffice: false }, "coord-1")).toEqual(["coord-2", "coord-3"]);
+      expect(heard({ ...added, notifyOffice: true }, "coord-1")).toEqual(
+        ["admin-1", "coord-2", "coord-3", "super-1"].sort(),
+      );
+      const removed = { ...EVENTS["work_order.coordinator_removed"], removedIds: ["coord-2"] };
+      expect(heard(removed, "admin-1")).toEqual(["coord-2"]);
+    });
+
+    it("does not alias the event's own id list", () => {
+      const event = shared["project.cancelled"];
+      audienceFor(event).users.push("intruder");
+      expect(event.coordinatorIds).toEqual(TEAM);
+    });
   });
 });
 
@@ -335,6 +499,89 @@ describe("describe — content per type", () => {
     });
   });
 
+  it("work_order.submitted names the partners the coordinator logged it with", () => {
+    const submitted = EVENTS["work_order.submitted"];
+    expect(describeEvent({ ...submitted, partnerNames: ["Priya Suresh"] }).body).toBe(
+      "Anil Kumar · 3kW — awaiting approval · with Priya Suresh",
+    );
+    expect(
+      describeEvent({ ...submitted, partnerNames: ["Priya Suresh", "Arun Krishnan"] }).body,
+    ).toBe("Anil Kumar · 3kW — awaiting approval · with Priya Suresh & Arun Krishnan");
+  });
+
+  it("work_order.coordinator_added says who added you and who is on the sale", () => {
+    expect(describeEvent(EVENTS["work_order.coordinator_added"])).toEqual({
+      title: "Rahul added you to a sale",
+      body: "Anil Kumar · 3kW — with Rahul & Priya",
+      link: "/work-orders/wo-1",
+      dedupeKey: null,
+    });
+  });
+
+  it("work_order.coordinator_added links to the project once there is one", () => {
+    expect(
+      describeEvent({ ...EVENTS["work_order.coordinator_added"], projectId: "pr-1" }).link,
+    ).toBe("/projects/pr-1");
+  });
+
+  it("work_order.coordinator_removed sends the person back to their list", () => {
+    expect(describeEvent(EVENTS["work_order.coordinator_removed"])).toEqual({
+      title: "You were taken off a sale",
+      body: "Anil Kumar — by Office. It is no longer on your list.",
+      link: "/work-orders",
+      dedupeKey: null,
+    });
+  });
+
+  it("project.cancelled says cancelled or refunded, with the remarks", () => {
+    expect(describeEvent(EVENTS["project.cancelled"])).toEqual({
+      title: "Project cancelled",
+      body: "Anil Kumar — Customer withdrew after the survey.",
+      link: "/projects/pr-1",
+      dedupeKey: null,
+    });
+    expect(
+      describeEvent({ ...EVENTS["project.cancelled"], cancellation: "refunded" }).title,
+    ).toBe("Project refunded");
+  });
+
+  it("project.cancelled carries no dash when there are no remarks", () => {
+    for (const remarks of [null, "", "   ", "\n"]) {
+      expect(describeEvent({ ...EVENTS["project.cancelled"], remarks }).body).toBe("Anil Kumar");
+    }
+  });
+
+  it("project.cancelled keeps remarks to one short line", () => {
+    const body = describeEvent({
+      ...EVENTS["project.cancelled"],
+      remarks: `Refunded in full.\n\n${"x".repeat(300)}`,
+    }).body!;
+    expect(body).not.toMatch(/\n/);
+    expect(body.startsWith("Anil Kumar — Refunded in full. xxx")).toBe(true);
+    expect(body.endsWith("…")).toBe(true);
+    // client + separator + at most 120 characters + the ellipsis
+    expect(body.length).toBeLessThanOrEqual("Anil Kumar — ".length + 121);
+  });
+
+  it("project.cancelled leaves remarks of exactly 120 characters whole", () => {
+    const remarks = "r".repeat(120);
+    expect(describeEvent({ ...EVENTS["project.cancelled"], remarks }).body).toBe(
+      `Anil Kumar — ${remarks}`,
+    );
+  });
+
+  it("project.reinstated says what it was", () => {
+    expect(describeEvent(EVENTS["project.reinstated"])).toEqual({
+      title: "Project reinstated",
+      body: "Anil Kumar is back in the pipeline (was refunded).",
+      link: "/projects/pr-1",
+      dedupeKey: null,
+    });
+    expect(
+      describeEvent({ ...EVENTS["project.reinstated"], previous: "cancelled" }).body,
+    ).toBe("Anil Kumar is back in the pipeline (was cancelled).");
+  });
+
   it("work_order.assigned says who logged it", () => {
     expect(describeEvent(EVENTS["work_order.assigned"])).toMatchObject({
       title: "Work order logged for you",
@@ -378,7 +625,19 @@ describe("describe — content per type", () => {
   it("project.commissioned", () => {
     expect(describeEvent(EVENTS["project.commissioned"])).toMatchObject({
       title: "Plant commissioned",
+      body: "Anil Kumar — all KSEB/ANERT milestones complete.",
       link: "/projects/pr-1",
+    });
+  });
+
+  it("project.commissioned for a custom plan says handed over, not KSEB milestones", () => {
+    expect(
+      describeEvent({ ...EVENTS["project.commissioned"], planType: "custom" }),
+    ).toEqual({
+      title: "Custom plan handed over",
+      body: "Anil Kumar — handed over.",
+      link: "/projects/pr-1",
+      dedupeKey: null,
     });
   });
 
@@ -388,6 +647,27 @@ describe("describe — content per type", () => {
       body: `Anil Kumar — ${formatCurrency(25000)} still due`,
       link: "/projects/pr-1",
     });
+  });
+
+  it("payment.recorded on a cancelled or refunded project never says anything is still due", () => {
+    for (const cancellation of ["cancelled", "refunded"] as const) {
+      // Even if a caller forgot to zero the balance, the project's state wins.
+      for (const balanceDue of [0, 25000]) {
+        expect(
+          describeEvent({ ...EVENTS["payment.recorded"], balanceDue, cancellation }),
+        ).toMatchObject({
+          title: `Payment received: ${formatCurrency(50000)}`,
+          body: `Anil Kumar — project ${cancellation}`,
+          link: "/projects/pr-1",
+        });
+      }
+    }
+  });
+
+  it("payment.recorded is unchanged on a live project", () => {
+    expect(describeEvent({ ...EVENTS["payment.recorded"], cancellation: null }).body).toBe(
+      `Anil Kumar — ${formatCurrency(25000)} still due`,
+    );
   });
 
   it("payment.recorded says paid in full at zero or negative balance", () => {
@@ -584,7 +864,7 @@ describe("feasibilityEvents", () => {
   type FeasibilityProject = Parameters<typeof feasibilityEvents>[0];
   const project: FeasibilityProject = {
     projectId: "pr-1",
-    coordinatorId: "coord-1",
+    coordinatorIds: ["coord-1"],
     clientName: "Anil Kumar",
     feasibilityDate: START,
     completedAt: null,
@@ -619,7 +899,7 @@ describe("feasibilityEvents", () => {
       expect(events[0]).toEqual({
         type: "feasibility.expiring",
         actorId: null,
-        coordinatorId: "coord-1",
+        coordinatorIds: ["coord-1"],
         projectId: "pr-1",
         clientName: "Anil Kumar",
         daysLeft: 30 - elapsed,
@@ -647,7 +927,7 @@ describe("feasibilityEvents", () => {
       {
         type: "feasibility.extended",
         actorId: null,
-        coordinatorId: "coord-1",
+        coordinatorIds: ["coord-1"],
         projectId: "pr-1",
         clientName: "Anil Kumar",
         renewals: 1,
@@ -720,5 +1000,39 @@ describe("feasibilityEvents", () => {
         expect(audienceFor(event)).toEqual({ office: true, users: ["coord-1"] });
       }
     }
+  });
+
+  it("reaches every coordinator of a shared sale, each alert once", () => {
+    const team = ["coord-1", "coord-2"];
+    for (const elapsed of [25, 31]) {
+      const events = on(elapsed, { coordinatorIds: team });
+      expect(events).toHaveLength(1);
+      expect(audienceFor(events[0])).toEqual({ office: true, users: team });
+      // One alert, one dedupe key: the recipients are the rows, not the events.
+      expect(describeEvent(events[0]).dedupeKey).toEqual(expect.any(String));
+    }
+  });
+
+  describe("cancelled and refunded projects", () => {
+    it.each(["cancelled", "refunded"] as const)(
+      "emits nothing for a %s project, however far past its validity",
+      (cancellation) => {
+        for (const elapsed of [25, 29, 31, 59, 120]) {
+          expect(on(elapsed, { cancellation, cancelledOn: addDays(START, 10) })).toEqual([]);
+          // …nor when the date was never recorded.
+          expect(on(elapsed, { cancellation, cancelledOn: null })).toEqual([]);
+        }
+      },
+    );
+
+    it("emits nothing for a project with a cancellation date alone", () => {
+      expect(on(29, { cancelledOn: addDays(START, 5) })).toEqual([]);
+    });
+
+    it("still warns for a live project whose fields are null", () => {
+      expect(types(on(29, { cancellation: null, cancelledOn: null }))).toEqual([
+        "feasibility.expiring",
+      ]);
+    });
   });
 });

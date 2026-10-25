@@ -12,8 +12,9 @@ import { round2 } from "./rounding";
  *   - Registration — ₹1,000 per kW + GST, paid by the customer.
  *
  * The feasibility maths is mirrored in SQL (`feasibility_periods()` and the
- * `projects_list` view, migration 20261010120300) and pinned to this module by
- * tests/integration/feasibility.test.ts. Change both together.
+ * `projects_list` view, migrations 20261010120300 and 20261022120200) and
+ * pinned to this module by tests/integration/feasibility.test.ts. Change both
+ * together.
  */
 export const KSEB_FEES = {
   feasibilityFee: 1000,
@@ -102,17 +103,23 @@ export interface FeasibilityStatus {
  * Where a project stands against its feasibility validity.
  *
  * The clock runs from `feasibilityDate` until commissioning (`completedAt`, an
- * instant, read as its IST date) or `today`. Precedence of states:
- * not_set → closed (commissioned) → expiring (≤ 7 days left) → extended
- * (BSS already paying renewals) → on_track.
+ * instant, read as its IST date), cancellation (`cancelledOn`) — whichever came
+ * first — or `today`. Precedence of states: not_set → closed (commissioned,
+ * cancelled or refunded) → expiring (≤ 7 days left) → extended (BSS already
+ * paying renewals) → on_track.
  */
 export function feasibilityStatus(input: {
   feasibilityDate: string | null | undefined;
   completedAt?: string | null;
   isCompleted?: boolean | null;
+  /** IST date the project was cancelled / refunded (stops the clock). */
+  cancelledOn?: string | null;
+  /** Cancelled or refunded; true even when the date was not recorded. */
+  isCancelled?: boolean | null;
   today: string;
 }): FeasibilityStatus {
-  const { feasibilityDate, completedAt, isCompleted, today } = input;
+  const { feasibilityDate, completedAt, isCompleted, cancelledOn, isCancelled, today } =
+    input;
   if (!feasibilityDate) {
     return {
       state: "not_set",
@@ -124,8 +131,13 @@ export function feasibilityStatus(input: {
     };
   }
 
-  const closed = Boolean(isCompleted) || Boolean(completedAt);
-  const asOf = completedAt ? istDateOf(completedAt) : today;
+  const closed =
+    Boolean(isCompleted) || Boolean(completedAt) || Boolean(isCancelled) || Boolean(cancelledOn);
+  // Mirrors the views' `coalesce(least(completion date, cancelled_on), ist_today())`.
+  const stoppedOn = [completedAt ? istDateOf(completedAt) : null, cancelledOn ?? null]
+    .filter((date): date is string => Boolean(date))
+    .sort()[0];
+  const asOf = stoppedOn ?? today;
   const periods = feasibilityPeriods(feasibilityDate, asOf);
   const renewals = periods - 1;
   const validUntil = addDays(

@@ -154,6 +154,8 @@ export const ticketsRepository = {
         rows: () =>
           filtered(false)
             .order(sortCol, { ascending: params.dir === "asc" })
+            // Unique last, so equal sort values page without overlap or gaps.
+            .order("id", { ascending: true })
             .range(from, to),
         countOnly: () => filtered(true),
       },
@@ -210,6 +212,8 @@ export const ticketsRepository = {
             // Undated tickets sink to the end whichever way the list is sorted.
             .order(sortCol, { ascending: params.dir === "asc", nullsFirst: false })
             .order("created_at", { ascending: false })
+            // Unique last: created_at alone can still tie.
+            .order("id", { ascending: true })
             .range(from, to),
         countOnly: () => filtered(true),
       },

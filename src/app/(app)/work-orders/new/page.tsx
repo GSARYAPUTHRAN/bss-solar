@@ -3,7 +3,6 @@ import { requireWorkOrderRole } from "@/lib/auth";
 import { profilesRepository } from "@/server/data";
 import { Page, PageHeader, Section } from "@/components/layout";
 import { WorkOrderForm } from "@/components/work-order-form";
-import { isOfficeRole } from "@/lib/domain/role";
 
 export const metadata = { title: "New Work Order" };
 
@@ -14,8 +13,9 @@ export default async function NewWorkOrderPage({
 }) {
   const profile = await requireWorkOrderRole();
   const { error } = await searchParams;
-  const isOffice = isOfficeRole(profile.role);
-  const coordinators = isOffice ? await profilesRepository.coordinators() : [];
+  // Everyone who can share a sale: a coordinator picks partners from it, the
+  // office picks who the sale is logged for.
+  const directory = await profilesRepository.coordinatorDirectory();
 
   return (
     <Page size="narrow">
@@ -29,12 +29,10 @@ export default async function NewWorkOrderPage({
         <WorkOrderForm
           action={createWorkOrder}
           error={error}
-          coordinators={isOffice ? coordinators : undefined}
-          selfCoordinator={
-            isOffice
-              ? { id: profile.id, full_name: `${profile.full_name} (me)` }
-              : undefined
-          }
+          team={{
+            directory,
+            viewer: { id: profile.id, full_name: profile.full_name, role: profile.role },
+          }}
           cancelHref="/work-orders"
           submitLabel="Create Work Order"
           loadingText="Creating…"

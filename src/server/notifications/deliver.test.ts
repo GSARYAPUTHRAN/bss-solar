@@ -71,7 +71,7 @@ const okSender = () => vi.fn<PushSender>().mockResolvedValue({ statusCode: 201 }
 const approved: EventOf<"work_order.approved"> = {
   type: "work_order.approved",
   actorId: "admin-1",
-  coordinatorId: "coord-1",
+  coordinatorIds: ["coord-1"],
   workOrderId: "wo-1",
   projectId: "pr-1",
   clientName: "Anil Kumar",
@@ -84,12 +84,13 @@ const submitted: EventOf<"work_order.submitted"> = {
   workOrderId: "wo-1",
   clientName: "Anil Kumar",
   capacity: "3kW",
+  partnerNames: [],
 };
 
 const expiring: EventOf<"feasibility.expiring"> = {
   type: "feasibility.expiring",
   actorId: null,
-  coordinatorId: "coord-1",
+  coordinatorIds: ["coord-1"],
   projectId: "pr-1",
   clientName: "Anil Kumar",
   daysLeft: 7,
@@ -164,8 +165,17 @@ describe("deliver — recipients and rows", () => {
 
   it("merges the coordinator with the office without duplicating a coordinator who is office staff", async () => {
     const { store, written } = fakeStore();
-    await deliver({ ...expiring, coordinatorId: "admin-1" }, { store, push: null });
+    await deliver({ ...expiring, coordinatorIds: ["admin-1"] }, { store, push: null });
     expect(written.map((r) => r.recipient_id).sort()).toEqual([...OFFICE].sort());
+  });
+
+  it("writes one row to each coordinator of a shared sale, besides the office", async () => {
+    const { store, written } = fakeStore();
+    await deliver({ ...expiring, coordinatorIds: ["coord-1", "coord-2"] }, { store, push: null });
+    expect(written.map((r) => r.recipient_id).sort()).toEqual(
+      [...OFFICE, "coord-1", "coord-2"].sort(),
+    );
+    expect(new Set(written.map((r) => r.recipient_id)).size).toBe(written.length);
   });
 
   it("writes nothing when the only recipient is the actor", async () => {
@@ -290,7 +300,14 @@ describe("deliver — push", () => {
     const { store } = fakeStore({ subscriptions: { "admin-1": [sub("admin-1")] } });
     const send = okSender();
     const report = await deliver(
-      { type: "work_order.updated", actorId: "coord-1", actorName: "Rahul", workOrderId: "wo-1", clientName: "Anil" },
+      {
+        type: "work_order.updated",
+        actorId: "coord-1",
+        actorName: "Rahul",
+        coordinatorIds: ["coord-1"],
+        workOrderId: "wo-1",
+        clientName: "Anil",
+      },
       { store, push: PUSH, send },
     );
     expect(report.inserted).toBe(3);

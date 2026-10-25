@@ -1,5 +1,6 @@
 import { createAdminClient } from "@/lib/supabase/admin";
 import { feasibilityEvents, type NotificationEvent } from "@/lib/domain/notifications";
+import type { ProjectCancellation } from "@/lib/types";
 import { deliver, type DeliveryReport } from "@/server/notifications/deliver";
 import { serviceRoleStore, type NotificationStore } from "@/server/notifications/store";
 
@@ -13,11 +14,14 @@ import { serviceRoleStore, type NotificationStore } from "@/server/notifications
 /** A project as the feasibility rules need it. */
 export interface FeasibilityProject {
   projectId: string;
-  coordinatorId: string;
+  /** Everyone on the sale, in order. */
+  coordinatorIds: string[];
   clientName: string;
   feasibilityDate: string | null;
   completedAt: string | null;
   isCompleted: boolean;
+  /** Cancelled or refunded: no clock runs, so no alerts (feasibilityEvents). */
+  cancellation?: ProjectCancellation | null;
 }
 
 export interface FeasibilityAlertDeps {
@@ -134,7 +138,17 @@ export function cronDeliverer(): (event: NotificationEvent) => Promise<DeliveryR
 /** PostgREST's default max rows per request. */
 const PAGE_SIZE = 1000;
 
-/** Active (not commissioned) projects that have a feasibility date. */
+/** One `work_order_coordinators` row as the embed returns it. */
+interface MemberRow {
+  coordinator_id: string;
+  sort_order: number;
+}
+
+/**
+ * Active projects that have a feasibility date: not commissioned, and not
+ * cancelled or refunded (their clock stopped). Each carries EVERY coordinator of
+ * its sale, in order, so each of them hears about the clock.
+ */
 export async function loadActiveFeasibilityProjects(): Promise<FeasibilityProject[]> {
   const db = createAdminClient();
   const projects: FeasibilityProject[] = [];
@@ -143,30 +157,40 @@ export async function loadActiveFeasibilityProjects(): Promise<FeasibilityProjec
     const { data, error } = await db
       .from("projects")
       .select(
-        "id, coordinator_id, feasibility_date, completed_at, is_completed, work_order:work_orders!projects_work_order_id_fkey(client_name)",
+        `id, feasibility_date, completed_at, is_completed, cancellation,
+         work_order:work_orders!projects_work_order_id_fkey(client_name,
+           coordinators:work_order_coordinators!work_order_coordinators_work_order_id_fkey(coordinator_id, sort_order))`,
       )
       .eq("is_completed", false)
+      .is("cancellation", null)
       .not("feasibility_date", "is", null)
       .order("id")
       .range(from, from + PAGE_SIZE - 1);
     if (error) throw new Error(`feasibility project lookup failed: ${error.message}`);
 
-    const rows = (data ?? []) as {
+    const rows = (data ?? []) as unknown as {
       id: string;
-      coordinator_id: string;
       feasibility_date: string | null;
       completed_at: string | null;
       is_completed: boolean;
-      work_order: { client_name: string } | null;
+      cancellation: ProjectCancellation | null;
+      work_order: { client_name: string; coordinators: MemberRow[] | null } | null;
     }[];
     for (const row of rows) {
       projects.push({
         projectId: row.id,
-        coordinatorId: row.coordinator_id,
+        coordinatorIds: [...(row.work_order?.coordinators ?? [])]
+          .sort(
+            (a, b) =>
+              a.sort_order - b.sort_order ||
+              (a.coordinator_id < b.coordinator_id ? -1 : 1),
+          )
+          .map((member) => member.coordinator_id),
         clientName: row.work_order?.client_name ?? "A project",
         feasibilityDate: row.feasibility_date,
         completedAt: row.completed_at,
         isCompleted: row.is_completed,
+        cancellation: row.cancellation,
       });
     }
     if (rows.length < PAGE_SIZE) return projects;

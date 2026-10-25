@@ -9,6 +9,11 @@ import type {
   ProjectBrief,
 } from "@/server/data/projects.repository";
 import { notify } from "@/server/notifications";
+import {
+  parseCancellation,
+  parseRemarks,
+  progressLockedReason,
+} from "@/lib/domain/cancellation";
 import { deriveProjectStage } from "@/lib/domain/project";
 import {
   completionStamp,
@@ -17,14 +22,36 @@ import {
   shouldCaptureFeasibility,
 } from "@/lib/domain/project-progress";
 import {
+  CUSTOM_PLAN_FEASIBILITY_ERROR,
+  feasibilityDateRefusal,
+  hasUndatedCommissioning,
   incentiveChanged,
-  parseProjectSettings,
+  parseFeasibilitySetting,
+  parseIncentiveSetting,
+  UNDATED_COMMISSIONING_FEASIBILITY_ERROR,
+  unpaidIncentives,
 } from "@/lib/domain/project-settings";
 import { MILESTONE_STATUS } from "@/lib/domain/status";
 import { str, text } from "@/server/form";
 import { withFlash } from "@/lib/flash";
-import { todayISO } from "@/lib/format";
+import { formatCurrency, formatDate, todayISO } from "@/lib/format";
+import { fail, ok, type ActionResult } from "@/lib/result";
 import type { MilestoneStatus, Profile } from "@/lib/types";
+
+/**
+ * Project lifecycle. Everything that changes a project is office-only (RLS says
+ * the same independently; these guards make a refused write explainable).
+ *
+ * The milestone and settings forms redirect (inline `?error=` banner, flash
+ * toast). The dialogs and per-person forms — cancel/refund, reinstate, one
+ * coordinator's incentive — return a result instead, so a refusal stays inside
+ * the form with what was typed (the payments ledger works the same way).
+ */
+
+/** `null` before the first submit. */
+export type ProjectFormState = ActionResult<{ message: string }> | null;
+
+const PROJECT_GONE = "Project not found — it may have been deleted.";
 
 /** Bounce back to `path` with an inline error banner. */
 function failTo(path: string, message: string): never {
@@ -42,10 +69,22 @@ function revalidateProject(id: string) {
   revalidatePath("/");
 }
 
+/** Cancelling or reinstating also changes the work order's page and list rows. */
+function revalidateSale(project: Pick<ProjectBrief, "id" | "work_order_id">) {
+  revalidateProject(project.id);
+  revalidatePath("/work-orders");
+  revalidatePath(`/work-orders/${project.work_order_id}`);
+}
+
 async function loadProject(id: string): Promise<ProjectBrief> {
   const project = id ? await projectsRepository.brief(id) : null;
   if (!project) failTo("/projects", "Project not found.");
   return project;
+}
+
+/** Everyone on the sale hears about it (the actor is dropped when delivering). */
+function coordinatorIdsOf(project: ProjectBrief): string[] {
+  return project.coordinators.map((c) => c.id);
 }
 
 function isMilestoneStatus(value: string): value is MilestoneStatus {
@@ -55,7 +94,8 @@ function isMilestoneStatus(value: string): value is MilestoneStatus {
 /**
  * Everything that follows a milestone change: the project's stage and
  * completion are recomputed, the feasibility date is captured when KSEB clears
- * it, and the coordinator is notified. Runs after the milestone is saved.
+ * it, and the sale's coordinators are notified. Runs after the milestone is
+ * saved.
  */
 async function afterMilestoneChange(
   actor: Profile,
@@ -71,11 +111,12 @@ async function afterMilestoneChange(
     const { error } = await projectsRepository.setProgress(project.id, {
       current_stage: derived.currentStage,
       is_completed: derived.isCompleted,
-      completed_at: completionStamp(
-        project.completed_at,
-        derived.isCompleted,
-        new Date().toISOString(),
-      ),
+      completed_at: completionStamp({
+        wasCompleted: project.is_completed,
+        previous: project.completed_at,
+        completed: derived.isCompleted,
+        now: new Date().toISOString(),
+      }),
     });
     if (error) return { error };
     commissioned = derived.isCompleted && !project.is_completed;
@@ -103,8 +144,9 @@ async function afterMilestoneChange(
       actorId: actor.id,
       project: {
         id: project.id,
-        coordinatorId: project.coordinator_id,
+        coordinatorIds: coordinatorIdsOf(project),
         clientName: project.client_name,
+        planType: project.plan_type,
       },
       completedStage: newlyCompleted ? milestone.stage : null,
       commissioned,
@@ -125,6 +167,9 @@ export async function updateMilestone(formData: FormData) {
   if (!isMilestoneStatus(status)) failTo(back, "Choose a valid milestone status.");
 
   const project = await loadProject(projectId);
+  const locked = progressLockedReason(project);
+  if (locked) failTo(back, locked);
+
   const milestone = (await projectsRepository.milestones(project.id)).find(
     (m) => m.id === milestoneId,
   );
@@ -133,11 +178,12 @@ export async function updateMilestone(formData: FormData) {
   const { error } = await projectsRepository.updateMilestone(milestone.id, {
     status,
     notes,
-    completed_at: completionStamp(
-      milestone.completed_at,
-      status === "completed",
-      new Date().toISOString(),
-    ),
+    completed_at: completionStamp({
+      wasCompleted: milestone.status === "completed",
+      previous: milestone.completed_at,
+      completed: status === "completed",
+      now: new Date().toISOString(),
+    }),
   });
   if (error) failTo(back, error);
 
@@ -152,6 +198,9 @@ export async function advanceProject(formData: FormData) {
   const actor = await requireAdmin();
   const project = await loadProject(text(formData.get("project_id")));
   const back = projectPath(project.id);
+
+  const locked = progressLockedReason(project);
+  if (locked) failTo(back, locked);
 
   const next = (await projectsRepository.milestones(project.id)).find(
     (m) => m.status !== "completed",
@@ -171,43 +220,200 @@ export async function advanceProject(formData: FormData) {
 }
 
 /**
- * Office-maintained project facts: the KSEB feasibility date and the
- * coordinator's incentive (amount + when it was paid). The coordinator is told
- * whenever their incentive changes.
+ * The KSEB feasibility date, the one project fact the office keeps here (each
+ * coordinator's incentive has its own form — updateCoordinatorIncentive). A
+ * custom plan has no KSEB process, so no date.
  */
 export async function updateProjectSettings(formData: FormData) {
-  const actor = await requireAdmin();
+  await requireAdmin();
   const project = await loadProject(text(formData.get("project_id")));
   const back = projectPath(project.id);
 
-  const parsed = parseProjectSettings(
-    {
-      feasibilityDate: str(formData.get("feasibility_date")),
-      incentive: str(formData.get("coordinator_incentive")),
-      incentivePaidOn: str(formData.get("incentive_paid_on")),
-    },
-    todayISO(),
-  );
+  const parsed = parseFeasibilitySetting(str(formData.get("feasibility_date")), todayISO());
   if (!parsed.ok) failTo(back, parsed.error);
-  const settings = parsed.data;
+  const refusal = feasibilityDateRefusal(project, parsed.data);
+  if (refusal) failTo(back, refusal);
 
-  const { error } = await projectsRepository.updateSettings(project.id, settings);
+  const { error } = await projectsRepository.setFeasibilityDate(project.id, parsed.data);
   if (error) failTo(back, error);
 
-  if (incentiveChanged(project, settings)) {
+  revalidateProject(project.id);
+  redirect(withFlash(back, "Project settings saved."));
+}
+
+/**
+ * One coordinator's incentive on a sale: amount, and when it was paid. Private
+ * to that person and the office. The coordinator is told whenever theirs
+ * changes — clearing it included ("Incentive removed").
+ */
+export async function updateCoordinatorIncentive(
+  _prev: ProjectFormState,
+  formData: FormData,
+): Promise<ProjectFormState> {
+  const actor = await requireAdmin();
+
+  const project = await projectsRepository.brief(text(formData.get("project_id")));
+  if (!project) return fail(PROJECT_GONE);
+
+  const person = project.coordinators.find(
+    (c) => c.id === text(formData.get("coordinator_id")),
+  );
+  if (!person) return fail("That person is not a coordinator on this project.");
+
+  const parsed = parseIncentiveSetting(
+    { amount: str(formData.get("amount")), paidOn: str(formData.get("paid_on")) },
+    todayISO(),
+  );
+  if (!parsed.ok) return parsed;
+
+  const { error } = await projectsRepository.setCoordinatorIncentive(
+    project.work_order_id,
+    person.id,
+    parsed.data,
+  );
+  if (error) return fail(error);
+
+  if (incentiveChanged(person.incentive ?? { amount: null, paid_on: null }, parsed.data)) {
     notify({
       type: "incentive.updated",
       actorId: actor.id,
-      coordinatorId: project.coordinator_id,
+      coordinatorId: person.id,
       projectId: project.id,
       clientName: project.client_name,
-      amount: settings.coordinator_incentive,
-      paidOn: settings.incentive_paid_on,
+      amount: parsed.data.amount,
+      paidOn: parsed.data.paid_on,
     });
   }
 
   revalidateProject(project.id);
-  redirect(withFlash(back, "Project settings saved."));
+  return ok({ message: `Incentive saved for ${person.full_name}.` });
+}
+
+/**
+ * Mark a project cancelled or refunded, or correct that record (kind, date,
+ * remarks). The ledger, milestones and incentives are left exactly as they are
+ * — the office decides about money separately. Everyone on the sale hears when
+ * the status itself changes.
+ */
+export async function setProjectCancellation(
+  _prev: ProjectFormState,
+  formData: FormData,
+): Promise<ProjectFormState> {
+  const actor = await requireAdmin();
+
+  const project = await projectsRepository.brief(text(formData.get("project_id")));
+  if (!project) return fail(PROJECT_GONE);
+
+  const parsed = parseCancellation(
+    {
+      cancellation: str(formData.get("cancellation")),
+      cancelledOn: str(formData.get("cancelled_on")),
+      remarks: str(formData.get("cancellation_remarks")),
+    },
+    {
+      today: todayISO(),
+      orderDate: project.order_date,
+      hasFeasibilityDate: project.feasibility_date !== null,
+      previous: {
+        cancellation: project.cancellation,
+        cancelled_on: project.cancelled_on,
+      },
+    },
+  );
+  if (!parsed.ok) return parsed;
+
+  const { error } = await projectsRepository.setCancellation(project.id, parsed.data);
+  if (error) return fail(error);
+
+  const statusChanged = project.cancellation !== parsed.data.cancellation;
+  if (statusChanged) {
+    notify({
+      type: "project.cancelled",
+      actorId: actor.id,
+      coordinatorIds: coordinatorIdsOf(project),
+      projectId: project.id,
+      clientName: project.client_name,
+      cancellation: parsed.data.cancellation,
+      remarks: parsed.data.cancellation_remarks,
+    });
+  }
+
+  revalidateSale(project);
+  if (!statusChanged) return ok({ message: "Cancellation details saved." });
+
+  // Incentives are not touched; say so while the office is looking at them.
+  const unpaid = unpaidIncentives(project.coordinators);
+  return ok({
+    message: `Project marked ${parsed.data.cancellation}.${
+      unpaid.count > 0
+        ? ` ${formatCurrency(unpaid.total)} of coordinator incentives is still unpaid — clear it if it is no longer due.`
+        : ""
+    }`,
+  });
+}
+
+/**
+ * Bring a cancelled or refunded project back into the pipeline at its current
+ * stage. The remarks stay (editable) as the history note. Reopening the clock on
+ * the old feasibility date counts the whole cancelled stretch as renewals, so
+ * the office may enter a fresh date in the same step (one update — the clock
+ * never runs on the old date in between). A custom plan has no such date, nor
+ * does a project commissioned on a day that was never recorded.
+ */
+export async function reinstateProject(
+  _prev: ProjectFormState,
+  formData: FormData,
+): Promise<ProjectFormState> {
+  const actor = await requireAdmin();
+
+  const project = await projectsRepository.brief(text(formData.get("project_id")));
+  if (!project) return fail(PROJECT_GONE);
+  const previous = project.cancellation;
+  if (!previous) return fail("This project is not cancelled.");
+
+  const remarks = parseRemarks(str(formData.get("cancellation_remarks")));
+  if (!remarks.ok) return remarks;
+
+  let feasibilityDate: string | undefined;
+  const typed = str(formData.get("feasibility_date"));
+  if (typed !== null) {
+    if (project.plan_type === "custom") return fail(CUSTOM_PLAN_FEASIBILITY_ERROR);
+    const date = parseFeasibilitySetting(typed, todayISO());
+    if (!date.ok) return date;
+    // Reopening clears the cancellation, so a commissioning date that was never
+    // recorded would leave the new clock running to today.
+    if (date.data !== null && hasUndatedCommissioning(project)) {
+      return fail(UNDATED_COMMISSIONING_FEASIBILITY_ERROR);
+    }
+    if (date.data !== null && date.data < project.order_date) {
+      return fail(
+        `The new feasibility date cannot be before the order date (${project.order_date}).`,
+      );
+    }
+    feasibilityDate = date.data ?? undefined;
+  }
+
+  const { error } = await projectsRepository.reinstate(project.id, {
+    remarks: remarks.data,
+    ...(feasibilityDate ? { feasibility_date: feasibilityDate } : {}),
+  });
+  if (error) return fail(error);
+
+  notify({
+    type: "project.reinstated",
+    actorId: actor.id,
+    coordinatorIds: coordinatorIdsOf(project),
+    projectId: project.id,
+    clientName: project.client_name,
+    previous,
+  });
+
+  revalidateSale(project);
+  return ok({
+    message: `Project reinstated — it is back in the active pipeline.${
+      feasibilityDate ? ` New feasibility date ${formatDate(feasibilityDate)}.` : ""
+    }`,
+  });
 }
 
 /**
@@ -216,7 +422,7 @@ export async function updateProjectSettings(formData: FormData) {
  *
  * The backing work order is returned to `pending` so the schema invariant
  * "approved work order ⇒ has a project" holds. Re-approving it rebuilds a fresh
- * project with the 9 milestones.
+ * project with its milestones.
  */
 export async function deleteProject(formData: FormData) {
   await requireSuperAdmin();

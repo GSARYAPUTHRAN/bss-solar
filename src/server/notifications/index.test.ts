@@ -18,12 +18,13 @@ const first: NotificationEvent = {
   workOrderId: "wo-1",
   clientName: "Anil Kumar",
   capacity: "3kW",
+  partnerNames: [],
 };
 
 const second: NotificationEvent = {
   type: "work_order.approved",
   actorId: "admin-1",
-  coordinatorId: "coord-1",
+  coordinatorIds: ["coord-1"],
   workOrderId: "wo-1",
   projectId: "pr-1",
   clientName: "Anil Kumar",

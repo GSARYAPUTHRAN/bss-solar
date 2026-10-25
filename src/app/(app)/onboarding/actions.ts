@@ -2,16 +2,19 @@
 
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/auth";
-import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/format";
+import { CoordinatorDirectory } from "@/lib/domain/coordinator-match";
 import { planImport, type ImportRow } from "@/lib/domain/import";
 import {
+  checkedState,
   chunk,
   importError,
   summarizeImport,
+  type ImportMode,
   type ImportOutcome,
   type ImportState,
 } from "@/lib/domain/import-results";
+import { importsRepository, type RpcFailure } from "@/server/data/imports.repository";
 
 /**
  * Rows per `import_projects` call. Each row is a handful of statements, so a
@@ -27,6 +30,30 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONNECTION_LOST =
   "The connection to the database failed, so whether these rows went in is unknown. Check the projects list before uploading them again.";
 
+const TEAM_UNREADABLE = "Could not read the team's accounts — please try again.";
+
+/**
+ * Which button was pressed. The form posts it explicitly (a hand-built
+ * FormData has no submitter), and anything else — missing included — is NOT
+ * an import: a request that does not say what it wants never writes.
+ */
+function modeOf(intent: FormDataEntryValue | null): ImportMode | null {
+  return intent === "check" || intent === "import" ? intent : null;
+}
+
+/**
+ * The default coordinator for blank cells. "none" (the form's first option) or
+ * nothing is no default; otherwise it must be an account id. Whether that
+ * account may own a sale is `planImport`'s to say, against the directory.
+ */
+function defaultCoordinatorOf(
+  value: FormDataEntryValue | null,
+): { ok: true; id: string | null } | { ok: false } {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (raw === "" || raw === "none") return { ok: true, id: null };
+  return UUID.test(raw) ? { ok: true, id: raw.toLowerCase() } : { ok: false };
+}
+
 interface SendResult {
   outcomes: Map<number, ImportOutcome>;
   /** Set when a batch did not complete; later batches are not sent. */
@@ -34,7 +61,7 @@ interface SendResult {
 }
 
 /** What the office should read for an error from the RPC call as a whole. */
-function describeRpcError(error: { code?: string; message: string }): string {
+function describeRpcError(error: RpcFailure): string {
   switch (error.code) {
     case undefined:
     case "":
@@ -64,24 +91,13 @@ async function sendRows(
   skipExisting: boolean,
 ): Promise<SendResult> {
   const outcomes = new Map<number, ImportOutcome>();
-  if (rows.length === 0) return { outcomes };
-
-  const supabase = await createClient();
   for (const batch of chunk(rows, CHUNK_SIZE)) {
     const atRow = batch[0].row_no;
-    const reply = await supabase
-      .rpc("import_projects", {
-        p_rows: batch,
-        p_default_coordinator: defaultCoordinator,
-        p_skip_existing: skipExisting,
-      })
-      // A thrown network failure, as opposed to an error reply.
-      .then((r) => r, () => null);
-    if (!reply) return { outcomes, stopped: { atRow, reason: CONNECTION_LOST } };
-    if (reply.error) {
-      return { outcomes, stopped: { atRow, reason: describeRpcError(reply.error) } };
+    const reply = await importsRepository.run(batch, defaultCoordinator, skipExisting);
+    if (reply.failure) {
+      return { outcomes, stopped: { atRow, reason: describeRpcError(reply.failure) } };
     }
-    for (const outcome of reply.data ?? []) outcomes.set(outcome.row_no, outcome);
+    for (const outcome of reply.outcomes) outcomes.set(outcome.row_no, outcome);
   }
   return { outcomes };
 }
@@ -100,8 +116,10 @@ function stoppedMessages(
 }
 
 /**
- * Bulk-import existing projects from CSV. Validates every row first (all
- * problems per row), imports the valid ones, and reports each row's outcome.
+ * Check or bulk-import existing projects from CSV. Both validate every row
+ * first (all problems per row, coordinators resolved against the team's
+ * accounts); `intent=check` stops there and writes nothing, `intent=import`
+ * sends the valid rows and reports each row's outcome.
  *
  * Deliberately emits no notifications: an onboarding load of hundreds of
  * historical projects is not news to anyone, and would bury real alerts.
@@ -110,25 +128,38 @@ export async function importProjects(
   _prev: ImportState,
   formData: FormData,
 ): Promise<ImportState> {
-  await requireAdmin();
+  const me = await requireAdmin();
 
-  const defaultCoordinator = String(formData.get("default_coordinator_id") ?? "").trim();
-  if (!UUID.test(defaultCoordinator)) {
-    return importError("Select a default coordinator.");
-  }
+  const mode = modeOf(formData.get("intent"));
+  if (!mode) return importError("Choose Check file or Import projects.");
+
+  const defaultCoordinator = defaultCoordinatorOf(formData.get("default_coordinator_id"));
+  if (!defaultCoordinator.ok) return importError("Select a default coordinator.", mode);
   // The form always posts "true" or "false"; anything else keeps the safe default.
   const skipExisting = formData.get("skip_existing") !== "false";
 
-  const plan = planImport(String(formData.get("csv") ?? ""), todayISO());
-  if (!plan.ok) return importError(plan.error);
+  const team = await importsRepository.directory();
+  if (team.error) return importError(TEAM_UNREADABLE, mode);
+
+  const plan = planImport(String(formData.get("csv") ?? ""), {
+    today: todayISO(),
+    directory: new CoordinatorDirectory(team.accounts),
+    defaultCoordinatorId: defaultCoordinator.id,
+    skipExisting,
+  });
+  if (!plan.ok) return importError(plan.error, mode);
+
+  if (mode === "check") return checkedState(plan.data, { skipExisting });
 
   const valid = plan.data.rows.flatMap((r) => (r.parsed.ok ? [r.parsed.data] : []));
-  const { outcomes, stopped } = await sendRows(valid, defaultCoordinator, skipExisting);
-  const state = summarizeImport(
-    plan.data,
-    outcomes,
-    stopped ? stoppedMessages(stopped, outcomes.size > 0) : {},
-  );
+  // Every row carries its resolved coordinator_ids; the RPC's default only
+  // serves the legacy coordinator_email shape, so with none chosen it is the
+  // admin running the import.
+  const { outcomes, stopped } = await sendRows(valid, defaultCoordinator.id ?? me.id, skipExisting);
+  const state = summarizeImport(plan.data, outcomes, {
+    skipExisting,
+    ...(stopped ? stoppedMessages(stopped, outcomes.size > 0) : {}),
+  });
 
   if (state.counts.imported > 0) {
     revalidatePath("/projects");

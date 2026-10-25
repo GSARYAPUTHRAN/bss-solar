@@ -10,6 +10,7 @@ import {
 } from "@/lib/domain/kseb";
 import { FEASIBILITY_CAPTURE_STAGE } from "@/lib/domain/project-progress";
 import { formatCurrency, formatDate } from "@/lib/format";
+import type { PlanType, ProjectCancellation } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** One label/value line of a breakdown. */
@@ -35,8 +36,13 @@ function Line({
   );
 }
 
-function daysLeftLabel(status: FeasibilityStatus): string {
-  if (status.state === "closed") return "Closed at commissioning";
+function daysLeftLabel(
+  status: FeasibilityStatus,
+  stoppedBy: ProjectCancellation | null,
+): string {
+  if (status.state === "closed") {
+    return stoppedBy ? `Stopped — project ${stoppedBy}` : "Closed at commissioning";
+  }
   if (status.daysLeft === null) return "—";
   if (status.daysLeft <= 0) return "Expires today";
   return `${status.daysLeft} day${status.daysLeft === 1 ? "" : "s"}`;
@@ -46,6 +52,10 @@ function daysLeftLabel(status: FeasibilityStatus): string {
  * The KSEB side of a project: the feasibility validity clock (and what BSS has
  * paid to keep it alive), and what the customer owes KSEB — the feasibility fee
  * plus registration at ₹1,000 per kW + GST.
+ *
+ * A custom plan has no KSEB process, so there is nothing to show but that. A
+ * cancelled or refunded project's clock has stopped (`cancellation`): what is
+ * shown is where it stopped, with the renewals BSS already bore.
  */
 export function KsebFeasibilitySection({
   feasibility,
@@ -53,6 +63,9 @@ export function KsebFeasibilitySection({
   capacityKw,
   capacityLabel,
   ksebCollected,
+  plan = "solar",
+  cancellation = null,
+  isCompleted = false,
   className,
 }: {
   feasibility: FeasibilityStatus;
@@ -61,10 +74,25 @@ export function KsebFeasibilitySection({
   capacityLabel: string | null;
   /** Σ KSEB-fee entries recorded in the payments ledger. */
   ksebCollected: number;
+  plan?: PlanType;
+  /** Cancelled or refunded (the clock stopped there, unless commissioning came first). */
+  cancellation?: ProjectCancellation | null;
+  isCompleted?: boolean;
   className?: string;
 }) {
+  if (plan === "custom") {
+    return (
+      <Section title="KSEB & Feasibility" icon={Landmark} className={className}>
+        <p className="text-sm text-muted-foreground">
+          Custom plan — no KSEB registration or feasibility.
+        </p>
+      </Section>
+    );
+  }
+
   const fees = customerKsebFees(capacityKw);
   const gstPct = Math.round(KSEB_FEES.gstRate * 100);
+  const stoppedBy = isCompleted ? null : cancellation;
 
   return (
     <Section
@@ -84,7 +112,7 @@ export function KsebFeasibilitySection({
             value={feasibilityDate ? formatDate(feasibilityDate) : "Not captured yet"}
           />
           <Line label="Valid until" value={formatDate(feasibility.validUntil)} />
-          <Line label="Days left" value={daysLeftLabel(feasibility)} />
+          <Line label="Days left" value={daysLeftLabel(feasibility, stoppedBy)} />
           <Line label="Renewals" value={feasibility.renewals} />
           <Line
             label="BSS extension cost"
@@ -94,7 +122,8 @@ export function KsebFeasibilitySection({
         </dl>
         <p className="mt-2 text-xs text-muted-foreground">
           Valid for {KSEB_FEES.feasibilityValidityDays} days. Each further{" "}
-          {KSEB_FEES.feasibilityValidityDays} days until commissioning costs BSS{" "}
+          {KSEB_FEES.feasibilityValidityDays} days until commissioning or
+          cancellation costs BSS{" "}
           {formatCurrency(KSEB_FEES.feasibilityRenewalFee)}. The date is captured
           automatically when “{STAGE_LABELS[FEASIBILITY_CAPTURE_STAGE]}” is
           completed.

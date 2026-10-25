@@ -1,5 +1,5 @@
 import type { NotificationEvent } from "./notifications";
-import type { MilestoneStatus, ProjectStage } from "@/lib/types";
+import type { MilestoneStatus, PlanType, ProjectStage } from "@/lib/types";
 
 /**
  * What a milestone change implies beyond the milestone itself — decided here,
@@ -13,17 +13,25 @@ import type { MilestoneStatus, ProjectStage } from "@/lib/types";
 export const FEASIBILITY_CAPTURE_STAGE: ProjectStage = "kseb_feasibility_clearance";
 
 /**
- * The completion instant a record should carry. A record that was already
- * completed keeps its original instant: re-saving a milestone note must not
- * move it, and a project's `completed_at` is what stops the feasibility clock.
+ * The completion instant a record should carry: `now` only on a real transition
+ * into completed. A record that was already completed keeps exactly what it
+ * had — its original instant, or none. Re-saving a milestone note must not move
+ * the instant (a project's `completed_at` is what stops the feasibility clock),
+ * and must not invent one: an imported commissioned project is completed with
+ * the date "not recorded" (the import never invents dates), and saving a note
+ * on it must not turn that into the day of the edit.
  */
-export function completionStamp(
-  previous: string | null,
-  completed: boolean,
-  now: string,
-): string | null {
-  if (!completed) return null;
-  return previous ?? now;
+export function completionStamp(input: {
+  /** Whether the record was completed before this change. */
+  wasCompleted: boolean;
+  /** The instant it carried before (null when none was recorded). */
+  previous: string | null;
+  /** Whether it is completed after this change. */
+  completed: boolean;
+  now: string;
+}): string | null {
+  if (!input.completed) return null;
+  return input.wasCompleted ? input.previous : input.now;
 }
 
 export function isNewlyCompleted(
@@ -52,7 +60,13 @@ export function shouldCaptureFeasibility(input: {
 
 export interface ProgressChange {
   actorId: string;
-  project: { id: string; coordinatorId: string; clientName: string };
+  /** `coordinatorIds`: everyone on the sale; `planType` words the finish ("handed over"). */
+  project: {
+    id: string;
+    coordinatorIds: readonly string[];
+    clientName: string;
+    planType: PlanType;
+  };
   /** The stage whose milestone was just completed, or null. */
   completedStage: ProjectStage | null;
   /** The project has just become commissioned (was not before). */
@@ -68,12 +82,12 @@ export function progressEvents(change: ProgressChange): NotificationEvent[] {
   const { actorId, project } = change;
   const base = {
     actorId,
-    coordinatorId: project.coordinatorId,
+    coordinatorIds: project.coordinatorIds,
     projectId: project.id,
     clientName: project.clientName,
   };
   if (change.commissioned) {
-    return [{ ...base, type: "project.commissioned" }];
+    return [{ ...base, type: "project.commissioned", planType: project.planType }];
   }
   if (change.completedStage) {
     return [

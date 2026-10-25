@@ -4,14 +4,19 @@ import type {
   FinancingType,
   PaymentMethod,
   PaymentPurpose,
+  PlanType,
+  ProjectCancellation,
   ProjectStage,
 } from "@/lib/types";
+import { CANCELLATION } from "./cancellation";
 import { isIsoDate } from "./dates";
 import {
   FINANCING_LABELS,
   PAYMENT_METHOD_LABELS,
   PAYMENT_PURPOSE_LABELS,
 } from "./payment";
+import { HANDOVER_STAGE, PLAN_TYPE } from "./plan";
+import { statusLabels } from "./status";
 import { closestMatch } from "./suggest";
 
 /**
@@ -25,8 +30,8 @@ import { closestMatch } from "./suggest";
  */
 export type Cell<T> = ActionResult<T>;
 
-/** `numeric(12,2)` — the widest amount the money columns can hold. */
-const MAX_AMOUNT = 9_999_999_999.99;
+/** `numeric(12,2)` — the widest amount the money columns can hold, in paise. */
+const MAX_PAISE = 999_999_999_999;
 
 /** Case/spacing-insensitive key: "Bank-Transfer" → "bank transfer". */
 export function spelling(value: string): string {
@@ -38,9 +43,33 @@ export function textCell(raw: string | undefined): string | null {
   return s.length ? s : null;
 }
 
+const AMOUNT_EXAMPLE = "like 195000 or 235000+23500";
+
+/** One part of an amount, as typed: "₹ 1,000", "Rs. 500", "2500.50". */
+function plainAmount(part: string): string {
+  return part
+    .trim()
+    .replace(/^rs\.?/i, "")
+    .replace(/[₹,\s]/g, "");
+}
+
+/** Whole rupees × 100 + the decimals, without a float in between. */
+function toPaise(digits: string): number {
+  const [whole, decimals = ""] = digits.split(".");
+  // Longer than the column could ever hold: no need to be exact, only too large.
+  if (whole.length > 12) return Number.POSITIVE_INFINITY;
+  return Number(whole) * 100 + Number(decimals.padEnd(2, "0"));
+}
+
 /**
  * Rupees: digits with up to 2 decimals. Thousands separators, a ₹ sign and a
  * "Rs." prefix are tolerated because that is how amounts get typed.
+ *
+ * A cell may also be a sum — `235000+23500`, `₹1,000 + Rs. 500` — because a
+ * price is often written as base plus extras. The parts are added in paise
+ * (0.1 + 0.2 is exactly 0.30) and the zero / maximum rules apply to the total.
+ * Each part must itself be a plain, non-negative amount: `100+-5` is refused
+ * rather than read as a discount.
  */
 export function moneyCell(
   raw: string | undefined,
@@ -49,18 +78,29 @@ export function moneyCell(
 ): Cell<number | null> {
   const s = (raw ?? "").trim();
   if (!s) return ok(null);
-  const digits = s.replace(/^rs\.?/i, "").replace(/[₹,\s]/g, "");
-  if (!/^-?\d+(\.\d+)?$/.test(digits)) {
-    return fail(`${column} must be an amount in rupees, like 195000 (got "${s}")`);
+
+  const parts = s.split("+").map(plainAmount);
+  const isSum = parts.length > 1;
+  if (isSum && parts.some((p) => p === "")) {
+    return fail(`${column} "${s}" has an empty part — write it like 235000+23500`);
   }
-  if (/\.\d{3,}$/.test(digits)) {
+  if (isSum && parts.some((p) => !/^\d+(\.\d+)?$/.test(p))) {
+    return fail(`${column} "${s}" — each part of a sum must be a plain amount`);
+  }
+  if (!isSum && !/^-?\d+(\.\d+)?$/.test(parts[0])) {
+    return fail(`${column} must be an amount in rupees, ${AMOUNT_EXAMPLE} (got "${s}")`);
+  }
+  if (parts.some((p) => /\.\d{3,}$/.test(p))) {
     return fail(`${column} has more than 2 decimal places (got "${s}")`);
   }
-  const n = Number(digits);
-  if (n < 0) return fail(`${column} cannot be negative (got "${s}")`);
-  if (positive && n === 0) return fail(`${column} must be more than zero`);
-  if (n > MAX_AMOUNT) return fail(`${column} is too large (got "${s}")`);
-  return ok(n);
+  if (!isSum && parts[0].startsWith("-")) {
+    return fail(`${column} cannot be negative (got "${s}")`);
+  }
+
+  const paise = parts.reduce((sum, p) => sum + toPaise(p), 0);
+  if (positive && paise === 0) return fail(`${column} must be more than zero`);
+  if (paise > MAX_PAISE) return fail(`${column} is too large (got "${s}")`);
+  return ok(paise / 100);
 }
 
 /** "15/03/2026" or "15-3-2026" → "2026-03-15", for the hint only. */
@@ -250,7 +290,61 @@ export function paymentPurposeCell(
   );
 }
 
+export const PLAN_VOCABULARY = new Vocabulary<PlanType>(statusLabels(PLAN_TYPE), {
+  kw: "solar",
+  other: "custom",
+});
+
+/** Defaults to a solar plant when blank. */
+export function planTypeCell(raw: string | undefined, column: string): Cell<PlanType> {
+  const s = (raw ?? "").trim();
+  if (!s) return ok("solar");
+  return nullable(PLAN_VOCABULARY.get(s)) ?? fail(PLAN_VOCABULARY.unknown(column, s));
+}
+
+export const CANCELLATION_VOCABULARY = new Vocabulary<ProjectCancellation>(
+  statusLabels(CANCELLATION),
+  { canceled: "cancelled", cancel: "cancelled", refund: "refunded" },
+);
+
+/** What a blank-equivalent cancellation cell may say. */
+const LIVE_SPELLINGS: readonly string[] = ["active", "live"];
+
+/** `null` for a live project: blank, "active" or "live". */
+export function cancellationCell(
+  raw: string | undefined,
+  column: string,
+): Cell<ProjectCancellation | null> {
+  const s = (raw ?? "").trim();
+  if (!s || LIVE_SPELLINGS.includes(spelling(s))) return ok(null);
+  return (
+    nullable(CANCELLATION_VOCABULARY.get(s)) ??
+    fail(CANCELLATION_VOCABULARY.unknown(column, s))
+  );
+}
+
 export const STAGE_VOCABULARY = new Vocabulary<ProjectStage>(STAGE_LABELS);
+
+/**
+ * Ways a sheet says "this project is finished": the last stage, completed.
+ * Listed on the page next to the stages. `plant_commissioning` itself is NOT
+ * one of them — it names the stage, and a project can sit at it unfinished.
+ */
+export const COMPLETION_ALIASES = [
+  "plant_complete",
+  "completed",
+  "complete",
+  "commissioned",
+  "plant commissioned",
+  "handed over",
+] as const;
+
+const COMPLETION_SPELLINGS = new Set(COMPLETION_ALIASES.map(spelling));
+
+/** A project is not "cancelled" at a stage; that is the cancellation column. */
+const CANCELLED_STAGE_SPELLINGS = new Set(
+  ["cancelled", "canceled", "cancel", "refunded", "refund"].map(spelling),
+);
 
 /** Resolve a stage key or its label; blank is the first stage, unknown null. */
 export function normalizeStage(value: string): ProjectStage | null {
@@ -258,9 +352,39 @@ export function normalizeStage(value: string): ProjectStage | null {
   return STAGE_VOCABULARY.get(value);
 }
 
-export function stageCell(raw: string | undefined): Cell<ProjectStage> {
-  const s = raw ?? "";
-  return nullable(normalizeStage(s)) ?? fail(STAGE_VOCABULARY.unknown("current_stage", s));
+/** What a current_stage cell says: where the project is, and whether it is done. */
+export interface StageCellValue {
+  /** `null` when the cell is blank — the plan decides where it starts. */
+  stage: ProjectStage | null;
+  /** The cell said the project is finished (a completion alias). */
+  completed: boolean;
+}
+
+/** "did you mean" over the stage keys and the completion aliases. */
+function unknownStage(column: string, raw: string): string {
+  const written = [...Object.keys(STAGE_VOCABULARY.spellings), ...COMPLETION_ALIASES];
+  const bySpelling = new Map(written.map((w) => [spelling(w), w]));
+  const guess = closestMatch(spelling(raw), bySpelling.keys());
+  const hint = guess ? ` — did you mean "${bySpelling.get(guess)}"?` : "";
+  return `${column} "${raw.trim()}" is not recognised${hint}`;
+}
+
+export function stageCell(
+  raw: string | undefined,
+  column = "current_stage",
+): Cell<StageCellValue> {
+  const s = (raw ?? "").trim();
+  if (!s) return ok({ stage: null, completed: false });
+  if (COMPLETION_SPELLINGS.has(spelling(s))) {
+    return ok({ stage: HANDOVER_STAGE, completed: true });
+  }
+  if (CANCELLED_STAGE_SPELLINGS.has(spelling(s))) {
+    return fail(
+      `${column} "${s}" is not a stage — put cancelled or refunded in the cancellation column and leave ${column} at the stage the project reached`,
+    );
+  }
+  const stage = STAGE_VOCABULARY.get(s);
+  return stage ? ok({ stage, completed: false }) : fail(unknownStage(column, s));
 }
 
 /** `ok(value)` for a found value, `null` to fall through to the error. */

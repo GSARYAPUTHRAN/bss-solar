@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { formatKw, isValidCapacity, parseCapacityKw } from "./capacity";
+import {
+  CAPACITY_PROBLEM,
+  capacityProblem,
+  formatKw,
+  isValidCapacity,
+  parseCapacityKw,
+} from "./capacity";
 
 /**
  * `parseCapacityKw` must agree with the SQL `parse_capacity_kw()` behind the
@@ -126,6 +132,107 @@ describe("isValidCapacity", () => {
     expect(isValidCapacity(null)).toBe(false);
     expect(isValidCapacity(undefined)).toBe(false);
     expect(isValidCapacity("abc")).toBe(false);
+  });
+});
+
+describe("capacityProblem", () => {
+  it("is the message that points to Custom plan", () => {
+    expect(CAPACITY_PROBLEM).toBe(
+      "Write the capacity like 3kW — or choose Custom plan if this sale is not a kW solar plant.",
+    );
+  });
+
+  it.each([
+    "3kW",
+    "3 kW",
+    "3KW",
+    "5 kWp",
+    "5kwp",
+    "10 k",
+    "3.5 kW",
+    "  4 kW  ",
+    "3000W",
+    "3000 W",
+    "3000 Wp",
+    "1500wp",
+    "3000 Watts",
+    "3,000 W",
+    "On-grid 3kW",
+    "approx. 5 kWp rooftop",
+    "3kW+inverter",
+    "3kW + 2kW",
+    "3kW 2026",
+  ])("accepts %j — the first number carries a unit", (label) => {
+    expect(capacityProblem(label)).toBeNull();
+  });
+
+  it.each(["3", "3.5", "  8  ", "10"])("accepts the bare number %j", (label) => {
+    expect(capacityProblem(label)).toBeNull();
+  });
+
+  // These all parse as a kW capacity today (the first number, taken as kilowatts)
+  // — which is exactly how "1 panel" became a 1 kW plant.
+  it.each([
+    "1 panel",
+    "1 Panel",
+    "2 panels",
+    "Inverter+panel",
+    "Inverter + panel",
+    "10 x 540Wp",
+    "3 inverters",
+    "3.5.2kW",
+    "3-phase",
+  ])("refuses %j and says to write a unit or choose Custom plan", (label) => {
+    expect(capacityProblem(label)).toBe(CAPACITY_PROBLEM);
+  });
+
+  it.each(["", "   ", "abc", "kW", "W", "—", "0 kW", "0", "1 W"])(
+    "refuses %j, which is no positive capacity",
+    (label) => {
+      expect(capacityProblem(label)).toBe(CAPACITY_PROBLEM);
+    },
+  );
+
+  it("never accepts what isValidCapacity refuses", () => {
+    const corpus = [
+      "3kW", "3", "0", "0 kW", "1 W", "abc", "", "kW", "3 kW", "1 panel", "3000W",
+      "0.004 kW", "0.001", "5 kWp", "  ", "-3kW", "3,000W",
+    ];
+    for (const label of corpus) {
+      if (capacityProblem(label) === null) expect(isValidCapacity(label)).toBe(true);
+    }
+  });
+
+  describe("an unchanged legacy label", () => {
+    it("still passes — only new or changed labels are held to the rule", () => {
+      expect(capacityProblem("1 panel", { previous: "1 panel" })).toBeNull();
+      expect(capacityProblem("10 x 540Wp", { previous: "10 x 540Wp" })).toBeNull();
+    });
+
+    it("ignores the whitespace the form trims", () => {
+      expect(capacityProblem(" 1 panel ", { previous: "1 panel" })).toBeNull();
+      expect(capacityProblem("1 panel", { previous: " 1 panel " })).toBeNull();
+    });
+
+    it("is refused as soon as it is edited", () => {
+      expect(capacityProblem("2 panels", { previous: "1 panel" })).toBe(CAPACITY_PROBLEM);
+      expect(capacityProblem("1 panel.", { previous: "1 panel" })).toBe(CAPACITY_PROBLEM);
+    });
+
+    it("is exempt only on an exact match — case counts", () => {
+      expect(capacityProblem("1 PANEL", { previous: "1 panel" })).toBe(CAPACITY_PROBLEM);
+    });
+
+    it("has no exemption without a previous label", () => {
+      for (const previous of [null, undefined]) {
+        expect(capacityProblem("1 panel", { previous })).toBe(CAPACITY_PROBLEM);
+      }
+      expect(capacityProblem("1 panel", {})).toBe(CAPACITY_PROBLEM);
+    });
+
+    it("never turns a valid label into a problem", () => {
+      expect(capacityProblem("3kW", { previous: "5kW" })).toBeNull();
+    });
   });
 });
 

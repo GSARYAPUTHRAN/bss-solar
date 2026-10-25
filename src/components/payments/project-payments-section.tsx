@@ -5,6 +5,7 @@ import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Separator } from "@/components/ui/separator";
 import { paymentsRepository } from "@/server/data/payments.repository";
 import { ledgerTotals } from "@/lib/domain/payment";
+import type { ProjectCancellation } from "@/lib/types";
 import { formatCurrency, formatDate, todayISO } from "@/lib/format";
 import { ContractSummary } from "./contract-summary";
 import { PaymentLedger, stageLabel, type StagedPayment } from "./payment-ledger";
@@ -25,6 +26,11 @@ export interface ProjectPaymentsSectionProps {
   totalCost: number | string | null;
   advanceAmount: number | string | null;
   isCompleted: boolean;
+  /**
+   * Set when the project is cancelled or refunded: the balance is no longer
+   * receivable (the ledger stays as history).
+   */
+  cancellation?: ProjectCancellation | null;
   viewer: {
     /** Office staff. */
     canRecord: boolean;
@@ -48,6 +54,7 @@ export async function ProjectPaymentsSection({
   totalCost,
   advanceAmount,
   isCompleted,
+  cancellation,
   viewer,
 }: ProjectPaymentsSectionProps) {
   // The actions resolve the project from the work order on the server rather
@@ -103,6 +110,7 @@ export async function ProjectPaymentsSection({
             payments_total: totals.contract,
           }}
           isCompleted={isCompleted}
+          cancellation={cancellation}
           ksebFeesCollected={totals.ksebFees}
         />
 

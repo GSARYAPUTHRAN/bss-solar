@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { CAPACITY_PROBLEM } from "@/lib/domain/capacity";
 import {
-  CAPACITY_ERROR,
   CONTRACT_TERMS_LOCKED_ERROR,
+  PLAN_CHOICE_ERROR,
+  PLAN_FIXED_ERROR,
   parseWorkOrderForm,
 } from "./work-order";
 
@@ -40,6 +42,7 @@ describe("parseWorkOrderForm", () => {
         client_name: "Anand Kumar",
         client_phone: "+91 98470 11111",
         address: "Vytilla, Kochi",
+        plan_type: "solar",
         plant_capacity: "3kW",
         advance_amount: 20000,
         total_cost: 195000,
@@ -85,8 +88,11 @@ describe("parseWorkOrderForm", () => {
   it.each([
     [{ client_name: " " }, "Client name is required."],
     [{ plant_capacity: "" }, "Plant capacity is required."],
-    [{ plant_capacity: "three kilowatt" }, CAPACITY_ERROR],
-    [{ plant_capacity: "0kW" }, CAPACITY_ERROR],
+    [{ plant_capacity: "three kilowatt" }, CAPACITY_PROBLEM],
+    [{ plant_capacity: "0kW" }, CAPACITY_PROBLEM],
+    // A number without a unit is not a capacity ("1 panel" used to read as 1 kW).
+    [{ plant_capacity: "1 panel" }, CAPACITY_PROBLEM],
+    [{ plant_capacity: "Inverter+panel" }, CAPACITY_PROBLEM],
     [{ total_cost: "" }, "Enter a valid total cost (0 or more)."],
     [{ total_cost: "-1" }, "Enter a valid total cost (0 or more)."],
     [{ advance_amount: "lots" }, "Enter a valid advance amount (0 or more)."],
@@ -98,8 +104,128 @@ describe("parseWorkOrderForm", () => {
     expect(errorOf(parseWorkOrderForm(form({ ...VALID, ...patch }), TODAY))).toBe(message);
   });
 
-  it.each(["3kW", "5 kWp", "3000 W", "2.5", "10KW"])("accepts capacity %j", (cap) => {
-    expect(parseWorkOrderForm(form({ ...VALID, plant_capacity: cap }), TODAY).ok).toBe(true);
+  it.each(["3kW", "5 kWp", "3000 W", "2.5", "3", "10KW", "3kW+inverter"])(
+    "accepts capacity %j",
+    (cap) => {
+      expect(parseWorkOrderForm(form({ ...VALID, plant_capacity: cap }), TODAY).ok).toBe(true);
+    },
+  );
+
+  describe("plan", () => {
+    const CUSTOM = { ...VALID, plan_type: "custom", plant_capacity: "Inverter + panel" };
+
+    it("is a solar plant unless the form says otherwise", () => {
+      const res = parseWorkOrderForm(form(VALID), TODAY);
+      expect(res.ok && res.data.plan_type).toBe("solar");
+    });
+
+    it("reads a custom plan, whose label is words rather than a kW capacity", () => {
+      const res = parseWorkOrderForm(form(CUSTOM), TODAY);
+      expect(res.ok && res.data).toMatchObject({
+        plan_type: "custom",
+        plant_capacity: "Inverter + panel",
+      });
+    });
+
+    it("accepts a custom label a solar plant would refuse, and the reverse", () => {
+      expect(
+        parseWorkOrderForm(form({ ...CUSTOM, plant_capacity: "1 panel" }), TODAY).ok,
+      ).toBe(true);
+      expect(
+        errorOf(parseWorkOrderForm(form({ ...VALID, plant_capacity: "1 panel" }), TODAY)),
+      ).toBe(CAPACITY_PROBLEM);
+    });
+
+    it("needs something to describe on a custom plan, and keeps it short", () => {
+      const DESCRIBE = /^Describe what was sold \(up to 120 characters\)/;
+      expect(errorOf(parseWorkOrderForm(form({ ...CUSTOM, plant_capacity: "" }), TODAY))).toMatch(
+        DESCRIBE,
+      );
+      expect(
+        errorOf(parseWorkOrderForm(form({ ...CUSTOM, plant_capacity: "x".repeat(121) }), TODAY)),
+      ).toMatch(DESCRIBE);
+      expect(
+        parseWorkOrderForm(form({ ...CUSTOM, plant_capacity: "x".repeat(120) }), TODAY).ok,
+      ).toBe(true);
+    });
+
+    it("refuses a plan that is neither", () => {
+      expect(errorOf(parseWorkOrderForm(form({ ...VALID, plan_type: "wind" }), TODAY))).toBe(
+        PLAN_CHOICE_ERROR,
+      );
+    });
+
+    it("keeps the stored plan when an edit posts none", () => {
+      const { plan_type: _plan, ...noPlan } = CUSTOM;
+      void _plan;
+      const res = parseWorkOrderForm(form(noPlan), TODAY, { previousPlan: "custom" });
+      expect(res.ok && res.data.plan_type).toBe("custom");
+    });
+
+    describe("once the project exists (lockedPlan)", () => {
+      it("accepts the same plan, posted or not", () => {
+        const posted = parseWorkOrderForm(form(CUSTOM), TODAY, { lockedPlan: "custom" });
+        expect(posted.ok && posted.data.plan_type).toBe("custom");
+        const { plan_type: _plan, ...noPlan } = CUSTOM;
+        void _plan;
+        const left = parseWorkOrderForm(form(noPlan), TODAY, { lockedPlan: "custom" });
+        expect(left.ok && left.data.plan_type).toBe("custom");
+      });
+
+      it("refuses a different plan, even one that is not a plan at all", () => {
+        for (const plan_type of ["solar", "wind"]) {
+          expect(
+            errorOf(parseWorkOrderForm(form({ ...CUSTOM, plan_type }), TODAY, { lockedPlan: "custom" })),
+          ).toBe(PLAN_FIXED_ERROR);
+        }
+        expect(
+          errorOf(parseWorkOrderForm(form({ ...VALID, plan_type: "custom" }), TODAY, { lockedPlan: "solar" })),
+        ).toBe(PLAN_FIXED_ERROR);
+      });
+    });
+  });
+
+  describe("an unchanged legacy capacity", () => {
+    // Saved before 2026-10-22, when "1 panel" read as a 1 kW plant.
+    const LEGACY = { ...VALID, plant_capacity: "1 panel" };
+
+    it("still saves, so an old order can be edited without retyping it", () => {
+      const res = parseWorkOrderForm(form(LEGACY), TODAY, {
+        previousCapacity: "1 panel",
+        previousPlan: "solar",
+      });
+      expect(res.ok && res.data.plant_capacity).toBe("1 panel");
+    });
+
+    it("counts as unchanged whatever the spacing", () => {
+      expect(
+        parseWorkOrderForm(form({ ...VALID, plant_capacity: "  1 panel " }), TODAY, {
+          previousCapacity: "1 panel",
+        }).ok,
+      ).toBe(true);
+    });
+
+    it("is refused once the label is changed to another unitless one", () => {
+      expect(
+        errorOf(
+          parseWorkOrderForm(form({ ...VALID, plant_capacity: "2 panels" }), TODAY, {
+            previousCapacity: "1 panel",
+          }),
+        ),
+      ).toBe(CAPACITY_PROBLEM);
+    });
+
+    it("does not carry over from a custom plan that is switched to solar", () => {
+      // "1 panel" was fine as a custom plan; as a solar capacity it is the 1 kW trap.
+      expect(
+        errorOf(
+          parseWorkOrderForm(form({ ...LEGACY, plan_type: "solar" }), TODAY, {
+            previousCapacity: "1 panel",
+            previousPlan: "custom",
+          }),
+        ),
+      ).toBe(CAPACITY_PROBLEM);
+    });
   });
 
   describe("with locked contract terms (a coordinator after approval)", () => {

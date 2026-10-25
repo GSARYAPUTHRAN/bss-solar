@@ -32,7 +32,7 @@ export default async function TeamPage({
     <Page>
       <PageHeader
         title="Team Management"
-        description="Manage staff accounts and assign roles. Admins see all data; coordinators see only their own work orders and projects; service engineers see only the tickets assigned to them."
+        description="Manage staff accounts and assign roles. Admins see all data; coordinators see only the sales they log or share; service engineers see only the tickets assigned to them."
       >
         <Button asChild>
           <Link href="/team/new">

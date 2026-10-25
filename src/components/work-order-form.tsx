@@ -10,34 +10,45 @@ import { SubmitButton } from "@/components/submit-button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
-import { CoordinatorSelect } from "@/components/coordinator-select";
-import { CapacityField } from "@/components/work-orders/capacity-field";
+import {
+  CoordinatorsField,
+  type DirectoryPerson,
+} from "@/components/work-orders/coordinators-field";
 import { ContractTermsFields } from "@/components/work-orders/contract-terms-fields";
 import { FinancingFields } from "@/components/work-orders/financing-fields";
+import { PlanFields } from "@/components/work-orders/plan-fields";
 import { TOUCH_INPUT } from "@/components/work-orders/touch";
-import { COMMON_CAPACITIES } from "@/lib/constants";
 import { todayISO } from "@/lib/format";
-import type { Coordinator } from "@/server/data";
-import type { WorkOrder } from "@/lib/types";
+import { isOfficeRole } from "@/lib/domain/role";
+import type { UserRole, WorkOrder } from "@/lib/types";
+
+const PARTNERS_HINT =
+  "Sold together? Add your partners — they see and edit this work order and get its updates. The office sets each person's incentive.";
+const OFFICE_TEAM_HINT =
+  "Everyone listed sees this sale and gets its updates; the first is the coordinator who logged it.";
 
 /**
  * The single work-order body used by both create and edit, so a field added here
  * shows up in both places. `workOrder` present = edit mode.
  *
- * The coordinator picker only renders on create: reassigning an existing order is
- * a separate admin transition (and a DB trigger rejects it from a coordinator).
+ * Who shares the sale is chosen on create only (`team`): a coordinator logs it
+ * for themself and may add partners; the office may log it for anyone. Changing
+ * the team of an existing order is its own action on the order's page — a
+ * separate rule set the database enforces too.
+ *
+ * The plan (solar plant or custom plan) is chosen here while the order has no
+ * project; after that it is fixed and only shown.
  *
  * Only the booking advance is captured here — every later collection is an
  * entry in the payments ledger on the project. Rules the browser can check
- * mirror the server's (capacity needs a number, the advance cannot exceed the
- * total), so it blocks those submits instead of a round trip that comes back
- * without what was typed.
+ * mirror the server's (a solar capacity needs a unit, the advance cannot exceed
+ * the total), so it blocks those submits instead of a round trip that comes
+ * back without what was typed.
  */
 export function WorkOrderForm({
   action,
   workOrder,
-  coordinators,
-  selfCoordinator,
+  team,
   contractTermsLocked = false,
   error,
   cancelHref,
@@ -46,9 +57,11 @@ export function WorkOrderForm({
 }: {
   action: (formData: FormData) => void | Promise<void>;
   workOrder?: WorkOrder;
-  /** Provide to render the coordinator picker (admins creating on behalf). */
-  coordinators?: Coordinator[];
-  selfCoordinator?: Coordinator;
+  /** Create only: who the sale can be shared with, and who is logging it. */
+  team?: {
+    directory: readonly DirectoryPerson[];
+    viewer: { id: string; full_name: string; role: UserRole };
+  };
   /** Show the total cost and advance read-only (see `canEditContractTerms`). */
   contractTermsLocked?: boolean;
   error?: string;
@@ -63,16 +76,13 @@ export function WorkOrderForm({
       <FormError message={error} />
       {wo && <input type="hidden" name="id" value={wo.id} />}
 
-      {coordinators && selfCoordinator && (
-        <FormField label="Coordinator" htmlFor="coordinator_id">
-          <CoordinatorSelect
-            id="coordinator_id"
-            name="coordinator_id"
-            coordinators={coordinators}
-            defaultValue={selfCoordinator.id}
-            includeSelf={selfCoordinator}
-          />
-        </FormField>
+      {team && (
+        <CoordinatorsField
+          directory={team.directory}
+          viewer={team.viewer}
+          mode={isOfficeRole(team.viewer.role) ? "full" : "partners"}
+          hint={isOfficeRole(team.viewer.role) ? OFFICE_TEAM_HINT : PARTNERS_HINT}
+        />
       )}
 
       <FormGrid>
@@ -106,15 +116,11 @@ export function WorkOrderForm({
         />
       </FormField>
 
-      <FormGrid>
-        <FormField label="Solar plant capacity" htmlFor="plant_capacity" required>
-          <CapacityField
-            id="plant_capacity"
-            name="plant_capacity"
-            defaultValue={wo?.plant_capacity}
-            suggestions={COMMON_CAPACITIES}
-          />
-        </FormField>
+      <PlanFields
+        defaultPlan={wo?.plan_type}
+        defaultLabel={wo?.plant_capacity}
+        lockedPlan={wo?.project ? wo.plan_type : null}
+      >
         <FormField label="Order date" htmlFor="order_date" required>
           <Input
             id="order_date"
@@ -125,7 +131,7 @@ export function WorkOrderForm({
             required
           />
         </FormField>
-      </FormGrid>
+      </PlanFields>
 
       <Separator />
 

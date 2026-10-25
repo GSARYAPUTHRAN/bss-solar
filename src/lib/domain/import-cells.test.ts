@@ -1,9 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
+  CANCELLATION_VOCABULARY,
+  COMPLETION_ALIASES,
   FINANCING_VOCABULARY,
   PAYMENT_METHOD_VOCABULARY,
   PAYMENT_PURPOSE_VOCABULARY,
+  PLAN_VOCABULARY,
   booleanCell,
+  cancellationCell,
   dateCell,
   emailCell,
   financingCell,
@@ -12,6 +16,7 @@ import {
   normalizeStage,
   paymentMethodCell,
   paymentPurposeCell,
+  planTypeCell,
   spelling,
   stageCell,
   textCell,
@@ -63,6 +68,63 @@ describe("moneyCell", () => {
     expect(moneyCell("0", "payment_1_amount", { positive: true })).toEqual(
       failing(/payment_1_amount must be more than zero/),
     );
+  });
+
+  it("shows a sum as an example in the message", () => {
+    expect(moneyCell("soon", "total_cost")).toEqual({
+      ok: false,
+      error: 'total_cost must be an amount in rupees, like 195000 or 235000+23500 (got "soon")',
+    });
+  });
+});
+
+describe("moneyCell — sums", () => {
+  it.each([
+    ["235000+23500", 258500],
+    ["₹1,000 + Rs. 500", 1500],
+    ["230000 + 23,500", 253500],
+    ["1.5+2.25", 3.75],
+    ["189985.84+0.16", 189986],
+    ["0+0", 0],
+  ])("adds %s", (raw, total) => {
+    expect(moneyCell(raw, "total_cost")).toEqual(okWith(total));
+  });
+
+  it("adds in paise, so 0.1 + 0.2 is exactly 0.3", () => {
+    // In floating point 0.1 + 0.2 is 0.30000000000000004.
+    expect(moneyCell("0.1+0.2", "total_cost")).toEqual(okWith(0.3));
+    expect(moneyCell("19.99+0.01", "total_cost")).toEqual(okWith(20));
+  });
+
+  it("names an empty part and how to write the sum", () => {
+    for (const raw of ["100+", "+100", "100++5"]) {
+      expect(moneyCell(raw, "total_cost")).toEqual({
+        ok: false,
+        error: `total_cost "${raw}" has an empty part — write it like 235000+23500`,
+      });
+    }
+  });
+
+  it("refuses a part that is not a plain amount, a negative one included", () => {
+    expect(moneyCell("100+-5", "total_cost")).toEqual({
+      ok: false,
+      error: 'total_cost "100+-5" — each part of a sum must be a plain amount',
+    });
+    expect(moneyCell("100+abc", "total_cost")).toEqual(failing(/each part of a sum/));
+    expect(moneyCell("1e+5", "total_cost")).toEqual(failing(/each part of a sum/));
+  });
+
+  it("applies the limits to the total, not to the parts", () => {
+    expect(moneyCell("0+0", "payment_1_amount", { positive: true })).toEqual(
+      failing(/must be more than zero/),
+    );
+    expect(moneyCell("9999999999+1", "total_cost")).toEqual(failing(/too large/));
+    expect(moneyCell("9999999999+0.99", "total_cost")).toEqual(okWith(9999999999.99));
+    expect(moneyCell("1+0.005", "total_cost")).toEqual(failing(/2 decimal places/));
+  });
+
+  it("keeps the single-amount message for a lone negative", () => {
+    expect(moneyCell("-5", "total_cost")).toEqual(failing(/total_cost cannot be negative/));
   });
 });
 
@@ -194,19 +256,121 @@ describe("paymentPurposeCell", () => {
   });
 });
 
-describe("normalizeStage / stageCell", () => {
+describe("normalizeStage", () => {
   it("accepts a stage key or its label, case-insensitively", () => {
     expect(normalizeStage("material_dispatch")).toBe("material_dispatch");
     expect(normalizeStage("Plant Commissioning")).toBe("plant_commissioning");
   });
-  it("defaults blank to the first stage", () => {
+  it("still defaults blank to the first stage for the callers that rely on it", () => {
     expect(normalizeStage("")).toBe("site_feasibility_survey");
   });
-  it("returns null / an error with a suggestion for an unknown stage", () => {
+  it("returns null for an unknown stage", () => {
     expect(normalizeStage("nonsense")).toBeNull();
+  });
+});
+
+describe("stageCell", () => {
+  it("is null for a blank cell — the importer's plan decides the start", () => {
+    expect(stageCell("")).toEqual(okWith({ stage: null, completed: false }));
+    expect(stageCell(undefined)).toEqual(okWith({ stage: null, completed: false }));
+    expect(stageCell("  ")).toEqual(okWith({ stage: null, completed: false }));
+  });
+
+  it("reads a stage by key or label, not completed", () => {
+    expect(stageCell("panel_installation")).toEqual(
+      okWith({ stage: "panel_installation", completed: false }),
+    );
+    expect(stageCell("Material Dispatch (Panels & Structure)")).toEqual(
+      okWith({ stage: "material_dispatch", completed: false }),
+    );
+    // Naming the last stage is not saying it is finished.
+    expect(stageCell("plant_commissioning")).toEqual(
+      okWith({ stage: "plant_commissioning", completed: false }),
+    );
+  });
+
+  it.each([...COMPLETION_ALIASES, "Plant-Complete", "HANDED_OVER", " Commissioned "])(
+    "reads %s as the last stage, completed",
+    (raw) => {
+      expect(stageCell(raw)).toEqual(okWith({ stage: "plant_commissioning", completed: true }));
+    },
+  );
+
+  it.each(["cancelled", "Canceled", "refunded", "Refund", "cancel"])(
+    "points %s at the cancellation column",
+    (raw) => {
+      expect(stageCell(raw)).toEqual({
+        ok: false,
+        error: `current_stage "${raw}" is not a stage — put cancelled or refunded in the cancellation column and leave current_stage at the stage the project reached`,
+      });
+    },
+  );
+
+  it("suggests the nearest stage, or completion word, for a typo", () => {
     expect(stageCell("panel_instalation")).toEqual(
       failing(/did you mean "panel_installation"\?/),
     );
+    expect(stageCell("complted")).toEqual(failing(/did you mean "completed"\?/));
+    expect(stageCell("nonsense")).toEqual(
+      failing(/^current_stage "nonsense" is not recognised$/),
+    );
+  });
+
+  it("names the column the sheet used", () => {
+    expect(stageCell("nonsense", "stage")).toEqual(failing(/^stage "nonsense"/));
+  });
+});
+
+describe("planTypeCell", () => {
+  it("is solar when blank", () => {
+    expect(planTypeCell("", "plan_type")).toEqual(okWith("solar"));
+    expect(planTypeCell(undefined, "plan_type")).toEqual(okWith("solar"));
+  });
+  it.each(["solar", "Solar", "Solar plant", "solar_plant", "KW"])("reads %s as solar", (raw) => {
+    expect(planTypeCell(raw, "plan_type")).toEqual(okWith("solar"));
+  });
+  it.each(["custom", "Custom plan", "custom_plan", "Other"])("reads %s as custom", (raw) => {
+    expect(planTypeCell(raw, "plan_type")).toEqual(okWith("custom"));
+  });
+  it("suggests the nearest plan for an unknown one", () => {
+    expect(planTypeCell("kustom", "plan_type")).toEqual({
+      ok: false,
+      error: 'plan_type "kustom" is not recognised — did you mean "custom"?',
+    });
+    expect(planTypeCell("hybrid", "plan")).toEqual(failing(/^plan "hybrid" is not recognised/));
+  });
+  it("documents its spellings for the page", () => {
+    expect(PLAN_VOCABULARY.spellings).toEqual({
+      solar: ["solar", "Solar plant", "kw"],
+      custom: ["custom", "Custom plan", "other"],
+    });
+  });
+});
+
+describe("cancellationCell", () => {
+  it.each(["", "  ", "active", "Live"])("reads %j as a live project", (raw) => {
+    expect(cancellationCell(raw, "cancellation")).toEqual(okWith(null));
+  });
+  it.each(["cancelled", "Canceled", "cancel", "CANCELLED"])("reads %s as cancelled", (raw) => {
+    expect(cancellationCell(raw, "cancellation")).toEqual(okWith("cancelled"));
+  });
+  it.each(["refunded", "Refund", "REFUNDED"])("reads %s as refunded", (raw) => {
+    expect(cancellationCell(raw, "cancellation")).toEqual(okWith("refunded"));
+  });
+  it("suggests the nearest word for a typo", () => {
+    expect(cancellationCell("refunnded", "cancellation")).toEqual({
+      ok: false,
+      error: 'cancellation "refunnded" is not recognised — did you mean "refunded"?',
+    });
+    expect(cancellationCell("maybe", "cancellation")).toEqual(
+      failing(/^cancellation "maybe" is not recognised$/),
+    );
+  });
+  it("documents its spellings for the page", () => {
+    expect(CANCELLATION_VOCABULARY.spellings).toEqual({
+      cancelled: ["cancelled", "canceled", "cancel"],
+      refunded: ["refunded", "refund"],
+    });
   });
 });
 
