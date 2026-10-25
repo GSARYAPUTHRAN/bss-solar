@@ -76,6 +76,26 @@ beforeAll(async () => {
     amount: 50000,
     paid_on: "2026-02-20",
   });
+
+  // Commissioned but refunded, with money still uncollected: not payment
+  // pending, though its balance is untouched.
+  const refunded = await fx.approvedProject({
+    workOrder: {
+      client_name: "Ledger Parity Refunded",
+      total_cost: 200000,
+      advance_amount: 50000,
+    },
+    project: {
+      is_completed: true,
+      current_stage: "plant_commissioning",
+      completed_at: "2026-03-01T06:30:00Z",
+      cancellation: "refunded",
+    },
+  });
+  await fx.payment(refunded.workOrderId, {
+    amount: 30000,
+    paid_on: "2026-02-10",
+  });
 });
 
 afterAll(() => fx.cleanup());
@@ -110,7 +130,7 @@ describe("derived payment columns", () => {
       await svc
         .from("projects_list")
         .select(
-          "id, work_order_id, is_completed, total_cost, advance_amount, payments_total, payment_count, last_payment_on, amount_received, balance_due, payment_pending",
+          "id, work_order_id, is_completed, cancellation, total_cost, advance_amount, payments_total, payment_count, last_payment_on, amount_received, balance_due, payment_pending",
         ),
       "projects_list",
     );
@@ -127,6 +147,36 @@ describe("derived payment columns", () => {
       expect(Number(row.balance_due)).toBe(app.balanceDue);
       expect(row.payment_pending).toBe(isPaymentPending(row, source));
     }
+  });
+
+  it("does not call a cancelled or refunded project payment pending, whatever its balance", async () => {
+    const row = must(
+      await svc
+        .from("projects_list")
+        .select("is_completed, cancellation, balance_due, payment_pending")
+        .eq("client_name", "Ledger Parity Refunded")
+        .single(),
+      "refunded project",
+    );
+    expect(row).toEqual({
+      is_completed: true,
+      cancellation: "refunded",
+      balance_due: 120000,
+      payment_pending: false,
+    });
+    // The app's rule says the same, and a live project in the same state is pending.
+    expect(
+      isPaymentPending(
+        { is_completed: true, cancellation: "refunded" },
+        { total_cost: 200000, advance_amount: 50000, payments_total: 30000 },
+      ),
+    ).toBe(false);
+    expect(
+      isPaymentPending(
+        { is_completed: true, cancellation: null },
+        { total_cost: 200000, advance_amount: 50000, payments_total: 30000 },
+      ),
+    ).toBe(true);
   });
 
   it("never counts KSEB fees collected through BSS towards the contract", async () => {

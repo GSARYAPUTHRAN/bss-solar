@@ -34,6 +34,52 @@ export type Database = {
   };
   public: {
     Tables: {
+      coordinator_incentives: {
+        Row: {
+          amount: number | null;
+          coordinator_id: string;
+          created_at: string;
+          paid_on: string | null;
+          updated_at: string;
+          updated_by: string | null;
+          work_order_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          amount?: number | null;
+          coordinator_id: string;
+          created_at?: string;
+          paid_on?: string | null;
+          updated_at?: string;
+          updated_by?: string | null;
+          work_order_id: string;
+        };
+        Update: {
+          amount?: number | null;
+          coordinator_id?: string;
+          created_at?: string;
+          paid_on?: string | null;
+          updated_at?: string;
+          updated_by?: string | null;
+          work_order_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "coordinator_incentives_member_fkey";
+            columns: ["work_order_id", "coordinator_id"];
+            isOneToOne: true;
+            referencedRelation: "work_order_coordinators";
+            referencedColumns: ["work_order_id", "coordinator_id"];
+          },
+          {
+            foreignKeyName: "coordinator_incentives_updated_by_fkey";
+            columns: ["updated_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notification_dedupe: {
         Row: {
           created_at: string;
@@ -254,6 +300,12 @@ export type Database = {
       };
       projects: {
         Row: {
+          cancellation:
+            | Database["public"]["Enums"]["project_cancellation"]
+            | null;
+          cancellation_remarks: string | null;
+          cancelled_by: string | null;
+          cancelled_on: string | null;
           completed_at: string | null;
           coordinator_id: string;
           coordinator_incentive: number | null;
@@ -269,6 +321,12 @@ export type Database = {
         };
         ComputedFields: never;
         Insert: {
+          cancellation?:
+            | Database["public"]["Enums"]["project_cancellation"]
+            | null;
+          cancellation_remarks?: string | null;
+          cancelled_by?: string | null;
+          cancelled_on?: string | null;
           completed_at?: string | null;
           coordinator_id: string;
           coordinator_incentive?: number | null;
@@ -283,6 +341,12 @@ export type Database = {
           work_order_id: string;
         };
         Update: {
+          cancellation?:
+            | Database["public"]["Enums"]["project_cancellation"]
+            | null;
+          cancellation_remarks?: string | null;
+          cancelled_by?: string | null;
+          cancelled_on?: string | null;
           completed_at?: string | null;
           coordinator_id?: string;
           coordinator_incentive?: number | null;
@@ -297,6 +361,13 @@ export type Database = {
           work_order_id?: string;
         };
         Relationships: [
+          {
+            foreignKeyName: "projects_cancelled_by_fkey";
+            columns: ["cancelled_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
           {
             foreignKeyName: "projects_coordinator_id_fkey";
             columns: ["coordinator_id"];
@@ -525,6 +596,60 @@ export type Database = {
           },
         ];
       };
+      work_order_coordinators: {
+        Row: {
+          added_by: string | null;
+          coordinator_id: string;
+          created_at: string;
+          sort_order: number;
+          work_order_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          added_by?: string | null;
+          coordinator_id: string;
+          created_at?: string;
+          sort_order: number;
+          work_order_id: string;
+        };
+        Update: {
+          added_by?: string | null;
+          coordinator_id?: string;
+          created_at?: string;
+          sort_order?: number;
+          work_order_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "work_order_coordinators_added_by_fkey";
+            columns: ["added_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "work_order_coordinators_coordinator_id_fkey";
+            columns: ["coordinator_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "work_order_coordinators_work_order_id_fkey";
+            columns: ["work_order_id"];
+            isOneToOne: false;
+            referencedRelation: "work_orders";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "work_order_coordinators_work_order_id_fkey";
+            columns: ["work_order_id"];
+            isOneToOne: false;
+            referencedRelation: "work_orders_list";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       work_orders: {
         Row: {
           address: string | null;
@@ -540,6 +665,7 @@ export type Database = {
           loan_bank_name: string | null;
           notes: string | null;
           order_date: string;
+          plan_type: Database["public"]["Enums"]["plan_type"];
           plant_capacity: string;
           plant_capacity_kw: number | null;
           status: Database["public"]["Enums"]["work_order_status"];
@@ -561,6 +687,7 @@ export type Database = {
           loan_bank_name?: string | null;
           notes?: string | null;
           order_date?: string;
+          plan_type?: Database["public"]["Enums"]["plan_type"];
           plant_capacity: string;
           plant_capacity_kw?: never;
           status?: Database["public"]["Enums"]["work_order_status"];
@@ -581,6 +708,7 @@ export type Database = {
           loan_bank_name?: string | null;
           notes?: string | null;
           order_date?: string;
+          plan_type?: Database["public"]["Enums"]["plan_type"];
           plant_capacity?: string;
           plant_capacity_kw?: never;
           status?: Database["public"]["Enums"]["work_order_status"];
@@ -605,13 +733,20 @@ export type Database = {
           advance_amount: number | null;
           amount_received: number | null;
           balance_due: number | null;
+          cancellation:
+            | Database["public"]["Enums"]["project_cancellation"]
+            | null;
+          cancellation_remarks: string | null;
+          cancelled_on: string | null;
           client_name: string | null;
           client_phone: string | null;
           completed_at: string | null;
           consumer_number: string | null;
           coordinator_id: string | null;
+          coordinator_ids: string[] | null;
           coordinator_incentive: number | null;
           coordinator_name: string | null;
+          coordinator_names: string[] | null;
           created_at: string | null;
           current_stage: Database["public"]["Enums"]["project_stage"] | null;
           feasibility_date: string | null;
@@ -622,7 +757,13 @@ export type Database = {
           feasibility_valid_until: string | null;
           financing_type: Database["public"]["Enums"]["financing_type"] | null;
           id: string | null;
+          incentive_count: number | null;
+          incentive_paid_coordinator_ids: string[] | null;
           incentive_paid_on: string | null;
+          incentive_total: number | null;
+          incentive_unpaid: number | null;
+          incentive_unpaid_coordinator_ids: string[] | null;
+          incentive_unpaid_count: number | null;
           is_completed: boolean | null;
           kseb_section: string | null;
           last_payment_on: string | null;
@@ -632,6 +773,7 @@ export type Database = {
           payment_count: number | null;
           payment_pending: boolean | null;
           payments_total: number | null;
+          plan_type: Database["public"]["Enums"]["plan_type"] | null;
           plant_capacity: string | null;
           plant_capacity_kw: number | null;
           started_at: string | null;
@@ -716,11 +858,17 @@ export type Database = {
           advance_amount: number | null;
           amount_received: number | null;
           balance_due: number | null;
+          cancellation:
+            | Database["public"]["Enums"]["project_cancellation"]
+            | null;
+          cancelled_on: string | null;
           client_name: string | null;
           client_phone: string | null;
           consumer_number: string | null;
           coordinator_id: string | null;
+          coordinator_ids: string[] | null;
           coordinator_name: string | null;
+          coordinator_names: string[] | null;
           created_at: string | null;
           current_stage: Database["public"]["Enums"]["project_stage"] | null;
           financing_type: Database["public"]["Enums"]["financing_type"] | null;
@@ -733,6 +881,7 @@ export type Database = {
           order_date: string | null;
           payment_count: number | null;
           payments_total: number | null;
+          plan_type: Database["public"]["Enums"]["plan_type"] | null;
           plant_capacity: string | null;
           plant_capacity_kw: number | null;
           project_id: string | null;
@@ -753,6 +902,23 @@ export type Database = {
       };
     };
     Functions: {
+      account_directory: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          email: string;
+          full_name: string;
+          id: string;
+          role: Database["public"]["Enums"]["user_role"];
+        }[];
+      };
+      coordinator_directory: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          full_name: string;
+          id: string;
+          role: Database["public"]["Enums"]["user_role"];
+        }[];
+      };
       current_user_role: {
         Args: Record<PropertyKey, never>;
         Returns: Database["public"]["Enums"]["user_role"];
@@ -762,6 +928,7 @@ export type Database = {
         Returns: {
           active_projects: number;
           approved_pipeline: number;
+          cancelled_projects: number;
           commissioned: number;
           commissioned_unpaid: number;
           feasibility_expiring: number;
@@ -770,6 +937,7 @@ export type Database = {
           open_tickets: number;
           outstanding_amount: number;
           pending_approvals: number;
+          refunded_projects: number;
           total_work_orders: number;
         }[];
       };
@@ -805,6 +973,7 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: number;
       };
+      first_coordinator: { Args: { p_work_order_id: string }; Returns: string };
       import_projects: {
         Args: {
           p_default_coordinator: string;
@@ -843,6 +1012,16 @@ export type Database = {
       is_superadmin: { Args: Record<PropertyKey, never>; Returns: boolean };
       ist_today: { Args: Record<PropertyKey, never>; Returns: string };
       mark_notifications_read: { Args: { p_ids?: string[] }; Returns: number };
+      max_sale_coordinators: {
+        Args: Record<PropertyKey, never>;
+        Returns: number;
+      };
+      my_partner_ids: { Args: Record<PropertyKey, never>; Returns: string[] };
+      my_project_ids: { Args: Record<PropertyKey, never>; Returns: string[] };
+      my_work_order_ids: {
+        Args: Record<PropertyKey, never>;
+        Returns: string[];
+      };
       parse_capacity_kw: { Args: { p_label: string }; Returns: number };
       register_push_subscription: {
         Args: {
@@ -852,6 +1031,13 @@ export type Database = {
           p_user_agent?: string;
         };
         Returns: string;
+      };
+      set_work_order_coordinators: {
+        Args: { p_coordinator_ids: string[]; p_work_order_id: string };
+        Returns: {
+          change: string;
+          coordinator_id: string;
+        }[];
       };
       unregister_push_subscription: {
         Args: { p_endpoint: string };
@@ -869,6 +1055,8 @@ export type Database = {
         | "loan_disbursement"
         | "other";
       payment_purpose: "contract" | "kseb_fees";
+      plan_type: "solar" | "custom";
+      project_cancellation: "cancelled" | "refunded";
       project_stage:
         | "site_feasibility_survey"
         | "kseb_portal_registration"
@@ -1032,6 +1220,8 @@ export const Constants = {
         "other",
       ],
       payment_purpose: ["contract", "kseb_fees"],
+      plan_type: ["solar", "custom"],
+      project_cancellation: ["cancelled", "refunded"],
       project_stage: [
         "site_feasibility_survey",
         "kseb_portal_registration",

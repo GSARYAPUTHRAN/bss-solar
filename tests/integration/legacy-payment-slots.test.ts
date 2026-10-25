@@ -25,16 +25,18 @@ const MIGRATION = fileURLToPath(
 
 /**
  * The migration exactly as shipped, minus its own BEGIN/COMMIT so that a test
- * can run it inside a transaction it then rolls back.
+ * can run it inside a transaction it then rolls back. Line endings are
+ * normalised first: a Windows checkout (core.autocrlf) has CRLF, which would
+ * otherwise leave a stray CR on every captured line.
  */
 function migrationBody(): string {
-  const sql = readFileSync(MIGRATION, "utf8");
-  const statements = sql.match(/^(begin|commit);\r?$/gm) ?? [];
+  const sql = readFileSync(MIGRATION, "utf8").replace(/\r\n/g, "\n");
+  const statements = sql.match(/^(begin|commit);$/gm) ?? [];
   expect(statements, "the migration's own transaction lines").toEqual([
     "begin;",
     "commit;",
   ]);
-  return sql.replace(/^(begin|commit);\r?$/gm, "");
+  return sql.replace(/^(begin|commit);$/gm, "");
 }
 
 const SLOT_COLUMNS = [

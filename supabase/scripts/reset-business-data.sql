@@ -3,7 +3,10 @@
 -- keep_emails below. Irreversible: take a backup first, and run
 -- reset-business-data-preview.sql (with the same list) to see what goes.
 -- Afterwards, recreate the team's accounts BEFORE the bulk upload: the
--- importer matches each row's coordinator_email to an existing account.
+-- importer matches each row's coordinator cell (a name or an e-mail) to an
+-- existing account.
+-- To keep every account and only clear the business data, use
+-- wipe-business-data.sql instead.
 -- ============================================================================
 do $reset$
 declare
@@ -17,7 +20,8 @@ declare
   -- Wiped completely, children before parents so each count is exact (the
   -- foreign keys would cascade anyway).
   business_tables constant text[] := array[
-    'notification_dedupe', 'notifications', 'payments', 'service_tickets',
+    'notification_dedupe', 'notifications', 'coordinator_incentives',
+    'work_order_coordinators', 'payments', 'service_tickets',
     'project_milestones', 'projects', 'work_orders'
   ];
 
@@ -79,7 +83,8 @@ begin
   --    queueing behind a long transaction.
   -- -------------------------------------------------------------------------
   perform set_config('lock_timeout', '10s', true);
-  lock table public.work_orders, public.projects, public.project_milestones,
+  lock table public.work_orders, public.work_order_coordinators,
+    public.coordinator_incentives, public.projects, public.project_milestones,
     public.service_tickets, public.payments, public.notifications,
     public.notification_dedupe, public.push_subscriptions, public.profiles
     in exclusive mode;
@@ -139,6 +144,7 @@ left join public.profiles p on p.id = u.id
 union all
 select 'table', t.name, t.row_count::text
 from (values
+  ('coordinator_incentives', (select count(*) from public.coordinator_incentives)),
   ('notification_dedupe', (select count(*) from public.notification_dedupe)),
   ('notifications', (select count(*) from public.notifications)),
   ('payments', (select count(*) from public.payments)),
@@ -147,6 +153,7 @@ from (values
   ('projects', (select count(*) from public.projects)),
   ('push_subscriptions', (select count(*) from public.push_subscriptions)),
   ('service_tickets', (select count(*) from public.service_tickets)),
+  ('work_order_coordinators', (select count(*) from public.work_order_coordinators)),
   ('work_orders', (select count(*) from public.work_orders))
 ) as t(name, row_count)
 order by kind, name;

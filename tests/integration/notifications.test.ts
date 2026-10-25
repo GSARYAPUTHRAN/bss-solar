@@ -397,7 +397,7 @@ describe("delivering a scheduled alert", () => {
     const event: NotificationEvent = {
       type: "feasibility.extended",
       actorId: null,
-      coordinatorId: USERS.sneha.id,
+      coordinatorIds: [USERS.sneha.id],
       projectId: randomUUID(),
       clientName: `Dedupe ${uniqueTag()}`,
       renewals: 1,

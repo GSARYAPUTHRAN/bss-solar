@@ -12,6 +12,12 @@
 --   Coordinator  -> arun@bsssolar.test    (Arun Krishnan)
 --   Coordinator  -> sneha@bsssolar.test    (Sneha Das)
 --
+-- Demo sales added with the shared-coordinators release (2026-10-22):
+--   Harikrishnan Nair  -> shared by Rahul (first) + Priya, different incentives
+--   Sreedevi Amma      -> custom plan "Inverter + panel" (Arun), one Handover step
+--   Thomas Kurian      -> cancelled project (Sneha)
+--   Ibrahim Kutty      -> refunded project (Priya)
+--
 -- NOTE: For local development only. Never run this against production.
 -- ============================================================================
 
@@ -24,6 +30,8 @@
 -- superadmin  : 00000000-0000-0000-0000-000000000006
 -- engineer anil    : 00000000-0000-0000-0000-000000000007
 -- engineer vineeth : 00000000-0000-0000-0000-000000000008
+-- work orders 1..14 / projects 1..9 / tickets 1..4: the original demo set;
+-- work orders 15..18 / projects 10..13: the 2026-10-22 additions (see below).
 
 -- ---------- Auth users ----------
 insert into auth.users (
@@ -328,30 +336,49 @@ insert into public.projects (
   ('20000000-0000-0000-0000-000000000009', '10000000-0000-0000-0000-000000000014',
    '00000000-0000-0000-0000-000000000005', 'plant_commissioning', true, now() - interval '115 days', now() - interval '40 days');
 
--- ---------- KSEB feasibility + coordinator incentives ----------
+-- ---------- KSEB feasibility ----------
 -- Feasibility is valid 30 days; each further period costs BSS ₹1,000.
 -- P1: 25 days in  -> 5 days left (expiring soon)
-update public.projects set feasibility_date = current_date - 25,
-  coordinator_incentive = 3000
+update public.projects set feasibility_date = current_date - 25
   where id = '20000000-0000-0000-0000-000000000001';
 -- P2: 40 days in  -> 2nd period, 1 renewal (₹1,000 BSS cost)
 update public.projects set feasibility_date = current_date - 40
   where id = '20000000-0000-0000-0000-000000000002';
 -- P5: 10 days in  -> on track
-update public.projects set feasibility_date = current_date - 10,
-  coordinator_incentive = 5000
+update public.projects set feasibility_date = current_date - 10
   where id = '20000000-0000-0000-0000-000000000005';
 -- P6: 45 days in  -> 2nd period, 1 renewal
 update public.projects set feasibility_date = current_date - 45
   where id = '20000000-0000-0000-0000-000000000006';
--- P8 (Mary, commissioned 5 days ago): 65 days on the clock -> 2 renewals; incentive paid
-update public.projects set feasibility_date = current_date - 70,
-  coordinator_incentive = 5000, incentive_paid_on = current_date - 2
+-- P8 (Mary, commissioned 5 days ago): 65 days on the clock -> 2 renewals
+update public.projects set feasibility_date = current_date - 70
   where id = '20000000-0000-0000-0000-000000000008';
--- P9 (Latha, commissioned 40 days ago): 60 days on the clock -> 1 renewal; incentive pending
-update public.projects set feasibility_date = current_date - 100,
-  coordinator_incentive = 4000
+-- P9 (Latha, commissioned 40 days ago): 60 days on the clock -> 1 renewal
+update public.projects set feasibility_date = current_date - 100
   where id = '20000000-0000-0000-0000-000000000009';
+
+-- ---------- Coordinator incentives ----------
+-- One row per coordinator of a sale (opened when they join it), set by the
+-- office. The stamps (updated_by, cancelled_by below) come from auth.uid(), so
+-- act as the admin for the statements that set them; cleared again after the
+-- 2026-10-22 demo rows.
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
+-- P1 (Anand Kumar, Rahul): pending
+update public.coordinator_incentives set amount = 3000
+  where work_order_id = '10000000-0000-0000-0000-000000000001'
+    and coordinator_id = '00000000-0000-0000-0000-000000000002';
+-- P5 (George Varghese, Arun): pending
+update public.coordinator_incentives set amount = 5000
+  where work_order_id = '10000000-0000-0000-0000-000000000009'
+    and coordinator_id = '00000000-0000-0000-0000-000000000004';
+-- P8 (Mary Jose, Rahul): paid
+update public.coordinator_incentives set amount = 5000, paid_on = current_date - 2
+  where work_order_id = '10000000-0000-0000-0000-000000000005'
+    and coordinator_id = '00000000-0000-0000-0000-000000000002';
+-- P9 (Latha Krishnan, Sneha): pending
+update public.coordinator_incentives set amount = 4000
+  where work_order_id = '10000000-0000-0000-0000-000000000014'
+    and coordinator_id = '00000000-0000-0000-0000-000000000005';
 
 -- ---------- Milestone progress per project ----------
 -- Helper: complete sort_orders 1..(n-1), set sort_order n in_progress
@@ -403,6 +430,119 @@ update public.project_milestones set status = 'completed', completed_at = now() 
 -- P9: plant_commissioning — fully commissioned and fully paid
 update public.project_milestones set status = 'completed', completed_at = now() - interval '40 days'
   where project_id = '20000000-0000-0000-0000-000000000009';
+
+-- ---------- Release 2026-10-22: shared sale, custom plan, cancelled / refunded ----------
+-- NEW ids only; everything above is unchanged. The session still acts as the
+-- admin (see the incentives above).
+insert into public.work_orders (
+  id, coordinator_id, client_name, client_phone, address,
+  plant_capacity, plan_type, advance_amount, total_cost, order_date, status,
+  consumer_number, kseb_section, financing_type, loan_bank_name
+) values
+  -- Harikrishnan Nair: a sale Rahul and Priya made together (Rahul logged it).
+  ('10000000-0000-0000-0000-000000000015', '00000000-0000-0000-0000-000000000002',
+   'Harikrishnan Nair', '+91 98470 60606', 'Edappally, Kochi, Kerala',
+   '6kW', 'solar', 30000, 360000, current_date - 20, 'approved',
+   '1156789066666', 'Edappally', 'self', null),
+  -- Sreedevi Amma: a custom plan — not a kW plant, so no KSEB process.
+  ('10000000-0000-0000-0000-000000000016', '00000000-0000-0000-0000-000000000004',
+   'Sreedevi Amma', '+91 98470 70707', 'Perumbavoor, Kerala',
+   'Inverter + panel', 'custom', 10000, 42000, current_date - 9, 'approved',
+   null, null, 'self', null),
+  -- Thomas Kurian: cancelled (the loan was never sanctioned).
+  ('10000000-0000-0000-0000-000000000017', '00000000-0000-0000-0000-000000000005',
+   'Thomas Kurian', '+91 98470 80808', 'Adoor, Pathanamthitta, Kerala',
+   '5kW', 'solar', 25000, 300000, current_date - 75, 'approved',
+   null, 'Adoor', 'loan', 'Union Bank of India'),
+  -- Ibrahim Kutty: refunded (what was collected went back to the customer).
+  ('10000000-0000-0000-0000-000000000018', '00000000-0000-0000-0000-000000000003',
+   'Ibrahim Kutty', '+91 98470 90909', 'Thodupuzha, Idukki, Kerala',
+   '3kW', 'solar', 15000, 175000, current_date - 100, 'approved',
+   null, 'Thodupuzha', 'self', null);
+
+-- Rahul + Priya share Harikrishnan's sale. Rahul stays the first coordinator.
+select public.set_work_order_coordinators(
+  '10000000-0000-0000-0000-000000000015',
+  array['00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000003']::uuid[]
+);
+
+-- Projects (the plan decides the milestones: 9 for solar, a single Handover
+-- step for the custom plan, whose stage is forced to plant_commissioning).
+insert into public.projects (
+  id, work_order_id, coordinator_id, current_stage, is_completed, started_at, completed_at
+) values
+  ('20000000-0000-0000-0000-000000000010', '10000000-0000-0000-0000-000000000015',
+   '00000000-0000-0000-0000-000000000002', 'kseb_feasibility_clearance', false, now() - interval '18 days', null),
+  ('20000000-0000-0000-0000-000000000011', '10000000-0000-0000-0000-000000000016',
+   '00000000-0000-0000-0000-000000000004', 'plant_commissioning', false, now() - interval '8 days', null),
+  ('20000000-0000-0000-0000-000000000012', '10000000-0000-0000-0000-000000000017',
+   '00000000-0000-0000-0000-000000000005', 'kseb_portal_registration', false, now() - interval '70 days', null),
+  ('20000000-0000-0000-0000-000000000013', '10000000-0000-0000-0000-000000000018',
+   '00000000-0000-0000-0000-000000000003', 'material_dispatch', false, now() - interval '95 days', null);
+
+-- P10 (shared): 15 days into its feasibility.
+update public.projects set feasibility_date = current_date - 15
+  where id = '20000000-0000-0000-0000-000000000010';
+-- P12 (cancelled) and P13 (refunded) were mid-pipeline when they stopped.
+update public.projects set feasibility_date = current_date - 70
+  where id = '20000000-0000-0000-0000-000000000012';
+update public.projects set feasibility_date = current_date - 95
+  where id = '20000000-0000-0000-0000-000000000013';
+
+-- Milestone progress.
+-- P10: kseb_feasibility_clearance (sort 3)
+update public.project_milestones set status = 'completed', completed_at = now() - interval '12 days'
+  where project_id = '20000000-0000-0000-0000-000000000010' and sort_order < 3;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000010' and sort_order = 3;
+-- P11 (custom): the one Handover step is under way
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000011';
+-- P12: kseb_portal_registration (sort 2) when it was cancelled
+update public.project_milestones set status = 'completed', completed_at = now() - interval '60 days'
+  where project_id = '20000000-0000-0000-0000-000000000012' and sort_order < 2;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000012' and sort_order = 2;
+-- P13: material_dispatch (sort 4) when it was refunded
+update public.project_milestones set status = 'completed', completed_at = now() - interval '70 days'
+  where project_id = '20000000-0000-0000-0000-000000000013' and sort_order < 4;
+update public.project_milestones set status = 'in_progress'
+  where project_id = '20000000-0000-0000-0000-000000000013' and sort_order = 4;
+
+-- Money collected stays in the ledger for good: Ibrahim's refund is recorded in
+-- the project's remarks, not as a negative payment.
+insert into public.payments (
+  work_order_id, amount, paid_on, method, purpose, reference, recorded_by
+) values
+  ('10000000-0000-0000-0000-000000000015', 90000, current_date - 8,
+   'bank_transfer', 'contract', 'UTR 7741002290', '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000018', 80000, current_date - 60,
+   'bank_transfer', 'contract', 'UTR 5530981177', '00000000-0000-0000-0000-000000000001');
+
+-- Different incentives for the two people on the shared sale.
+update public.coordinator_incentives set amount = 4000
+  where work_order_id = '10000000-0000-0000-0000-000000000015'
+    and coordinator_id = '00000000-0000-0000-0000-000000000002';
+update public.coordinator_incentives set amount = 2500, paid_on = current_date - 1
+  where work_order_id = '10000000-0000-0000-0000-000000000015'
+    and coordinator_id = '00000000-0000-0000-0000-000000000003';
+
+-- Cancelled / refunded. The feasibility clock stopped on the day: 35 days on
+-- P12's date is a second period (one ₹1,000 renewal BSS already paid); 75 days
+-- on P13's is a third (two).
+update public.projects set
+  cancellation = 'cancelled', cancelled_on = current_date - 35,
+  cancellation_remarks = 'Customer withdrew before the KSEB feasibility — the bank did not sanction the loan.'
+  where id = '20000000-0000-0000-0000-000000000012';
+update public.projects set
+  cancellation = 'refunded', cancelled_on = current_date - 20,
+  cancellation_remarks = format(
+    'Refunded ₹95,000 (advance ₹15,000 + instalment ₹80,000) by bank transfer on %s.',
+    to_char(current_date - 20, 'DD Mon YYYY'))
+  where id = '20000000-0000-0000-0000-000000000013';
+
+-- Back to a context with no signed-in user.
+select set_config('request.jwt.claim.sub', '', false);
 
 -- ---------- Service Tickets ----------
 insert into public.service_tickets (
