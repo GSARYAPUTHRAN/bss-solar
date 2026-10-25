@@ -87,6 +87,93 @@ describe("KsebFeasibilitySection", () => {
   });
 });
 
+describe("KsebFeasibilitySection — custom plan and cancellation", () => {
+  it("is just a note for a custom plan: no registration, no clock, no fees", () => {
+    render(
+      <KsebFeasibilitySection
+        feasibility={feasibilityStatus({ feasibilityDate: null, today: TODAY })}
+        feasibilityDate={null}
+        capacityKw={null}
+        capacityLabel="Inverter + panel"
+        ksebCollected={0}
+        plan="custom"
+      />,
+    );
+    expect(
+      screen.getByText("Custom plan — no KSEB registration or feasibility."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Feasibility validity")).not.toBeInTheDocument();
+    expect(screen.queryByText("Customer KSEB fees")).not.toBeInTheDocument();
+    expect(screen.queryByText("Feasibility not set")).not.toBeInTheDocument();
+    // Nothing to flag as "capacity not in kW" either.
+    expect(screen.queryByText(/has no kW figure/)).not.toBeInTheDocument();
+  });
+
+  it("a solar plant keeps its full breakdown", () => {
+    render(
+      <KsebFeasibilitySection
+        feasibility={feasibilityStatus({ feasibilityDate: null, today: TODAY })}
+        feasibilityDate={null}
+        capacityKw={3}
+        capacityLabel="3kW"
+        ksebCollected={0}
+        plan="solar"
+      />,
+    );
+    expect(screen.getByText("Feasibility validity")).toBeInTheDocument();
+    expect(screen.getByText("Customer KSEB fees")).toBeInTheDocument();
+  });
+
+  it.each(["cancelled", "refunded"] as const)(
+    "says where the clock stopped on a %s project, with the renewals BSS already bore",
+    (cancellation) => {
+      // Feasibility 2026-08-01, stopped 2026-09-15: 45 days, one renewal.
+      const status = feasibilityStatus({
+        feasibilityDate: "2026-08-01",
+        cancelledOn: "2026-09-15",
+        isCancelled: true,
+        today: TODAY,
+      });
+      render(
+        <KsebFeasibilitySection
+          feasibility={status}
+          feasibilityDate="2026-08-01"
+          capacityKw={3}
+          capacityLabel="3kW"
+          ksebCollected={0}
+          cancellation={cancellation}
+        />,
+      );
+      expect(valueOf("Days left")).toBe(`Stopped — project ${cancellation}`);
+      expect(valueOf("Renewals")).toBe("1");
+      expect(valueOf("BSS extension cost")).toBe(formatCurrency(1000));
+    },
+  );
+
+  it("a project commissioned before it was cancelled still reads as closed at commissioning", () => {
+    const status = feasibilityStatus({
+      feasibilityDate: "2026-08-01",
+      completedAt: "2026-08-20T06:00:00Z",
+      isCompleted: true,
+      cancelledOn: "2026-09-15",
+      isCancelled: true,
+      today: TODAY,
+    });
+    render(
+      <KsebFeasibilitySection
+        feasibility={status}
+        feasibilityDate="2026-08-01"
+        capacityKw={3}
+        capacityLabel="3kW"
+        ksebCollected={0}
+        cancellation="refunded"
+        isCompleted
+      />,
+    );
+    expect(valueOf("Days left")).toBe("Closed at commissioning");
+  });
+});
+
 describe("IncentiveAmount", () => {
   it("shows an em dash when no incentive is set", () => {
     const { container } = render(<IncentiveAmount incentive={null} paidOn={null} />);

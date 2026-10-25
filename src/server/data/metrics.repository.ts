@@ -6,9 +6,12 @@ type MetricsRow = Database["public"]["Functions"]["dashboard_metrics"]["Returns"
 export interface DashboardMetrics {
   totalWorkOrders: number;
   pendingApprovals: number;
+  /** Projects in progress; cancelled and refunded ones are not counted. */
   activeProjects: number;
+  /** Commissioned (or handed over) projects, cancelled and refunded excluded. */
   commissioned: number;
   openTickets: number;
+  /** Contract value of approved work orders, cancelled and refunded projects excluded. */
   approvedPipeline: number;
   /** Commissioned projects whose contract value is not fully collected. */
   commissionedUnpaid: number;
@@ -18,8 +21,12 @@ export interface DashboardMetrics {
   feasibilityExpiring: number;
   /** Σ renewal fees BSS has borne (₹1,000 per extra 30-day period). */
   feasibilityExtensionCost: number;
-  /** Σ coordinator incentives set but not yet paid. */
+  /** Σ coordinator incentives set but not yet paid (everyone on every sale). */
   incentivePending: number;
+  /** Projects the office marked cancelled — out of the pipeline and the counts above. */
+  cancelledProjects: number;
+  /** Projects the office marked refunded — likewise out of the pipeline. */
+  refundedProjects: number;
 }
 
 const EMPTY: DashboardMetrics = {
@@ -34,6 +41,8 @@ const EMPTY: DashboardMetrics = {
   feasibilityExpiring: 0,
   feasibilityExtensionCost: 0,
   incentivePending: 0,
+  cancelledProjects: 0,
+  refundedProjects: 0,
 };
 
 /** bigint/numeric columns may arrive as strings; a null aggregate means 0. */
@@ -61,6 +70,8 @@ export const metricsRepository = {
       feasibilityExpiring: n(row.feasibility_expiring),
       feasibilityExtensionCost: n(row.feasibility_extension_cost),
       incentivePending: n(row.incentive_pending),
+      cancelledProjects: n(row.cancelled_projects),
+      refundedProjects: n(row.refunded_projects),
     };
   },
 };

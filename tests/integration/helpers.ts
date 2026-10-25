@@ -96,6 +96,24 @@ export async function withDb<T>(fn: (db: pg.Client) => Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * Runs `fn` over a direct connection in a transaction that is ALWAYS rolled
+ * back, whatever happens — for statements that must not outlive the test
+ * (migration re-runs, throwaway accounts, deferred triggers). Statements that
+ * are expected to fail should be wrapped in a savepoint by the caller: a failed
+ * statement aborts the whole transaction otherwise.
+ */
+export async function rolledBack<T>(fn: (db: pg.Client) => Promise<T>): Promise<T> {
+  return withDb(async (db) => {
+    await db.query("begin");
+    try {
+      return await fn(db);
+    } finally {
+      await db.query("rollback");
+    }
+  });
+}
+
 const noPersist = {
   auth: { persistSession: false, autoRefreshToken: false },
 };

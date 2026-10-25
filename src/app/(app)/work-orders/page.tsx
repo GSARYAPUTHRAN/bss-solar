@@ -19,14 +19,15 @@ export default async function WorkOrdersPage({
   const isAdmin = isOfficeRole(profile.role);
 
   const params = parsePageParams(await searchParams, {
-    filterKeys: ["status", "coordinator", "payment", "financing"],
+    filterKeys: ["status", "coordinator", "payment", "financing", "plan"],
     defaultSort: "order_date",
     defaultDir: "desc",
   });
 
   const [pageResult, coordinators] = await Promise.all([
     workOrdersRepository.page(params),
-    isAdmin ? profilesRepository.coordinators() : Promise.resolve([]),
+    // The office filters by coordinator: anyone who can own or share a sale.
+    isAdmin ? profilesRepository.coordinatorDirectory() : Promise.resolve([]),
   ]);
 
   return (
@@ -36,7 +37,7 @@ export default async function WorkOrdersPage({
         description={
           isAdmin
             ? "All business logged across the team."
-            : "Business you have logged."
+            : "Sales you logged or share."
         }
       >
         <Button asChild className="h-10 md:h-8">
@@ -50,6 +51,7 @@ export default async function WorkOrdersPage({
         workOrders={pageResult.rows}
         coordinators={coordinators}
         isAdmin={isAdmin}
+        viewerId={profile.id}
         server={{
           total: pageResult.total,
           page: pageResult.page,

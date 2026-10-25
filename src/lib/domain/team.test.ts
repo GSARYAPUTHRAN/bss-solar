@@ -8,12 +8,19 @@ describe("deletionBlocker", () => {
     expect(deletionBlocker("Rahul", NOTHING)).toBeNull();
   });
 
-  it("refuses while they own sales work, naming what to move", () => {
+  it("refuses while they own or share sales work, naming what to move", () => {
     expect(deletionBlocker("Rahul", { ...NOTHING, workOrders: 2, projects: 1 })).toBe(
-      "Rahul still owns 2 work orders and 1 project. Reassign or delete that business first.",
+      "Rahul still owns or shares 2 work orders and 1 project. Take them off those sales (Change coordinators on each work order) or delete that business first.",
     );
     expect(deletionBlocker("Rahul", { ...NOTHING, projects: 3 })).toBe(
-      "Rahul still owns 3 projects. Reassign or delete that business first.",
+      "Rahul still owns or shares 3 projects. Take them off those sales (Change coordinators on each work order) or delete that business first.",
+    );
+  });
+
+  it("counts a shared sale like an owned one", () => {
+    // Priya only ever joined Rahul's sale: still business that would be stranded.
+    expect(deletionBlocker("Priya", { ...NOTHING, workOrders: 1 })).toMatch(
+      /^Priya still owns or shares 1 work order\./,
     );
   });
 
@@ -66,7 +73,21 @@ describe("roleChangeBlocker", () => {
         to: "service_engineer",
         owned: { ...NOTHING, workOrders: 1 },
       }),
-    ).toMatch(/owns 1 work order\. Service engineers cannot own sales work/);
+    ).toBe(
+      "Vineeth owns or shares 1 work order. Service engineers cannot own sales work — take them off those sales first.",
+    );
+  });
+
+  it("refuses to make a member of a shared sale an engineer, even a partner who owns nothing else", () => {
+    expect(
+      change({
+        from: "coordinator",
+        to: "service_engineer",
+        owned: { ...NOTHING, workOrders: 1, projects: 1 },
+      }),
+    ).toBe(
+      "Vineeth owns or shares 1 work order and 1 project. Service engineers cannot own sales work — take them off those sales first.",
+    );
   });
 
   it("refuses to move an engineer off the role while they hold open tickets", () => {

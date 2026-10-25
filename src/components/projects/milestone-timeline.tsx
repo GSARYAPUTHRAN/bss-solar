@@ -4,12 +4,12 @@ import { FormSelect } from "@/components/form-select";
 import { SubmitButton } from "@/components/submit-button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { STAGE_LABELS } from "@/lib/constants";
 import { KSEB_FEES } from "@/lib/domain/kseb";
+import { stageLabel } from "@/lib/domain/plan";
 import { FEASIBILITY_CAPTURE_STAGE } from "@/lib/domain/project-progress";
 import { MILESTONE_STATUS, statusOptions } from "@/lib/domain/status";
 import { formatDate } from "@/lib/format";
-import type { MilestoneStatus, ProjectMilestone } from "@/lib/types";
+import type { MilestoneStatus, PlanType, ProjectMilestone } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const STATUS_ICON: Record<MilestoneStatus, React.ReactNode> = {
@@ -23,18 +23,22 @@ const STATUS_ICON: Record<MilestoneStatus, React.ReactNode> = {
 const STATUS_OPTIONS = statusOptions(MILESTONE_STATUS);
 
 /**
- * The nine KSEB/ANERT milestones as a vertical timeline. Office staff update
- * each one in place; everyone else reads it.
+ * A project's milestones as a vertical timeline: the nine KSEB/ANERT steps of a
+ * solar plant, or the single Handover step of a custom plan. Office staff update
+ * each one in place; everyone else reads it. (A cancelled project's page passes
+ * `canEdit={false}`: its milestones stay as they were until it is reinstated.)
  */
 export function MilestoneTimeline({
   projectId,
   milestones,
+  plan,
   canEdit,
   feasibilityCaptured,
 }: {
   projectId: string;
   /** In sort order. */
   milestones: ProjectMilestone[];
+  plan: PlanType;
   canEdit: boolean;
   /** A feasibility date is already recorded (so completing clearance keeps it). */
   feasibilityCaptured: boolean;
@@ -42,7 +46,7 @@ export function MilestoneTimeline({
   return (
     <ol className="space-y-4">
       {milestones.map((m, i) => {
-        const label = STAGE_LABELS[m.stage];
+        const label = stageLabel(m.stage, plan);
         const meta = MILESTONE_STATUS[m.status];
         return (
           <li key={m.id} className="relative pl-8">

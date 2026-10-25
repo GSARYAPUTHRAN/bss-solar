@@ -1,6 +1,7 @@
 import Link from "next/link";
 import {
   AlertTriangle,
+  Ban,
   ClipboardList,
   Clock,
   KanbanSquare,
@@ -35,6 +36,7 @@ const ACCENT = {
   emerald: "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
   blue: "bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
   red: "bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-300",
+  gray: "bg-gray-100 text-gray-700 dark:bg-gray-500/15 dark:text-gray-300",
 } as const;
 
 export default async function DashboardPage() {
@@ -49,6 +51,10 @@ export default async function DashboardPage() {
       projectsRepository.recent(DASHBOARD_RECENT),
       profilesRepository.coordinators(),
     ]);
+
+  // Every project is in exactly one of these four.
+  const closedProjects = metrics.cancelledProjects + metrics.refundedProjects;
+  const totalProjects = metrics.activeProjects + metrics.commissioned + closedProjects;
 
   return (
     <Page>
@@ -76,6 +82,7 @@ export default async function DashboardPage() {
           value={metrics.activeProjects}
           icon={KanbanSquare}
           accent={ACCENT.indigo}
+          hint="Excludes cancelled and refunded"
         />
         <StatCard
           label="Commissioned"
@@ -94,6 +101,16 @@ export default async function DashboardPage() {
           value={formatCurrency(metrics.approvedPipeline)}
           icon={IndianRupee}
           accent={ACCENT.emerald}
+          hint="Excludes cancelled and refunded projects"
+        />
+        {/* Out of every count above; the list holds them for the record. */}
+        <StatCard
+          label="Cancelled / Refunded"
+          value={closedProjects}
+          icon={Ban}
+          accent={ACCENT.gray}
+          hint={`${metrics.cancelledProjects} cancelled · ${metrics.refundedProjects} refunded — out of the pipeline`}
+          href="/projects?view=list&status=closed"
         />
       </KpiGroup>
 
@@ -154,16 +171,24 @@ export default async function DashboardPage() {
             workOrders={recentWorkOrders}
             coordinators={coordinators}
             isAdmin
+            viewerId={profile.id}
+            noun="latest work orders"
           />
-          <ViewAllLink href="/work-orders" label="View all work orders" />
+          <ViewAllLink
+            href="/work-orders"
+            label={`View all ${metrics.totalWorkOrders} work orders`}
+          />
         </TabsContent>
         <TabsContent value="projects" className="mt-4 space-y-2">
+          {/* The table pages through the latest few; it must not read as the total. */}
           <ProjectsTable
             projects={recentProjects}
             coordinators={coordinators}
             isAdmin
+            viewerId={profile.id}
+            noun="latest projects"
           />
-          <ViewAllLink href="/projects" label="View all projects" />
+          <ViewAllLink href="/projects" label={`View all ${totalProjects} projects`} />
         </TabsContent>
       </Tabs>
     </Page>

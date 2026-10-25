@@ -52,7 +52,11 @@ export const notificationsRepository = {
     const { rows, total } = await fetchCountedPage(
       {
         rows: () =>
-          filtered(false).order("created_at", { ascending: false }).range(from, to),
+          filtered(false)
+            .order("created_at", { ascending: false })
+            // Unique last: notifications fanned out together can share a created_at.
+            .order("id", { ascending: true })
+            .range(from, to),
         countOnly: () => filtered(true),
       },
       "notifications",

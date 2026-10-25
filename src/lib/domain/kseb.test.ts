@@ -340,3 +340,143 @@ describe("feasibilityStatus — commissioned (clock stopped)", () => {
     ).toMatchObject({ state: "closed", periods: 1, renewals: 0, extensionCost: 0 });
   });
 });
+
+// Cancelled / refunded projects stop the clock on cancelled_on exactly as
+// commissioning does. The views compute
+// coalesce(least(completion IST date, cancelled_on), ist_today()).
+describe("feasibilityStatus — cancelled or refunded (clock stopped)", () => {
+  it("freezes the clock at the cancellation date, not today", () => {
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        cancelledOn: day(20),
+        isCancelled: true,
+        today: "2026-10-10",
+      }),
+    ).toEqual({
+      state: "closed",
+      periods: 1,
+      renewals: 0,
+      validUntil: day(30),
+      daysLeft: null,
+      extensionCost: 0,
+    });
+  });
+
+  it("charges the renewals BSS already bore before the cancellation", () => {
+    // Day 45 is the second period: one ₹1,000 renewal, kept as a cost.
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        cancelledOn: day(45),
+        isCancelled: true,
+        today: "2026-10-10",
+      }),
+    ).toMatchObject({ state: "closed", periods: 2, renewals: 1, extensionCost: 1000 });
+  });
+
+  it("is closed rather than expiring, even inside the warning window", () => {
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        cancelledOn: day(29),
+        isCancelled: true,
+        today: day(29),
+      }),
+    ).toMatchObject({ state: "closed", daysLeft: null });
+  });
+
+  it("closes on the date alone, or on the flag alone", () => {
+    expect(
+      feasibilityStatus({ feasibilityDate: START, cancelledOn: day(10), today: day(45) }),
+    ).toMatchObject({ state: "closed", periods: 1, renewals: 0 });
+    // Cancelled with no recorded date: closed, the clock running to today as
+    // for a commissioned project with no completion date.
+    expect(
+      feasibilityStatus({ feasibilityDate: START, isCancelled: true, today: day(45) }),
+    ).toMatchObject({ state: "closed", periods: 2, renewals: 1, daysLeft: null });
+  });
+
+  it("does not treat isCancelled=false or a null date as cancelled", () => {
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        cancelledOn: null,
+        isCancelled: false,
+        today: day(5),
+      }),
+    ).toMatchObject({ state: "on_track", daysLeft: 25 });
+  });
+
+  it("stops at the earlier of commissioning and cancellation", () => {
+    // Commissioned on day 20, then cancelled on day 50: the clock stopped on 20.
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        completedAt: `${day(20)}T06:00:00Z`,
+        isCompleted: true,
+        cancelledOn: day(50),
+        isCancelled: true,
+        today: "2026-10-10",
+      }),
+    ).toMatchObject({ state: "closed", periods: 1, renewals: 0 });
+    // Cancelled on day 20, completion stamped on day 50: the clock stopped on 20.
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        completedAt: `${day(50)}T06:00:00Z`,
+        isCompleted: true,
+        cancelledOn: day(20),
+        isCancelled: true,
+        today: "2026-10-10",
+      }),
+    ).toMatchObject({ state: "closed", periods: 1, renewals: 0 });
+  });
+
+  it("uses the cancellation date when the commissioning was never dated", () => {
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        isCompleted: true,
+        cancelledOn: day(20),
+        isCancelled: true,
+        today: "2026-10-10",
+      }),
+    ).toMatchObject({ state: "closed", periods: 1, renewals: 0 });
+  });
+
+  it("reads the commissioning instant as its IST date when comparing", () => {
+    // 2026-01-31T19:00Z is 2026-02-01 00:30 IST (day 31): later than a
+    // cancellation on 2026-01-31 (day 30), which therefore wins.
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        completedAt: "2026-01-31T19:00:00Z",
+        isCompleted: true,
+        cancelledOn: day(30),
+        isCancelled: true,
+        today: "2026-10-10",
+      }),
+    ).toMatchObject({ periods: 1, renewals: 0 });
+    // …but with no cancellation the same instant is day 31: a second period.
+    expect(
+      feasibilityStatus({
+        feasibilityDate: START,
+        completedAt: "2026-01-31T19:00:00Z",
+        isCompleted: true,
+        today: "2026-10-10",
+      }),
+    ).toMatchObject({ periods: 2, renewals: 1 });
+  });
+
+  it("is still not_set without a feasibility date", () => {
+    expect(
+      feasibilityStatus({
+        feasibilityDate: null,
+        cancelledOn: day(5),
+        isCancelled: true,
+        today: day(30),
+      }).state,
+    ).toBe("not_set");
+  });
+});

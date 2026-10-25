@@ -46,7 +46,7 @@ export default async function ProjectsPage({
     <Page>
       <PageHeader
         title="Project Tracker"
-        description="KSEB / ANERT installation pipeline. Track milestones on the board, or browse every project in the list."
+        description={`KSEB / ANERT installation pipeline${isOffice ? "" : " — sales you logged or share"}. Track milestones on the board, or browse every project in the list.`}
       />
 
       {incentives &&
@@ -68,6 +68,7 @@ export default async function ProjectsPage({
               projects={boardProjects}
               coordinators={coordinators}
               isAdmin={isOffice}
+              viewerId={profile.id}
             />
           )
         }
@@ -77,6 +78,7 @@ export default async function ProjectsPage({
               projects={listPage.rows}
               coordinators={coordinators}
               isAdmin={isOffice}
+              viewerId={profile.id}
               server={{
                 total: listPage.total,
                 page: listPage.page,

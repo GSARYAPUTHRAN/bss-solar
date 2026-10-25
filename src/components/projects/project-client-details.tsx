@@ -2,14 +2,18 @@ import { Field, FieldGrid, Section } from "@/components/layout";
 import { Separator } from "@/components/ui/separator";
 import { FINANCING_LABELS } from "@/lib/domain/payment";
 import { formatDate } from "@/lib/format";
-import type { WorkOrder } from "@/lib/types";
+import type { ProjectWorkOrder } from "@/server/data/projects.repository";
 import { MapsLink, PhoneLink } from "./contact-links";
 
 /**
  * Client and KSEB reference details. They live on the work order — nothing is
  * copied onto the project — so editing the work order updates this view.
  */
-export function ProjectClientDetails({ workOrder }: { workOrder: WorkOrder | null }) {
+export function ProjectClientDetails({
+  workOrder,
+}: {
+  workOrder: ProjectWorkOrder | null;
+}) {
   const wo = workOrder;
   const financing = wo?.financing_type ?? "self";
 

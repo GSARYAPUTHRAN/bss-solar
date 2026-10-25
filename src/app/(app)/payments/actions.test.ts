@@ -46,11 +46,33 @@ const ADMIN = { id: "admin-1", role: "admin", full_name: "BSS Admin" } as Profil
 const WORK_ORDER = {
   id: "wo-1",
   coordinator_id: "coord-1",
+  coordinators: [{ id: "coord-1", full_name: "Rahul Menon", sort_order: 1, incentive: null }],
   client_name: "Anand Kumar",
   total_cost: 195000,
   advance_amount: 20000,
-  project: { id: "proj-1", current_stage: "material_dispatch", is_completed: false },
+  project: {
+    id: "proj-1",
+    current_stage: "material_dispatch",
+    is_completed: false,
+    cancellation: null,
+  },
 } as WorkOrder;
+
+/** Rahul's sale, shared with Priya. */
+const SHARED_WORK_ORDER = {
+  ...WORK_ORDER,
+  coordinators: [
+    ...WORK_ORDER.coordinators,
+    { id: "coord-2", full_name: "Priya Suresh", sort_order: 2, incentive: null },
+  ],
+} as WorkOrder;
+
+function cancelled(cancellation: "cancelled" | "refunded"): WorkOrder {
+  return {
+    ...WORK_ORDER,
+    project: { ...WORK_ORDER.project!, cancellation },
+  } as WorkOrder;
+}
 
 const STAGE_1 = {
   id: "pay-1",
@@ -144,18 +166,68 @@ describe("recordPayment", () => {
     expect(notify).toHaveBeenCalledWith({
       type: "payment.recorded",
       actorId: "admin-1",
-      coordinatorId: "coord-1",
+      coordinatorIds: ["coord-1"],
       workOrderId: "wo-1",
       projectId: "proj-1",
       clientName: "Anand Kumar",
       amount: 45000,
       balanceDue: 50000,
+      cancellation: null,
     });
     const paths = vi.mocked(revalidatePath).mock.calls.map(([p]) => p);
     expect(paths).toEqual(
       expect.arrayContaining(["/projects/proj-1", "/work-orders/wo-1", "/projects", "/work-orders", "/"]),
     );
   });
+
+  it("tells every coordinator on a shared sale", async () => {
+    workOrders.byId.mockResolvedValue(SHARED_WORK_ORDER);
+    await recordPayment(null, form({ ...ENTRY, work_order_id: "wo-1" }));
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "payment.recorded",
+        coordinatorIds: ["coord-1", "coord-2"],
+        balanceDue: 50000,
+        cancellation: null,
+      }),
+    );
+  });
+
+  it("reports what is still due, not the ledger's balance, when the entry settles the contract", async () => {
+    await recordPayment(null, form({ ...ENTRY, amount: "95000", work_order_id: "wo-1" }));
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 95000, balanceDue: 0 }),
+    );
+  });
+
+  it("a KSEB-fee entry never changes the contract balance it reports", async () => {
+    await recordPayment(
+      null,
+      form({ ...ENTRY, purpose: "kseb_fees", amount: "3540", work_order_id: "wo-1" }),
+    );
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 3540, balanceDue: 95000 }),
+    );
+  });
+
+  it.each(["cancelled", "refunded"] as const)(
+    "on a %s project the ledger still takes the money but nothing is reported as still due",
+    async (cancellation) => {
+      workOrders.byId.mockResolvedValue(cancelled(cancellation));
+      const res = await recordPayment(null, form({ ...ENTRY, work_order_id: "wo-1" }));
+      expect(res?.ok).toBe(true);
+      expect(payments.create).toHaveBeenCalled();
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "payment.recorded",
+          amount: 45000,
+          // 50,000 would still be owed on a live project; here it is not collectable.
+          balanceDue: 0,
+          cancellation,
+        }),
+      );
+    },
+  );
 
   it("surfaces a persistence error and does not notify", async () => {
     payments.create.mockResolvedValue({ id: null, error: "Payment was not recorded — office staff only." });

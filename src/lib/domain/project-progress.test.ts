@@ -12,18 +12,41 @@ const EARLIER = "2026-09-01T05:30:00.000Z";
 
 describe("completionStamp", () => {
   it("stamps now when something becomes completed", () => {
-    expect(completionStamp(null, true, NOW)).toBe(NOW);
+    expect(
+      completionStamp({ wasCompleted: false, previous: null, completed: true, now: NOW }),
+    ).toBe(NOW);
   });
 
   it("keeps the original instant when an already-completed record is re-saved", () => {
     // A note edit on a commissioned project must not move completed_at — it
     // stops the feasibility clock.
-    expect(completionStamp(EARLIER, true, NOW)).toBe(EARLIER);
+    expect(
+      completionStamp({ wasCompleted: true, previous: EARLIER, completed: true, now: NOW }),
+    ).toBe(EARLIER);
+  });
+
+  it("never invents a date for an already-completed record that has none", () => {
+    // An imported commissioned project (or milestone) is completed with the
+    // date "not recorded"; saving a note on it must not stamp the day of the edit.
+    expect(
+      completionStamp({ wasCompleted: true, previous: null, completed: true, now: NOW }),
+    ).toBeNull();
   });
 
   it("clears the stamp when the record is no longer completed", () => {
-    expect(completionStamp(EARLIER, false, NOW)).toBeNull();
-    expect(completionStamp(null, false, NOW)).toBeNull();
+    expect(
+      completionStamp({ wasCompleted: true, previous: EARLIER, completed: false, now: NOW }),
+    ).toBeNull();
+    expect(
+      completionStamp({ wasCompleted: false, previous: null, completed: false, now: NOW }),
+    ).toBeNull();
+  });
+
+  it("stamps again when a reopened record is completed anew", () => {
+    // Reopened (stamp cleared), then completed: a real transition.
+    expect(
+      completionStamp({ wasCompleted: false, previous: null, completed: true, now: NOW }),
+    ).toBe(NOW);
   });
 });
 
@@ -68,8 +91,13 @@ describe("shouldCaptureFeasibility", () => {
 describe("progressEvents", () => {
   const change = {
     actorId: "admin-1",
-    project: { id: "p-1", coordinatorId: "coord-1", clientName: "Anand Kumar" },
-  };
+    project: {
+      id: "p-1",
+      coordinatorIds: ["coord-1"],
+      clientName: "Anand Kumar",
+      planType: "solar",
+    },
+  } as const;
 
   it("announces a newly completed milestone to the coordinator", () => {
     expect(
@@ -78,7 +106,7 @@ describe("progressEvents", () => {
       {
         type: "project.milestone_completed",
         actorId: "admin-1",
-        coordinatorId: "coord-1",
+        coordinatorIds: ["coord-1"],
         projectId: "p-1",
         clientName: "Anand Kumar",
         stage: "material_dispatch",
@@ -93,11 +121,34 @@ describe("progressEvents", () => {
       {
         type: "project.commissioned",
         actorId: "admin-1",
-        coordinatorId: "coord-1",
+        coordinatorIds: ["coord-1"],
         projectId: "p-1",
         clientName: "Anand Kumar",
+        planType: "solar",
       },
     ]);
+  });
+
+  it("carries the plan, so a custom plan is announced as handed over", () => {
+    const [event] = progressEvents({
+      ...change,
+      project: { ...change.project, planType: "custom" },
+      completedStage: "plant_commissioning",
+      commissioned: true,
+    });
+    expect(event).toMatchObject({ type: "project.commissioned", planType: "custom" });
+  });
+
+  it("names every coordinator of a shared sale", () => {
+    const project = { ...change.project, coordinatorIds: ["coord-1", "coord-2"] };
+    const events = [
+      ...progressEvents({ ...change, project, completedStage: "material_dispatch", commissioned: false }),
+      ...progressEvents({ ...change, project, completedStage: "plant_commissioning", commissioned: true }),
+    ];
+    expect(events).toHaveLength(2);
+    for (const event of events) {
+      expect(event).toMatchObject({ coordinatorIds: ["coord-1", "coord-2"] });
+    }
   });
 
   it("is silent when nothing was completed", () => {

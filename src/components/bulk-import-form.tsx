@@ -10,18 +10,21 @@ import {
 } from "react";
 import { Download, FileWarning, Loader2, Upload } from "lucide-react";
 import { importProjects } from "@/app/(app)/onboarding/actions";
+import { decodeCsvBytes } from "@/lib/csv";
 import { IMPORT_TEMPLATE } from "@/lib/domain/import-template";
 import {
+  IMPORT_COUNT_STATUSES,
   IMPORT_INITIAL,
-  IMPORT_ROW_STATUSES,
+  type ImportMode,
   type ImportRowResult,
   type ImportRowStatus,
   type ImportState,
 } from "@/lib/domain/import-results";
-import type { StatusRegistry } from "@/lib/domain/status";
+import { TONES, type StatusRegistry } from "@/lib/domain/status";
 import { StatusBadge } from "@/components/common/status-badge";
 import { FormError, FormField } from "@/components/layout";
 import { FormSelect } from "@/components/form-select";
+import { CoordinatorMatches } from "@/components/onboarding/coordinator-matches";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -36,20 +39,30 @@ import { cn } from "@/lib/utils";
  */
 const MAX_UPLOAD_BYTES = 3_800_000;
 
-/** Same soft, dark-mode-safe tones as the status registries. */
+/** Said when a loaded file was not UTF-8 (see `decodeCsvBytes`). */
+const NOT_UTF8_NOTICE =
+  "This file was not UTF-8, so it was read as Windows-1252 — check names and notes with accents or dashes.";
+
+/**
+ * The CSV box keeps one size however much is pasted: the shared Textarea grows
+ * with its text (`field-sizing-content`), which would push Check file, Import
+ * and the results thousands of pixels down for a real sheet. The box scrolls,
+ * and can still be dragged taller.
+ */
+const CSV_BOX_CLASS = "field-sizing-fixed h-60 resize-y overflow-y-auto font-mono text-xs";
+
+/** What the default-coordinator select says (and posts) until someone is chosen. */
+const NO_DEFAULT = "none";
+const NO_DEFAULT_OPTION = {
+  value: NO_DEFAULT,
+  label: "No default — rows with a blank coordinator fail",
+};
+
 const IMPORT_ROW_STATUS: StatusRegistry<ImportRowStatus> = {
-  imported: {
-    label: "Imported",
-    badgeClass: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300",
-  },
-  skipped: {
-    label: "Skipped",
-    badgeClass: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300",
-  },
-  failed: {
-    label: "Failed",
-    badgeClass: "bg-red-100 text-red-800 dark:bg-red-500/15 dark:text-red-300",
-  },
+  ready: { label: "Ready", badgeClass: TONES.blue },
+  imported: { label: "Imported", badgeClass: TONES.emerald },
+  skipped: { label: "Skipped", badgeClass: TONES.amber },
+  failed: { label: "Failed", badgeClass: TONES.red },
 };
 
 /** Save text as a CSV file. The BOM makes Excel read it as UTF-8. */
@@ -63,19 +76,28 @@ function downloadCsv(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
+/** The button that sent the form: its own value, never a guess. */
+function isMode(value: unknown): value is ImportMode {
+  return value === "check" || value === "import";
+}
+
 export function BulkImportForm({
   coordinators,
-  defaultCoordinatorId,
 }: {
   /** Accounts that may own a work order (never service engineers). */
   coordinators: { value: string; label: string }[];
-  defaultCoordinatorId: string;
 }) {
   const [state, formAction, pending] = useActionState(importProjects, IMPORT_INITIAL);
   const [csv, setCsv] = useState("");
   const [fileName, setFileName] = useState<string | null>(null);
+  // The loaded file had to be read as Windows-1252: its names and notes may be off.
+  const [notUtf8, setNotUtf8] = useState(false);
   const [skipExisting, setSkipExisting] = useState(true);
   const [tooLarge, setTooLarge] = useState<string | null>(null);
+  // The button pressed last — for the pending label, and as the intent when the
+  // browser does not say which button submitted the form.
+  const [pressed, setPressed] = useState<ImportMode | null>(null);
+  const pressedRef = useRef<ImportMode | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function onFile(e: ChangeEvent<HTMLInputElement>) {
@@ -83,19 +105,33 @@ export function BulkImportForm({
     // Clear so choosing the same (corrected) file again still fires a change.
     e.target.value = "";
     if (!file) return;
-    setCsv(await file.text());
+    // Not file.text(): it reads UTF-8 leniently, turning every byte it cannot
+    // read into U+FFFD, and that would be imported as the name.
+    const { text, windows1252 } = decodeCsvBytes(await file.arrayBuffer());
+    setCsv(text);
     setFileName(file.name);
+    setNotUtf8(windows1252);
     setTooLarge(null);
   }
 
   /**
    * Dispatched by hand rather than through `<form action>`: React resets a form
    * after an action, and Radix Select's hidden native select would then fall
-   * back to the initial coordinator while still showing the chosen one — the
-   * next import would quietly assign rows to the wrong person.
+   * back to its initial value while still showing the chosen one — the next
+   * import would quietly use the wrong default coordinator.
+   *
+   * A hand-built FormData does not include the submit button, so the intent
+   * (Check file / Import projects) is set from the button that submitted the
+   * form. With no way to tell it is sent blank, which the server refuses — a
+   * request that does not say what it wants never writes anything.
    */
   function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    const submitter = (e.nativeEvent as SubmitEvent).submitter;
+    const fromButton = submitter instanceof HTMLButtonElement ? submitter.value : null;
+    const intent = isMode(fromButton) ? fromButton : pressedRef.current;
+    pressedRef.current = null;
+
     const bytes = new Blob([csv]).size;
     if (bytes > MAX_UPLOAD_BYTES) {
       setTooLarge(
@@ -104,7 +140,9 @@ export function BulkImportForm({
       return;
     }
     setTooLarge(null);
+    setPressed(intent);
     const data = new FormData(e.currentTarget);
+    data.set("intent", intent ?? "");
     startTransition(() => formAction(data));
   }
 
@@ -112,15 +150,15 @@ export function BulkImportForm({
     <div className="space-y-6">
       <form onSubmit={onSubmit} className="space-y-5">
         <FormField
-          label="Default coordinator"
+          label="Default coordinator for blank cells"
           htmlFor="default_coordinator_id"
-          hint="Owns every row whose coordinator_email is blank. A filled-in e-mail must match a coordinator or office account, or that row fails."
+          hint="Only used for rows whose coordinator cell is blank. Leave it at No default unless those rows really belong to one person — they cannot carry an incentive."
         >
           <FormSelect
             id="default_coordinator_id"
             name="default_coordinator_id"
-            defaultValue={defaultCoordinatorId}
-            options={coordinators}
+            defaultValue={NO_DEFAULT}
+            options={[NO_DEFAULT_OPTION, ...coordinators]}
           />
         </FormField>
 
@@ -170,19 +208,64 @@ export function BulkImportForm({
             rows={10}
             spellCheck={false}
             autoComplete="off"
-            className="font-mono text-xs"
+            className={CSV_BOX_CLASS}
             placeholder={IMPORT_TEMPLATE.split("\n").slice(0, 2).join("\n")}
           />
         </FormField>
+
+        {notUtf8 && (
+          <p
+            role="status"
+            className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+          >
+            {NOT_UTF8_NOTICE}
+          </p>
+        )}
 
         <SkipExistingField checked={skipExisting} onChange={setSkipExisting} />
 
         <FormError message={tooLarge ?? state.error} />
 
-        <Button type="submit" disabled={pending} className="h-10 w-full sm:w-auto">
-          {pending && <Loader2 className="animate-spin" data-icon="inline-start" />}
-          {pending ? "Importing…" : "Import projects"}
-        </Button>
+        <div className="space-y-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
+            {/* Check file first: it is what Enter would press, and it writes nothing. */}
+            <Button
+              type="submit"
+              name="intent"
+              value="check"
+              variant="outline"
+              disabled={pending}
+              onClick={() => {
+                pressedRef.current = "check";
+              }}
+              className="h-10 w-full sm:w-auto"
+            >
+              {pending && pressed === "check" && (
+                <Loader2 className="animate-spin" data-icon="inline-start" />
+              )}
+              {pending && pressed === "check" ? "Checking…" : "Check file"}
+            </Button>
+            <Button
+              type="submit"
+              name="intent"
+              value="import"
+              disabled={pending}
+              onClick={() => {
+                pressedRef.current = "import";
+              }}
+              className="h-10 w-full sm:w-auto"
+            >
+              {pending && pressed === "import" && (
+                <Loader2 className="animate-spin" data-icon="inline-start" />
+              )}
+              {pending && pressed === "import" ? "Importing…" : "Import projects"}
+            </Button>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Check file validates every row and shows who each coordinator name became —
+            nothing is written until you press Import projects.
+          </p>
+        </div>
       </form>
 
       {state.ran && state.results.length > 0 && <ImportResults state={state} />}
@@ -226,7 +309,28 @@ function SkipExistingField({
 
 type Filter = ImportRowStatus | "all";
 
+/** File-level notes: legal, but probably not what was meant. */
+function Warnings({ warnings }: { warnings: readonly string[] }) {
+  if (warnings.length === 0) return null;
+  return (
+    <section
+      aria-labelledby="import-warnings-title"
+      className="space-y-1.5 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+    >
+      <h3 id="import-warnings-title" className="text-sm font-semibold">
+        Worth a look
+      </h3>
+      <ul className="list-disc space-y-1 pl-5 [overflow-wrap:anywhere]">
+        {warnings.map((w) => (
+          <li key={w}>{w}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function ImportResults({ state }: { state: ImportState }) {
+  const checking = state.mode === "check";
   // The filter belongs to one run: a new result resets it (no effect needed).
   const [view, setView] = useState<{ of: ImportState; filter: Filter }>({
     of: state,
@@ -238,12 +342,13 @@ function ImportResults({ state }: { state: ImportState }) {
 
   const rows =
     filter === "all" ? state.results : state.results.filter((r) => r.status === filter);
+  const statuses = IMPORT_COUNT_STATUSES[state.mode];
 
   return (
-    <section aria-labelledby="import-results-title" className="space-y-3">
+    <section aria-labelledby="import-results-title" className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h3 id="import-results-title" className="text-sm font-semibold">
-          Results
+          {checking ? "Check results — nothing was imported" : "Results"}
         </h3>
         {state.retryCsv && (
           <Button
@@ -257,25 +362,46 @@ function ImportResults({ state }: { state: ImportState }) {
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-2" role="group" aria-label="Filter results">
-        {IMPORT_ROW_STATUSES.map((status) => (
-          <button
-            key={status}
-            type="button"
-            aria-pressed={filter === status}
-            onClick={() => toggle(status)}
-            className={cn(
-              "flex min-h-10 flex-col items-start rounded-lg border px-3 py-2 text-left text-xs transition-colors hover:bg-muted sm:flex-row sm:items-baseline sm:gap-1.5",
-              filter === status && "border-primary ring-2 ring-primary/30",
-            )}
-          >
-            <span className="text-lg font-semibold tabular-nums">{state.counts[status]}</span>{" "}
-            <span className="text-muted-foreground">{status}</span>
-          </button>
-        ))}
+      <Warnings warnings={state.warnings} />
+      <CoordinatorMatches matches={state.coordinatorMatches} />
+
+      <div className="space-y-2">
+        <div
+          className={cn("grid gap-2", statuses.length === 2 ? "grid-cols-2" : "grid-cols-3")}
+          role="group"
+          aria-label="Filter results"
+        >
+          {statuses.map((status) => (
+            <button
+              key={status}
+              type="button"
+              aria-pressed={filter === status}
+              onClick={() => toggle(status)}
+              className={cn(
+                "flex min-h-10 flex-col items-start rounded-lg border px-3 py-2 text-left text-xs transition-colors hover:bg-muted sm:flex-row sm:items-baseline sm:gap-1.5",
+                filter === status && "border-primary ring-2 ring-primary/30",
+              )}
+            >
+              <span className="text-lg font-semibold tabular-nums">{state.counts[status]}</span>{" "}
+              <span className="text-muted-foreground">{status}</span>
+            </button>
+          ))}
+        </div>
+        {checking && state.skipExisting && (
+          <p className="text-xs text-muted-foreground">
+            Ready rows will be imported — except those whose consumer number is already in
+            the system or repeated earlier in this file, which are skipped.
+          </p>
+        )}
       </div>
 
-      {state.retryCsv && (
+      {checking && (
+        <p className="text-xs text-muted-foreground">
+          Nothing has been written. Fix the failed rows in the CSV above (or choose a default
+          coordinator for blank cells), check again, then press Import projects.
+        </p>
+      )}
+      {!checking && state.retryCsv && (
         <p className="text-xs text-muted-foreground">
           The download holds the skipped and failed rows exactly as uploaded, with the
           reason in an <span className="font-mono">import_error</span> column. Fix them
@@ -330,9 +456,16 @@ function ResultList({ rows }: { rows: ImportRowResult[] }) {
             <span className="hidden md:block">
               <StatusBadge registry={IMPORT_ROW_STATUS} value={r.status} />
             </span>
-            <span className="order-3 break-words text-muted-foreground md:order-none md:text-foreground">
-              {r.message}
-            </span>
+            <div className="order-3 break-words text-muted-foreground md:order-none md:text-foreground">
+              <p>{r.message}</p>
+              {r.warnings.length > 0 && (
+                <ul className="mt-1 space-y-0.5 text-xs text-amber-800 dark:text-amber-300">
+                  {r.warnings.map((w) => (
+                    <li key={w}>{w}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </li>
         ))}
       </ol>

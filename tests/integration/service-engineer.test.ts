@@ -146,6 +146,27 @@ describe("a service engineer reading their worklist", () => {
     });
   });
 
+  it("sees what a custom plan sold where a capacity would be", async () => {
+    const { projectId } = await fx.approvedProject({
+      workOrder: {
+        client_name: `Custom Site ${RUN}`,
+        plan_type: "custom",
+        plant_capacity: "Inverter + panel",
+      },
+    });
+    const ticketId = await ticketFor(USERS.anil.id, { project_id: projectId });
+
+    const anil = await signedInAs(USERS.anil);
+    const rows = must(await anil.rpc("engineer_tickets"), "engineer_tickets");
+    const site = rows.find((r) => r.id === ticketId);
+    expect(site).toMatchObject({
+      client_name: `Custom Site ${RUN}`,
+      plant_capacity: "Inverter + panel",
+    });
+    // The shape is unchanged: no plan, kW or money rides along.
+    expect(Object.keys(site!).sort()).toEqual(ENGINEER_TICKET_COLUMNS);
+  });
+
   it("can filter, order, paginate and count engineer_tickets() like a view", async () => {
     const anil = await signedInAs(USERS.anil);
     const { count: completed } = await svc
@@ -191,6 +212,12 @@ describe("a service engineer reading their worklist", () => {
       payments: await anil.from("payments").select("id", head),
       work_orders_list: await anil.from("work_orders_list").select("id", head),
       projects_list: await anil.from("projects_list").select("id", head),
+      work_order_coordinators: await anil
+        .from("work_order_coordinators")
+        .select("work_order_id", head),
+      coordinator_incentives: await anil
+        .from("coordinator_incentives")
+        .select("work_order_id", head),
     };
     const rowsSeen = Object.fromEntries(
       Object.entries(visible).map(([table, r]) => [
@@ -205,6 +232,8 @@ describe("a service engineer reading their worklist", () => {
       payments: 0,
       work_orders_list: 0,
       projects_list: 0,
+      work_order_coordinators: 0,
+      coordinator_incentives: 0,
     });
 
     const incentives = must(
