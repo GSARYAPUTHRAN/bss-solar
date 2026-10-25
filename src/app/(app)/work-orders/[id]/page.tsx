@@ -8,7 +8,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { requireWorkOrderRole } from "@/lib/auth";
-import { workOrdersRepository } from "@/server/data";
+import { profilesRepository, workOrdersRepository } from "@/server/data";
 import { paymentsRepository } from "@/server/data/payments.repository";
 import {
   approveWorkOrder,
@@ -20,15 +20,26 @@ import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/submit-button";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Separator } from "@/components/ui/separator";
-import { FinancingBadge, WorkOrderStatusBadge } from "@/components/status-badges";
+import { CoordinatorNames } from "@/components/coordinator-names";
+import {
+  CancellationBadge,
+  FinancingBadge,
+  PlanBadge,
+  WorkOrderStatusBadge,
+} from "@/components/status-badges";
 import { AddressLink, PhoneLink } from "@/components/tickets/contact-links";
 import { ContractSummary } from "@/components/payments/contract-summary";
 import { PaymentLedger } from "@/components/payments/payment-ledger";
 import { PAYMENTS_ANCHOR } from "@/components/payments/project-payments-section";
+import { CancellationBanner } from "@/components/work-orders/cancellation-banner";
+import { CoordinatorsDialog } from "@/components/work-orders/coordinators-dialog";
 import { KsebFeesEstimate } from "@/components/work-orders/kseb-fees-estimate";
+import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/format";
+import { isSaleCoordinator, teamAuthority } from "@/lib/domain/coordinators";
 import { ledgerTotals } from "@/lib/domain/payment";
 import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
+import { linkedProjectNote } from "@/lib/domain/work-order-list";
 
 export const metadata = { title: "Work Order" };
 
@@ -51,17 +62,26 @@ export default async function WorkOrderDetailPage({
   if (!wo) notFound();
 
   const project = wo.project;
+  const cancellation = project?.cancellation ?? null;
   const isAdmin = isOfficeRole(profile.role);
   const isSuperAdmin = isSuperAdminRole(profile.role);
-  // Coordinators may edit their own orders; RLS returns nothing for anyone else,
-  // so reaching this page at all means the row is theirs.
-  const canEdit = isAdmin || wo.coordinator_id === profile.id;
+  // Everyone on the sale may edit it; RLS returns nothing for anyone else, so
+  // reaching this page at all means the order is theirs (or they are the office).
+  const canEdit = isAdmin || isSaleCoordinator(wo, profile.id);
+  // Who may change the team: the office anything; the coordinator who logged a
+  // pending order, add partners; nobody else. The directory is only needed then.
+  const authority = teamAuthority(profile, {
+    status: wo.status,
+    coordinatorIds: wo.coordinators.map((member) => member.id),
+  });
+  const directory = authority === "none" ? [] : await profilesRepository.coordinatorDirectory();
   const totals = ledgerTotals(payments);
   const paymentSource = {
     total_cost: wo.total_cost,
     advance_amount: wo.advance_amount,
     payments_total: totals.contract,
   };
+  const projectNote = project ? linkedProjectNote(project, wo.plan_type) : null;
 
   return (
     <Page size="narrow">
@@ -87,10 +107,20 @@ export default async function WorkOrderDetailPage({
           <div className="flex flex-wrap justify-end gap-1.5">
             <FinancingBadge financing={wo.financing_type} bank={wo.loan_bank_name} />
             <WorkOrderStatusBadge status={wo.status} />
+            <CancellationBadge cancellation={cancellation} />
           </div>
         }
         contentClassName="space-y-6"
       >
+        {project && cancellation && (
+          <CancellationBanner
+            cancellation={cancellation}
+            cancelledOn={project.cancelled_on}
+            remarks={project.cancellation_remarks}
+            manageHref={isAdmin ? `/projects/${project.id}` : undefined}
+          />
+        )}
+
         <FieldGrid>
           <Field label="Client name" value={wo.client_name} />
           <Field label="Client phone" value={<PhoneLink phone={wo.client_phone} />} />
@@ -99,8 +129,45 @@ export default async function WorkOrderDetailPage({
             value={<AddressLink address={wo.address} />}
             className="sm:col-span-2"
           />
-          <Field label="Coordinator" value={wo.coordinator?.full_name} />
-          <Field label="Plant capacity" value={wo.plant_capacity} />
+          <div id="coordinators" className="scroll-mt-20 sm:col-span-2">
+            <Field
+              label="Coordinators"
+              value={
+                <div className="flex flex-wrap items-center gap-2">
+                  <CoordinatorNames
+                    names={wo.coordinators.map((member) => member.full_name)}
+                    variant="chips"
+                  />
+                  {authority !== "none" && (
+                    <CoordinatorsDialog
+                      workOrderId={wo.id}
+                      mode={authority === "office" ? "office" : "add"}
+                      coordinators={wo.coordinators}
+                      directory={directory}
+                      viewer={{
+                        id: profile.id,
+                        full_name: profile.full_name,
+                        role: profile.role,
+                      }}
+                    />
+                  )}
+                </div>
+              }
+            />
+          </div>
+          {wo.plan_type === "custom" ? (
+            <Field
+              label="Plan"
+              value={
+                <span className="flex flex-wrap items-center gap-2">
+                  <PlanBadge plan={wo.plan_type} />
+                  <span>{wo.plant_capacity}</span>
+                </span>
+              }
+            />
+          ) : (
+            <Field label="Plant capacity" value={wo.plant_capacity} />
+          )}
           <Field label="Order date" value={formatDate(wo.order_date)} />
           <Field label="KSEB consumer number" value={wo.consumer_number} />
           <Field label="KSEB section" value={wo.kseb_section} />
@@ -123,7 +190,7 @@ export default async function WorkOrderDetailPage({
 
         <Separator />
 
-        <KsebFeesEstimate kw={wo.plant_capacity_kw} />
+        <KsebFeesEstimate kw={wo.plant_capacity_kw} plan={wo.plan_type} />
 
         <Separator />
 
@@ -132,6 +199,7 @@ export default async function WorkOrderDetailPage({
           <ContractSummary
             source={paymentSource}
             isCompleted={project?.is_completed}
+            cancellation={cancellation}
             ksebFeesCollected={totals.ksebFees}
           />
           {payments.length > 0 ? (
@@ -152,12 +220,26 @@ export default async function WorkOrderDetailPage({
           )}
         </div>
 
-        {project && (
+        {project && projectNote && (
           <>
             <Separator />
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-emerald-50 px-4 py-3 dark:bg-emerald-500/10">
-              <p className="text-sm text-emerald-800 dark:text-emerald-300">
-                This work order is an active project.
+            <div
+              className={cn(
+                "flex flex-wrap items-center justify-between gap-2 rounded-md px-4 py-3",
+                projectNote.tone === "closed"
+                  ? "bg-muted"
+                  : "bg-emerald-50 dark:bg-emerald-500/10",
+              )}
+            >
+              <p
+                className={cn(
+                  "text-sm",
+                  projectNote.tone === "closed"
+                    ? "text-muted-foreground"
+                    : "text-emerald-800 dark:text-emerald-300",
+                )}
+              >
+                {projectNote.text}
               </p>
               <Button size="sm" variant="outline" className="h-10 md:h-7" asChild>
                 <Link href={`/projects/${project.id}`}>
@@ -202,7 +284,7 @@ export default async function WorkOrderDetailPage({
                   triggerVariant="ghost"
                   triggerClassName="h-10 text-destructive hover:text-destructive md:h-8"
                   title="Delete this work order?"
-                  description="This permanently removes the work order, its payments ledger and any linked project and milestones. This cannot be undone."
+                  description="This permanently removes the work order, its payments ledger, its coordinators' incentives (paid and unpaid) and any linked project and milestones. This cannot be undone."
                   confirmLabel="Delete work order"
                   loadingText="Deleting…"
                 />

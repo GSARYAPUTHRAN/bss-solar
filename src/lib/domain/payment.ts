@@ -2,6 +2,7 @@ import type {
   FinancingType,
   PaymentMethod,
   PaymentPurpose,
+  ProjectCancellation,
   UserRole,
   WorkOrderStatus,
 } from "@/lib/types";
@@ -73,13 +74,30 @@ export function paymentSummary(source: PaymentSource): PaymentSummary {
 
 /**
  * The business case this exists for: the plant is commissioned and handed over,
- * but the full contract value has not been collected.
+ * but the full contract value has not been collected. A cancelled or refunded
+ * project is never pending: its balance is no longer receivable.
  */
 export function isPaymentPending(
-  project: { is_completed?: boolean | null },
+  project: { is_completed?: boolean | null; cancellation?: ProjectCancellation | null },
   source: PaymentSource,
 ): boolean {
-  return Boolean(project.is_completed) && paymentSummary(source).balanceDue > 0;
+  return (
+    Boolean(project.is_completed) &&
+    project.cancellation == null &&
+    paymentSummary(source).balanceDue > 0
+  );
+}
+
+/**
+ * What can still be collected: the balance due, or nothing once the project is
+ * cancelled or refunded (the ledger stays as history; refunds are recorded in
+ * the project's remarks, never as negative payments).
+ */
+export function collectibleBalance(
+  summary: PaymentSummary,
+  cancellation?: ProjectCancellation | null,
+): number {
+  return cancellation == null ? summary.balanceDue : 0;
 }
 
 /**

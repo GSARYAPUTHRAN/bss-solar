@@ -1,9 +1,15 @@
 import { formatCurrency, formatDate } from "@/lib/format";
 import { STAGE_LABELS, TICKET_STATUS_LABELS } from "@/lib/constants";
+import { coordinatorsLabel } from "./coordinators";
 import { addDays, diffDays } from "./dates";
 import { feasibilityStatus, FEASIBILITY_WARNING_DAYS, KSEB_FEES } from "./kseb";
 import { isActiveTicket } from "./ticket-workflow";
-import type { ProjectStage, TicketStatus } from "@/lib/types";
+import type {
+  PlanType,
+  ProjectCancellation,
+  ProjectStage,
+  TicketStatus,
+} from "@/lib/types";
 
 /**
  * The notification catalogue: every event the system can announce, who hears
@@ -13,6 +19,9 @@ import type { ProjectStage, TicketStatus } from "@/lib/types";
  * Rules that hold for every type:
  *   - the actor never notifies themselves;
  *   - "office" means every admin and the SuperAdmin;
+ *   - a sale is shared by one or more coordinators: events about the sale name
+ *     them all (`coordinatorIds`) and each hears it once; a person's incentive
+ *     is theirs alone (`incentive.updated` keeps a single `coordinatorId`);
  *   - links are in-app paths (the DB rejects anything else).
  */
 
@@ -31,8 +40,12 @@ export const NOTIFICATION_TYPES = {
   "work_order.updated": { label: "Work order updated", push: false, category: "sales" },
   "work_order.approved": { label: "Work order approved", push: true, category: "sales" },
   "work_order.rejected": { label: "Work order rejected", push: true, category: "sales" },
+  "work_order.coordinator_added": { label: "Added to a sale", push: true, category: "sales" },
+  "work_order.coordinator_removed": { label: "Removed from a sale", push: false, category: "sales" },
   "project.milestone_completed": { label: "Milestone completed", push: false, category: "project" },
   "project.commissioned": { label: "Plant commissioned", push: true, category: "project" },
+  "project.cancelled": { label: "Project cancelled or refunded", push: true, category: "project" },
+  "project.reinstated": { label: "Project reinstated", push: true, category: "project" },
   "payment.recorded": { label: "Payment recorded", push: true, category: "payment" },
   "incentive.updated": { label: "Incentive updated", push: true, category: "payment" },
   "ticket.assigned": { label: "Service ticket assigned", push: true, category: "service" },
@@ -70,11 +83,13 @@ export type NotificationEvent = Actor &
         workOrderId: string;
         clientName: string;
         capacity: string;
+        /** Names of the partners the coordinator logged it with (not the actor). */
+        partnerNames: readonly string[];
       }
     | {
         type: "work_order.assigned";
         actorName: string;
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         workOrderId: string;
         clientName: string;
         capacity: string;
@@ -82,43 +97,86 @@ export type NotificationEvent = Actor &
     | {
         type: "work_order.updated";
         actorName: string;
+        /** The sale's coordinators — they hear about edits alongside the office. */
+        coordinatorIds: readonly string[];
         workOrderId: string;
         clientName: string;
       }
     | {
         type: "work_order.approved";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         workOrderId: string;
         projectId: string | null;
         clientName: string;
       }
     | {
         type: "work_order.rejected";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         workOrderId: string;
         clientName: string;
       }
     | {
+        type: "work_order.coordinator_added";
+        actorName: string;
+        /** Who was just put on the sale. */
+        addedIds: readonly string[];
+        /** A coordinator brought partners onto an existing sale: the office hears too. */
+        notifyOffice: boolean;
+        workOrderId: string;
+        projectId: string | null;
+        clientName: string;
+        capacity: string;
+        /** Everyone on the sale after the change, in order. */
+        teamNames: readonly string[];
+      }
+    | {
+        type: "work_order.coordinator_removed";
+        actorName: string;
+        removedIds: readonly string[];
+        clientName: string;
+      }
+    | {
         type: "project.milestone_completed";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         projectId: string;
         clientName: string;
         stage: ProjectStage;
       }
     | {
         type: "project.commissioned";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         projectId: string;
         clientName: string;
+        /** A custom plan is "handed over", not commissioned. */
+        planType: PlanType;
+      }
+    | {
+        type: "project.cancelled";
+        coordinatorIds: readonly string[];
+        projectId: string;
+        clientName: string;
+        cancellation: ProjectCancellation;
+        remarks: string | null;
+      }
+    | {
+        type: "project.reinstated";
+        coordinatorIds: readonly string[];
+        projectId: string;
+        clientName: string;
+        /** What it was before. */
+        previous: ProjectCancellation;
       }
     | {
         type: "payment.recorded";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         workOrderId: string;
         projectId: string | null;
         clientName: string;
         amount: number;
+        /** What is still collectable — from `collectibleBalance` (0 once cancelled). */
         balanceDue: number;
+        /** The project's state; null while live or before there is a project. */
+        cancellation: ProjectCancellation | null;
       }
     | {
         type: "incentive.updated";
@@ -166,7 +224,7 @@ export type NotificationEvent = Actor &
       }
     | {
         type: "feasibility.expiring";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         projectId: string;
         clientName: string;
         daysLeft: number;
@@ -177,7 +235,7 @@ export type NotificationEvent = Actor &
       }
     | {
         type: "feasibility.extended";
-        coordinatorId: string;
+        coordinatorIds: readonly string[];
         projectId: string;
         clientName: string;
         renewals: number;
@@ -195,7 +253,6 @@ export interface Audience {
 export function audienceFor(event: NotificationEvent): Audience {
   switch (event.type) {
     case "work_order.submitted":
-    case "work_order.updated":
     case "ticket.status_changed":
       return { office: true, users: [] };
     case "work_order.assigned":
@@ -203,12 +260,20 @@ export function audienceFor(event: NotificationEvent): Audience {
     case "work_order.rejected":
     case "project.milestone_completed":
     case "payment.recorded":
-    case "incentive.updated":
-      return { office: false, users: [event.coordinatorId] };
+      return { office: false, users: [...event.coordinatorIds] };
+    case "work_order.updated":
     case "project.commissioned":
+    case "project.cancelled":
+    case "project.reinstated":
     case "feasibility.expiring":
     case "feasibility.extended":
-      return { office: true, users: [event.coordinatorId] };
+      return { office: true, users: [...event.coordinatorIds] };
+    case "work_order.coordinator_added":
+      return { office: event.notifyOffice, users: [...event.addedIds] };
+    case "work_order.coordinator_removed":
+      return { office: false, users: [...event.removedIds] };
+    case "incentive.updated":
+      return { office: false, users: [event.coordinatorId] };
     case "ticket.assigned":
     case "ticket.unassigned":
     case "ticket.updated":
@@ -264,6 +329,19 @@ function visitNote(event: TicketUpdatedEvent): string {
     : "visit date to be confirmed";
 }
 
+/** How much of a cancellation's remarks a notification carries. */
+const REMARKS_SNIPPET_MAX = 120;
+
+/** The remarks on one line, cut at 120 characters with an ellipsis; null when blank. */
+function remarkSnippet(remarks: string | null): string | null {
+  const text = (remarks ?? "").replace(/\s+/g, " ").trim();
+  if (text === "") return null;
+  const chars = [...text];
+  return chars.length > REMARKS_SNIPPET_MAX
+    ? `${chars.slice(0, REMARKS_SNIPPET_MAX).join("").trimEnd()}…`
+    : text;
+}
+
 export function describe(event: NotificationEvent): NotificationMessage {
   const plain = (title: string, body: string | null, link: string | null) => ({
     title,
@@ -276,7 +354,11 @@ export function describe(event: NotificationEvent): NotificationMessage {
     case "work_order.submitted":
       return plain(
         `New work order from ${event.actorName}`,
-        `${event.clientName} · ${event.capacity} — awaiting approval`,
+        `${event.clientName} · ${event.capacity} — awaiting approval${
+          event.partnerNames.length > 0
+            ? ` · with ${coordinatorsLabel(event.partnerNames)}`
+            : ""
+        }`,
         `/work-orders/${event.workOrderId}`,
       );
     case "work_order.assigned":
@@ -303,6 +385,18 @@ export function describe(event: NotificationEvent): NotificationMessage {
         event.clientName,
         `/work-orders/${event.workOrderId}`,
       );
+    case "work_order.coordinator_added":
+      return plain(
+        `${event.actorName} added you to a sale`,
+        `${event.clientName} · ${event.capacity} — with ${coordinatorsLabel(event.teamNames)}`,
+        event.projectId ? `/projects/${event.projectId}` : `/work-orders/${event.workOrderId}`,
+      );
+    case "work_order.coordinator_removed":
+      return plain(
+        "You were taken off a sale",
+        `${event.clientName} — by ${event.actorName}. It is no longer on your list.`,
+        "/work-orders",
+      );
     case "project.milestone_completed":
       return plain(
         `Milestone completed: ${STAGE_LABELS[event.stage]}`,
@@ -310,17 +404,40 @@ export function describe(event: NotificationEvent): NotificationMessage {
         `/projects/${event.projectId}`,
       );
     case "project.commissioned":
+      return event.planType === "custom"
+        ? plain(
+            "Custom plan handed over",
+            `${event.clientName} — handed over.`,
+            `/projects/${event.projectId}`,
+          )
+        : plain(
+            "Plant commissioned",
+            `${event.clientName} — all KSEB/ANERT milestones complete.`,
+            `/projects/${event.projectId}`,
+          );
+    case "project.cancelled": {
+      const remarks = remarkSnippet(event.remarks);
       return plain(
-        "Plant commissioned",
-        `${event.clientName} — all KSEB/ANERT milestones complete.`,
+        event.cancellation === "refunded" ? "Project refunded" : "Project cancelled",
+        remarks ? `${event.clientName} — ${remarks}` : event.clientName,
+        `/projects/${event.projectId}`,
+      );
+    }
+    case "project.reinstated":
+      return plain(
+        "Project reinstated",
+        `${event.clientName} is back in the pipeline (was ${event.previous}).`,
         `/projects/${event.projectId}`,
       );
     case "payment.recorded":
       return plain(
         `Payment received: ${formatCurrency(event.amount)}`,
-        event.balanceDue > 0
-          ? `${event.clientName} — ${formatCurrency(event.balanceDue)} still due`
-          : `${event.clientName} — paid in full`,
+        event.cancellation
+          ? // Nothing more is collectable once a project is cancelled or refunded.
+            `${event.clientName} — project ${event.cancellation}`
+          : event.balanceDue > 0
+            ? `${event.clientName} — ${formatCurrency(event.balanceDue)} still due`
+            : `${event.clientName} — paid in full`,
         event.projectId ? `/projects/${event.projectId}` : `/work-orders/${event.workOrderId}`,
       );
     case "incentive.updated":
@@ -406,18 +523,23 @@ export const FEASIBILITY_RENEWAL_GRACE_DAYS = 3;
  *     renewal;
  *   - within 7 days of its period ending → an "expiring" alert at the 7-day
  *     threshold and again at the 1-day threshold.
+ * Each goes to the office and every coordinator of the sale. A cancelled or
+ * refunded project has no running clock, so it warrants none.
  */
 export function feasibilityEvents(
   project: {
     projectId: string;
-    coordinatorId: string;
+    coordinatorIds: readonly string[];
     clientName: string;
     feasibilityDate: string | null;
     completedAt: string | null;
     isCompleted: boolean;
+    cancellation?: ProjectCancellation | null;
+    cancelledOn?: string | null;
   },
   today: string,
 ): NotificationEvent[] {
+  if (project.cancellation != null || project.cancelledOn != null) return [];
   const status = feasibilityStatus({
     feasibilityDate: project.feasibilityDate,
     completedAt: project.completedAt,
@@ -436,7 +558,7 @@ export function feasibilityEvents(
 
   const base = {
     actorId: null,
-    coordinatorId: project.coordinatorId,
+    coordinatorIds: project.coordinatorIds,
     projectId: project.projectId,
     clientName: project.clientName,
   };

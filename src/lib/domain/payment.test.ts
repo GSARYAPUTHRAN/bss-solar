@@ -8,6 +8,7 @@ import {
   collectedPct,
   isFinancingType,
   isPaymentMethod,
+  collectibleBalance,
   isPaymentPending,
   isPaymentPurpose,
   ledgerTotals,
@@ -147,6 +148,39 @@ describe("isPaymentPending", () => {
         { total_cost: "1000.00", advance_amount: "500.00", payments_total: "499.99" },
       ),
     ).toBe(true);
+  });
+
+  it.each(["cancelled", "refunded"] as const)(
+    "is never pending on a %s project — its balance is no longer receivable",
+    (cancellation) => {
+      expect(isPaymentPending({ is_completed: true, cancellation }, partPaid)).toBe(false);
+      expect(isPaymentPending({ is_completed: false, cancellation }, partPaid)).toBe(false);
+    },
+  );
+
+  it("is unchanged for a live project, whether the field is null or absent", () => {
+    expect(isPaymentPending({ is_completed: true, cancellation: null }, partPaid)).toBe(true);
+    expect(isPaymentPending({ is_completed: true }, partPaid)).toBe(true);
+  });
+});
+
+describe("collectibleBalance", () => {
+  const summary = paymentSummary({ total_cost: 320000, advance_amount: 40000, payments_total: 100000 });
+
+  it("is the balance due while the project is live", () => {
+    expect(collectibleBalance(summary)).toBe(180000);
+    expect(collectibleBalance(summary, null)).toBe(180000);
+    expect(collectibleBalance(summary, undefined)).toBe(180000);
+  });
+
+  it.each(["cancelled", "refunded"] as const)("is nothing once the project is %s", (cancellation) => {
+    expect(collectibleBalance(summary, cancellation)).toBe(0);
+  });
+
+  it("leaves an overpayment on a live project as the (negative) balance", () => {
+    const overpaid = paymentSummary({ total_cost: 100, advance_amount: 150 });
+    expect(collectibleBalance(overpaid)).toBe(-50);
+    expect(collectibleBalance(overpaid, "refunded")).toBe(0);
   });
 });
 

@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { FormSelect } from "@/components/form-select";
 import { EngineerPicker } from "@/components/tickets/engineer-picker";
 import { TICKET_TYPE_LABELS } from "@/lib/constants";
+import { CANCELLATION } from "@/lib/domain/cancellation";
 import type { TicketType } from "@/lib/types";
 
 export const metadata = { title: "New Service Ticket" };
@@ -61,9 +62,13 @@ export default async function NewTicketPage({
               name="project_id"
               defaultValue={project_id}
               placeholder="Select a project"
+              // plant_capacity is the plan label: a capacity, or what a custom
+              // plan sold. A cancelled or refunded project says so.
               options={projects.map((p) => ({
                 value: p.id,
-                label: `${p.client_name} — ${p.plant_capacity}`,
+                label: `${p.client_name} — ${p.plant_capacity}${
+                  p.cancellation ? ` (${CANCELLATION[p.cancellation].label})` : ""
+                }`,
               }))}
             />
           </FormField>

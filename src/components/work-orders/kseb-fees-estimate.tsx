@@ -1,7 +1,9 @@
 import { Field, FieldGrid } from "@/components/layout";
 import { formatKw } from "@/lib/domain/capacity";
 import { customerKsebFees, KSEB_FEES } from "@/lib/domain/kseb";
+import { hasKsebProcess } from "@/lib/domain/plan";
 import { formatCurrency } from "@/lib/format";
+import type { PlanType } from "@/lib/types";
 
 const FEE_NOTE =
   `Registration is ${formatCurrency(KSEB_FEES.registrationFeePerKw)} per kW + ` +
@@ -9,12 +11,25 @@ const FEE_NOTE =
   `within the feasibility validity, each further ${KSEB_FEES.feasibilityValidityDays}-day ` +
   `period costs BSS ${formatCurrency(KSEB_FEES.feasibilityRenewalFee)}.`;
 
+/** A custom plan never goes to KSEB: nothing to estimate. */
+export const NO_KSEB_NOTE = "Custom plan — no KSEB registration or feasibility.";
+
 /**
  * What the customer owes KSEB for this installation, priced from the numeric
  * capacity the database derives from the label. These are KSEB's charges (the
- * customer pays them); they are not part of the BSS contract.
+ * customer pays them); they are not part of the BSS contract. A custom plan has
+ * no KSEB process (and no kW to price), so it says so instead.
  */
-export function KsebFeesEstimate({ kw }: { kw: number | string | null }) {
+export function KsebFeesEstimate({
+  kw,
+  plan,
+}: {
+  kw: number | string | null;
+  plan?: PlanType | null;
+}) {
+  if (!hasKsebProcess(plan)) {
+    return <p className="text-sm text-muted-foreground">{NO_KSEB_NOTE}</p>;
+  }
   const fees = customerKsebFees(kw);
   const registration = fees.registration;
 

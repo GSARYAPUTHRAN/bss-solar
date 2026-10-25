@@ -4,15 +4,28 @@ import Link from "next/link";
 import { ClipboardList, Plus } from "lucide-react";
 import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
+import { CoordinatorNames } from "@/components/coordinator-names";
 import { EmptyState } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import {
+  CancellationBadge,
   FinancingBadge,
   PaymentBadge,
+  PlanBadge,
   WorkOrderStatusBadge,
 } from "@/components/status-badges";
-import { FINANCING, WORK_ORDER_STATUS, statusOptions } from "@/lib/domain/status";
+import { PLAN_TYPE, PLAN_TYPES } from "@/lib/domain/plan";
+import { FINANCING, statusOptions } from "@/lib/domain/status";
+import { matchesCoordinator } from "@/lib/domain/project-list";
 import { paymentSummary } from "@/lib/domain/payment";
+import {
+  isWorkOrderPaymentFilter,
+  isWorkOrderStatusFilter,
+  matchesWorkOrderPayment,
+  matchesWorkOrderStatus,
+  teamNote,
+  workOrderStatusOptions,
+} from "@/lib/domain/work-order-list";
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { Coordinator } from "@/server/data";
 import type { WorkOrderListRow } from "@/lib/types";
@@ -23,16 +36,28 @@ import type { WorkOrderListRow } from "@/lib/types";
  */
 const WIDE_ONLY = "hidden md:table-cell";
 
+const PLAN_OPTIONS = PLAN_TYPES.map((value) => ({ value, label: PLAN_TYPE[value].label }));
+
 export function WorkOrdersTable({
   workOrders,
   coordinators,
   isAdmin,
+  viewerId,
   server,
+  noun = "work orders",
 }: {
   workOrders: WorkOrderListRow[];
+  /** Everyone who can own a sale — the office's coordinator filter. */
   coordinators: Coordinator[];
   isAdmin: boolean;
+  /**
+   * The signed-in person, so a coordinator's phone line leaves themself out.
+   * The office (`isAdmin`) reads every name and needs none.
+   */
+  viewerId?: string;
   server?: { total: number; page: number; pageSize: number };
+  /** Plural noun for the pagination summary ("latest work orders" on the dashboard slice). */
+  noun?: string;
 }) {
   const columns: ColumnDef<WorkOrderListRow>[] = [
     {
@@ -41,30 +66,38 @@ export function WorkOrdersTable({
       sortable: true,
       sortKey: "client_name",
       sortAccessor: (w) => w.client_name.toLowerCase(),
-      cell: (w) => (
-        <>
-          <span className="font-medium hover:underline">{w.client_name}</span>
-          <div className="text-xs text-muted-foreground">
-            <span className="md:hidden">{w.plant_capacity} · </span>
-            {w.consumer_number ?? w.client_phone ?? "—"}
-          </div>
-        </>
-      ),
+      cell: (w) => {
+        const team = teamNote(w, { id: viewerId ?? "", office: isAdmin });
+        return (
+          <>
+            <span className="font-medium hover:underline">{w.client_name}</span>
+            <div className="text-xs text-muted-foreground">
+              <span className="md:hidden">{w.plant_capacity} · </span>
+              {w.consumer_number ?? w.client_phone ?? "—"}
+              {team && <span className="md:hidden"> · {team}</span>}
+            </div>
+          </>
+        );
+      },
     },
     {
       id: "coordinator",
-      header: "Coordinator",
-      hidden: !isAdmin,
+      header: "Coordinators",
       className: WIDE_ONLY,
       headerClassName: WIDE_ONLY,
-      cell: (w) => w.coordinator_name ?? "—",
+      cell: (w) => <CoordinatorNames names={w.coordinator_names ?? []} />,
     },
     {
       id: "capacity",
       header: "Capacity",
       className: WIDE_ONLY,
       headerClassName: WIDE_ONLY,
-      cell: (w) => w.plant_capacity,
+      cell: (w) => (
+        <span className="flex flex-wrap items-center gap-1.5">
+          {w.plant_capacity}
+          <PlanBadge plan={w.plan_type} />
+        </span>
+      ),
     },
     {
       id: "financing",
@@ -100,7 +133,15 @@ export function WorkOrdersTable({
       sortAccessor: (w) => paymentSummary(w).balanceDue,
       className: "text-right tabular-nums",
       headerClassName: "text-right",
-      cell: (w) => formatCurrency(paymentSummary(w).balanceDue),
+      cell: (w) =>
+        // A cancelled or refunded sale is owed nothing, whatever its ledger says.
+        w.cancellation ? (
+          <span className="text-muted-foreground" title={`Nothing due — ${w.cancellation}`}>
+            —
+          </span>
+        ) : (
+          formatCurrency(paymentSummary(w).balanceDue)
+        ),
     },
     {
       id: "order_date",
@@ -118,8 +159,12 @@ export function WorkOrdersTable({
       cell: (w) => (
         <div className="flex flex-col items-start gap-1">
           <WorkOrderStatusBadge status={w.status} />
-          {w.status === "approved" && (
-            <PaymentBadge source={w} isCompleted={w.is_completed} />
+          {w.cancellation ? (
+            <CancellationBadge cancellation={w.cancellation} />
+          ) : (
+            w.status === "approved" && (
+              <PaymentBadge source={w} isCompleted={w.is_completed} />
+            )
           )}
         </div>
       ),
@@ -131,11 +176,10 @@ export function WorkOrdersTable({
       id: "status",
       placeholder: "Status",
       column: "status",
-      options: [
-        { value: "all", label: "All statuses" },
-        ...statusOptions(WORK_ORDER_STATUS),
-      ],
-      predicate: (w, v) => w.status === v,
+      widthClass: "sm:w-48",
+      // Every viewer may filter their own cancelled and refunded sales too.
+      options: [{ value: "all", label: "All statuses" }, ...workOrderStatusOptions()],
+      predicate: (w, v) => isWorkOrderStatusFilter(v) && matchesWorkOrderStatus(w, v),
     },
     {
       id: "payment",
@@ -146,10 +190,7 @@ export function WorkOrdersTable({
         { value: "pending", label: "Balance outstanding" },
         { value: "settled", label: "Paid in full" },
       ],
-      predicate: (w, v) =>
-        v === "pending"
-          ? !paymentSummary(w).isSettled
-          : paymentSummary(w).isSettled,
+      predicate: (w, v) => isWorkOrderPaymentFilter(v) && matchesWorkOrderPayment(w, v),
     },
     {
       id: "financing",
@@ -162,16 +203,24 @@ export function WorkOrdersTable({
       predicate: (w, v) => w.financing_type === v,
     },
     {
+      id: "plan",
+      placeholder: "Plan",
+      column: "plan_type",
+      options: [{ value: "all", label: "Any plan" }, ...PLAN_OPTIONS],
+      predicate: (w, v) => w.plan_type === v,
+    },
+    {
       id: "coordinator",
       placeholder: "Coordinator",
-      column: "coordinator_id",
+      column: "coordinator_ids",
       widthClass: "sm:w-52",
       hidden: !isAdmin,
       options: [
         { value: "all", label: "All coordinators" },
         ...coordinators.map((c) => ({ value: c.id, label: c.full_name })),
       ],
-      predicate: (w, v) => w.coordinator_id === v,
+      // Anyone on the sale, not only the coordinator who logged it.
+      predicate: (w, v) => matchesCoordinator(w, v),
     },
   ];
 
@@ -217,7 +266,7 @@ export function WorkOrdersTable({
         columns={columns}
         filters={filters}
         search={search}
-        noun="work orders"
+        noun={noun}
         emptyMessage="No work orders found."
         emptyState={emptyState}
         defaultSort={{ key: "order_date", asc: false }}
@@ -233,7 +282,7 @@ export function WorkOrdersTable({
       filters={filters}
       search={search}
       initialSort={{ id: "order_date", asc: false }}
-      noun="work orders"
+      noun={noun}
       emptyMessage="No work orders found."
       emptyState={emptyState}
       getRowHref={(w) => `/work-orders/${w.id}`}

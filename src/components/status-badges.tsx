@@ -1,18 +1,22 @@
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/common/status-badge";
-import { STAGE_LABELS } from "@/lib/constants";
+import { CANCELLATION } from "@/lib/domain/cancellation";
 import {
   FEASIBILITY_STATE,
   FINANCING,
   TICKET_STATUS,
+  TONES,
   WORK_ORDER_STATUS,
 } from "@/lib/domain/status";
 import { paymentSummary, type PaymentSource } from "@/lib/domain/payment";
+import { PLAN_TYPE, stageLabel } from "@/lib/domain/plan";
 import type { FeasibilityStatus } from "@/lib/domain/kseb";
 import { formatCurrency } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
   FinancingType,
+  PlanType,
+  ProjectCancellation,
   ProjectStage,
   TicketStatus,
   WorkOrderStatus,
@@ -74,30 +78,64 @@ export function TicketStatusBadge({ status }: { status: TicketStatus }) {
   return <StatusBadge registry={TICKET_STATUS} value={status} />;
 }
 
-export function StageBadge({ stage }: { stage: ProjectStage }) {
+/** The stage's name for the plan — a custom plan's only step reads "Handover". */
+export function StageBadge({
+  stage,
+  plan,
+}: {
+  stage: ProjectStage;
+  plan?: PlanType | null;
+}) {
   return (
     <Badge variant="outline" className="font-normal">
-      {STAGE_LABELS[stage]}
+      {stageLabel(stage, plan)}
     </Badge>
   );
+}
+
+/** Cancelled or refunded; nothing for a live project. */
+export function CancellationBadge({
+  cancellation,
+}: {
+  cancellation: ProjectCancellation | null | undefined;
+}) {
+  if (!cancellation) return null;
+  return <StatusBadge registry={CANCELLATION} value={cancellation} />;
+}
+
+/** "Custom plan" — solar is the norm and gets no badge. */
+export function PlanBadge({ plan }: { plan: PlanType | null | undefined }) {
+  if (plan !== "custom") return null;
+  return <StatusBadge registry={PLAN_TYPE} value="custom" />;
 }
 
 /**
  * Collection state for a work order / project.
  *
  * A commissioned plant with an outstanding balance is the case the business
- * cares about most, so it reads as an alert rather than a neutral figure.
+ * cares about most, so it reads as an alert rather than a neutral figure. A
+ * cancelled or refunded project owes nothing more, whatever its ledger says.
  */
 export function PaymentBadge({
   source,
   isCompleted,
+  cancellation,
   className,
 }: {
   source: PaymentSource;
   isCompleted?: boolean | null;
+  cancellation?: ProjectCancellation | null;
   className?: string;
 }) {
   const { balanceDue, isSettled } = paymentSummary(source);
+
+  if (cancellation) {
+    return (
+      <Badge className={cn("border-transparent", TONES.gray, className)}>
+        Nothing due — {cancellation}
+      </Badge>
+    );
+  }
 
   if (isSettled) {
     return (

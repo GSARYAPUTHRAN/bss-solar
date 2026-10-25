@@ -158,7 +158,9 @@ describe("the office lists", () => {
     expect(result).toMatchObject({ rows: [], total: 6 });
     expect(filtersOf(headQuery())).toEqual([
       ["eq", "status", "pending"],
+      // Outstanding means collectable: a cancelled or refunded project is not.
       ["gt", "balance_due", 0],
+      ["is", "cancellation", null],
     ]);
   });
 
@@ -190,5 +192,49 @@ describe("projectsRepository.page feasibility filters", () => {
   it.each(["expiring", "not_set"])("'%s' only selects active projects", async (feasibility) => {
     await projectsRepository.page(params({ filters: { feasibility } }));
     expect(filtersOf(rowsQuery())).toContainEqual(["eq", "is_completed", false]);
+  });
+});
+
+describe("every page ends its sort on the unique key", () => {
+  // A bulk import creates all its rows in one transaction, so they share a
+  // created_at. Sorting by a column that ties and then taking a range gives pages
+  // that overlap and skip rows unless the sort ends on something unique.
+  const orders = () =>
+    rowsQuery()?.calls.filter(([name]) => name === "order") ?? [];
+  const lastCall = () => rowsQuery()?.calls.at(-1);
+
+  const pages: [string, (sort: string | null) => Promise<unknown>][] = [
+    ["notifications", () => notificationsRepository.page({ page: 2, pageSize: 20 })],
+    ["office tickets", (sort) => ticketsRepository.page(params({ sort }))],
+    ["engineer tickets", (sort) => ticketsRepository.pageForEngineer(params({ sort }))],
+    ["work orders", (sort) => workOrdersRepository.page(params({ sort }))],
+    ["projects", (sort) => projectsRepository.page(params({ sort }))],
+  ];
+
+  it.each(pages)("%s: the last order is on id, and the range follows it", async (_name, read) => {
+    await read(null);
+    expect(orders().at(-1)).toEqual(["order", "id", { ascending: true }]);
+    expect(lastCall()).toEqual(["range", expect.any(Number), expect.any(Number)]);
+  });
+
+  it.each(pages.slice(1))("%s: a chosen sort comes first, id still last", async (_name, read) => {
+    await read("client_name");
+    expect(orders()[0][1]).toBe("client_name");
+    expect(orders().at(-1)).toEqual(["order", "id", { ascending: true }]);
+  });
+
+  it("engineer tickets: the date, then newest, then id", async () => {
+    await ticketsRepository.pageForEngineer(params({ sort: "scheduled_date", dir: "asc" }));
+    expect(orders()).toEqual([
+      ["order", "scheduled_date", { ascending: true, nullsFirst: false }],
+      ["order", "created_at", { ascending: false }],
+      ["order", "id", { ascending: true }],
+    ]);
+  });
+
+  it("the head count carries no ordering at all", async () => {
+    responses.rows = PAST_THE_END;
+    await projectsRepository.page(params());
+    expect(headQuery()?.calls.some(([name]) => name === "order")).toBe(false);
   });
 });

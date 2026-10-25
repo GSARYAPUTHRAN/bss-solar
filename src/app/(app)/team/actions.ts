@@ -118,8 +118,9 @@ export async function updateUserRole(
     return fail(SUPERADMIN_IMMUTABLE);
   }
 
-  // Never strand anything: the last administrator, a coordinator's business,
-  // or an engineer's open tickets (see lib/domain/team.ts).
+  // Never strand anything: the last administrator, the sales a coordinator logs
+  // or merely shares (a partner on someone else's sale counts), or an
+  // engineer's open tickets (see lib/domain/team.ts).
   const [adminCount, owned] = await Promise.all([
     profilesRepository.adminCount(),
     profilesRepository.ownedWorkCount(userId),
@@ -144,8 +145,9 @@ export async function updateUserRole(
  * Destructive — SuperAdmin only. Removes the auth user; the profile row goes with
  * it via `on delete cascade`.
  *
- * Work orders reference their coordinator with `on delete restrict`, so a member
- * who still owns business cannot be deleted — reassign or delete that work first.
+ * A sale's coordinators (`work_order_coordinators`) reference the member with
+ * `on delete restrict`, so a member who still owns or shares business cannot be
+ * deleted — take them off those sales or delete that business first.
  * Tickets reference their engineer with `on delete set null`, so an engineer with
  * open tickets is refused too, rather than leaving those jobs silently unowned.
  */

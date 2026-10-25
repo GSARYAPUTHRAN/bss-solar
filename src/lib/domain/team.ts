@@ -5,8 +5,10 @@ import { isOfficeRole, isServiceEngineerRole } from "./role";
  * Rules for changing who someone is on the team. Each returns the message to
  * show when the change must be refused, or `null` when it may go ahead. They
  * exist so a role change or deletion can never strand work:
- *   - work orders/projects reference their coordinator `on delete restrict`
- *     and may only be owned by a coordinator or the office;
+ *   - a sale is shared by its coordinators (`work_order_coordinators`, which
+ *     references the member `on delete restrict`) and may only be owned or
+ *     shared by a coordinator or the office — so a member of a shared sale
+ *     counts as owning work exactly like the coordinator who logged it;
  *   - service tickets reference their engineer `on delete set null` and may
  *     only be held by a service engineer — so without these checks deleting or
  *     re-roling an engineer would silently orphan their open tickets.
@@ -14,7 +16,9 @@ import { isOfficeRole, isServiceEngineerRole } from "./role";
 
 /** Business that is still attached to a team member. */
 export interface OwnedWork {
+  /** Work orders they logged or share (membership, not just `coordinator_id`). */
   workOrders: number;
+  /** Projects of the sales they share. */
   projects: number;
   /** Tickets assigned to them that are still open, scheduled or in progress. */
   activeTickets: number;
@@ -40,7 +44,7 @@ function openTickets(owned: OwnedWork): string {
 export function deletionBlocker(name: string, owned: OwnedWork): string | null {
   const sales = salesWork(owned);
   if (sales) {
-    return `${name} still owns ${sales}. Reassign or delete that business first.`;
+    return `${name} still owns or shares ${sales}. Take them off those sales (Change coordinators on each work order) or delete that business first.`;
   }
   if (owned.activeTickets > 0) {
     return `${name} still has ${openTickets(owned)}. Reassign them to another engineer first.`;
@@ -69,7 +73,7 @@ export function roleChangeBlocker(change: {
 
   const sales = salesWork(owned);
   if (isServiceEngineerRole(to) && sales) {
-    return `${name} owns ${sales}. Service engineers cannot own sales work — reassign it first.`;
+    return `${name} owns or shares ${sales}. Service engineers cannot own sales work — take them off those sales first.`;
   }
 
   if (isServiceEngineerRole(from) && owned.activeTickets > 0) {

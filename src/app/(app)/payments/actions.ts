@@ -12,6 +12,7 @@ import { notify } from "@/server/notifications";
 import { fail, ok, type ActionResult } from "@/lib/result";
 import { formatCurrency, todayISO } from "@/lib/format";
 import { withFlash } from "@/lib/flash";
+import { collectibleBalance, ledgerTotals, paymentSummary } from "@/lib/domain/payment";
 
 /**
  * The payments ledger. The office records and corrects entries; only the
@@ -61,15 +62,23 @@ export async function recordPayment(
   if (error) return fail(error);
 
   const projectId = workOrder.project?.id ?? null;
+  // Everyone on the sale hears of the money; what is "still due" is what can
+  // still be collected — nothing once the project is cancelled or refunded.
+  const cancellation = workOrder.project?.cancellation ?? null;
+  const afterEntry = paymentSummary({
+    ...workOrder,
+    payments_total: ledgerTotals([...ledger, parsed.data]).contract,
+  });
   notify({
     type: "payment.recorded",
     actorId: profile.id,
-    coordinatorId: workOrder.coordinator_id,
+    coordinatorIds: workOrder.coordinators.map((member) => member.id),
     workOrderId: workOrder.id,
     projectId,
     clientName: workOrder.client_name,
     amount: parsed.data.amount,
-    balanceDue: cap.data.balanceAfter,
+    balanceDue: collectibleBalance(afterEntry, cancellation),
+    cancellation,
   });
 
   revalidateLedger(workOrder.id, projectId);

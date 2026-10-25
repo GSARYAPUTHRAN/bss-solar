@@ -5,28 +5,38 @@ import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/layout";
+import { CoordinatorNames } from "@/components/coordinator-names";
 import {
+  CancellationBadge,
   FeasibilityBadge,
   FinancingBadge,
   PaymentBadge,
+  PlanBadge,
   StageBadge,
 } from "@/components/status-badges";
-import { IncentiveAmount, IncentiveLine } from "@/components/projects/incentive-badge";
+import { IncentiveTotal, SaleIncentiveLine } from "@/components/projects/incentive-badge";
 import { PROJECT_STAGES } from "@/lib/constants";
 import { formatDate } from "@/lib/format";
 import { FINANCING, statusOptions } from "@/lib/domain/status";
-import { isPaymentPending } from "@/lib/domain/payment";
+import { PLAN_TYPE, PLAN_TYPES, completionLabel } from "@/lib/domain/plan";
+import { teamNote } from "@/lib/domain/work-order-list";
 import {
   FEASIBILITY_FILTERS,
   FEASIBILITY_FILTER_LABELS,
   INCENTIVE_FILTERS,
   INCENTIVE_FILTER_LABELS,
+  PROJECT_STATUS_FILTERS,
+  PROJECT_STATUS_FILTER_LABELS,
   isFeasibilityFilter,
   isIncentiveFilter,
+  isPlanFilter,
+  isProjectStatusFilter,
   listRowFeasibility,
   listRowProgress,
+  matchesCoordinator,
   matchesFeasibilityFilter,
-  matchesIncentiveFilter,
+  matchesProjectStatus,
+  matchesSaleIncentiveFilter,
 } from "@/lib/domain/project-list";
 import type { Coordinator } from "@/server/data";
 import type { ProjectListRow } from "@/lib/types";
@@ -36,38 +46,61 @@ import type { ProjectListRow } from "@/lib/types";
 const FROM_MD = "hidden md:table-cell";
 const FROM_LG = "hidden lg:table-cell";
 
+/** Cancelled / refunded, then commissioned (or handed over), else the stage. */
 function StageCell({ project: p }: { project: ProjectListRow }) {
+  if (p.cancellation) return <CancellationBadge cancellation={p.cancellation} />;
   return p.is_completed ? (
     <Badge className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
-      Commissioned
+      {completionLabel(p.plan_type)}
     </Badge>
   ) : (
-    <StageBadge stage={p.current_stage} />
+    <StageBadge stage={p.current_stage} plan={p.plan_type} />
   );
 }
 
-/** Feasibility, but only while the clock is running or worth a look. */
+/**
+ * Feasibility, but only while the clock is running or worth a look. A custom
+ * plan has no KSEB process, and a cancelled project with no date has no clock.
+ */
 function FeasibilityCell({ project }: { project: ProjectListRow }) {
+  if (project.plan_type === "custom") return <>—</>;
   const status = listRowFeasibility(project);
+  if (status.state === "not_set" && project.cancellation) return <>—</>;
   if (status.state === "closed" && status.renewals === 0) return <>—</>;
   return <FeasibilityBadge status={status} />;
 }
 
-function MobileSummary({ project: p }: { project: ProjectListRow }) {
+function MobileSummary({
+  project: p,
+  showAll,
+  viewerId,
+}: {
+  project: ProjectListRow;
+  showAll: boolean;
+  viewerId: string;
+}) {
   const feasibility = listRowFeasibility(p);
+  const team = teamNote(p, { id: viewerId, office: showAll });
   return (
     <div className="mt-1 space-y-1.5 md:hidden">
-      <p className="text-xs text-muted-foreground">
-        {[p.plant_capacity, p.coordinator_name].filter(Boolean).join(" · ")}
+      <p className="break-words text-xs text-muted-foreground">
+        {[p.plant_capacity, team].filter(Boolean).join(" · ")}
       </p>
       <div className="flex flex-wrap gap-1">
         <StageCell project={p} />
-        <PaymentBadge source={p} isCompleted={p.is_completed} />
+        <PlanBadge plan={p.plan_type} />
+        {/* A cancelled project's stage cell already says nothing more is due. */}
+        {!p.cancellation && <PaymentBadge source={p} isCompleted={p.is_completed} />}
         {(feasibility.state === "expiring" || feasibility.state === "extended") && (
           <FeasibilityBadge status={feasibility} />
         )}
       </div>
-      <IncentiveLine incentive={p.coordinator_incentive} paidOn={p.incentive_paid_on} />
+      <SaleIncentiveLine
+        total={p.incentive_total}
+        count={p.incentive_count}
+        unpaidCount={p.incentive_unpaid_count}
+        label={showAll ? "Incentive" : "Your incentive"}
+      />
     </div>
   );
 }
@@ -76,11 +109,17 @@ export function ProjectsTable({
   projects,
   coordinators,
   isAdmin,
+  viewerId,
+  noun = "projects",
   server,
 }: {
   projects: ProjectListRow[];
   coordinators: Coordinator[];
   isAdmin: boolean;
+  /** The signed-in person, so a shared sale reads "with …" on a phone. */
+  viewerId: string;
+  /** What the pagination footer calls the rows ("Showing 1–10 of 25 {noun}"). */
+  noun?: string;
   server?: { total: number; page: number; pageSize: number };
 }) {
   const columns: ColumnDef<ProjectListRow>[] = [
@@ -93,24 +132,30 @@ export function ProjectsTable({
       cell: (p) => (
         <div className="min-w-0">
           <span className="font-medium hover:underline">{p.client_name ?? "Project"}</span>
-          <MobileSummary project={p} />
+          <MobileSummary project={p} showAll={isAdmin} viewerId={viewerId} />
         </div>
       ),
     },
     {
+      // Everyone on the sale; a coordinator sees who they share it with.
       id: "coordinator",
-      header: "Coordinator",
-      hidden: !isAdmin,
+      header: "Coordinators",
       className: FROM_MD,
       headerClassName: FROM_MD,
-      cell: (p) => p.coordinator_name ?? "—",
+      cell: (p) => <CoordinatorNames names={p.coordinator_names} />,
     },
     {
+      // A solar plant's kW capacity, or what a custom plan sold.
       id: "capacity",
       header: "Capacity",
       className: FROM_MD,
       headerClassName: FROM_MD,
-      cell: (p) => p.plant_capacity ?? "—",
+      cell: (p) => (
+        <span className="flex flex-wrap items-center gap-1.5">
+          <span className="break-words">{p.plant_capacity ?? "—"}</span>
+          <PlanBadge plan={p.plan_type} />
+        </span>
+      ),
     },
     {
       id: "stage",
@@ -148,15 +193,27 @@ export function ProjectsTable({
       cell: (p) => <FeasibilityCell project={p} />,
     },
     {
+      // What the viewer may see: the office the sale's total, a coordinator
+      // their own (the view applies RLS to the incentive rows).
       id: "incentive",
-      header: "Incentive",
+      header: (
+        <span
+          title={isAdmin ? "Total for everyone on the sale" : "Your incentive on the sale"}
+        >
+          Incentive
+        </span>
+      ),
       sortable: true,
-      sortKey: "coordinator_incentive",
-      sortAccessor: (p) => Number(p.coordinator_incentive ?? -1),
+      sortKey: "incentive_total",
+      sortAccessor: (p) => Number(p.incentive_total ?? -1),
       className: FROM_MD,
       headerClassName: FROM_MD,
       cell: (p) => (
-        <IncentiveAmount incentive={p.coordinator_incentive} paidOn={p.incentive_paid_on} />
+        <IncentiveTotal
+          total={p.incentive_total}
+          count={p.incentive_count}
+          unpaidCount={p.incentive_unpaid_count}
+        />
       ),
     },
     {
@@ -167,7 +224,9 @@ export function ProjectsTable({
       sortAccessor: (p) => Number(p.balance_due ?? 0),
       className: FROM_MD,
       headerClassName: FROM_MD,
-      cell: (p) => <PaymentBadge source={p} isCompleted={p.is_completed} />,
+      cell: (p) => (
+        <PaymentBadge source={p} isCompleted={p.is_completed} cancellation={p.cancellation} />
+      ),
     },
     {
       id: "created",
@@ -189,18 +248,12 @@ export function ProjectsTable({
       widthClass: "sm:w-56",
       options: [
         { value: "all", label: "All projects" },
-        { value: "active", label: "Active" },
-        { value: "completed", label: "Commissioned" },
-        { value: "payment_pending", label: "Commissioned · payment pending" },
+        ...PROJECT_STATUS_FILTERS.map((s) => ({
+          value: s,
+          label: PROJECT_STATUS_FILTER_LABELS[s],
+        })),
       ],
-      predicate: (p, v) =>
-        v === "active"
-          ? !p.is_completed
-          : v === "completed"
-            ? p.is_completed
-            : v === "payment_pending"
-              ? isPaymentPending(p, p)
-              : true,
+      predicate: (p, v) => !isProjectStatusFilter(v) || matchesProjectStatus(p, v),
     },
     {
       id: "stage",
@@ -211,6 +264,16 @@ export function ProjectsTable({
         ...PROJECT_STAGES.map((s) => ({ value: s.value, label: s.label })),
       ],
       predicate: (p, v) => p.current_stage === v,
+    },
+    {
+      id: "plan",
+      placeholder: "Plan",
+      widthClass: "sm:w-40",
+      options: [
+        { value: "all", label: "Any plan" },
+        ...PLAN_TYPES.map((t) => ({ value: t, label: PLAN_TYPE[t].label })),
+      ],
+      predicate: (p, v) => !isPlanFilter(v) || p.plan_type === v,
     },
     {
       id: "feasibility",
@@ -230,6 +293,8 @@ export function ProjectsTable({
       predicate: (p, v) => (p.financing_type ?? "self") === v,
     },
     {
+      // About the sale's incentives in total. (The server list narrows to the
+      // picked coordinator's own incentive; a filter here cannot read another.)
       id: "incentive",
       placeholder: "Incentive",
       widthClass: "sm:w-44",
@@ -237,9 +302,10 @@ export function ProjectsTable({
         { value: "all", label: "Any incentive" },
         ...INCENTIVE_FILTERS.map((f) => ({ value: f, label: INCENTIVE_FILTER_LABELS[f] })),
       ],
-      predicate: (p, v) => !isIncentiveFilter(v) || matchesIncentiveFilter(p, v),
+      predicate: (p, v) => !isIncentiveFilter(v) || matchesSaleIncentiveFilter(p, v),
     },
     {
+      // Any member of the sale matches, not only its first coordinator.
       id: "coordinator",
       placeholder: "Coordinator",
       widthClass: "sm:w-48",
@@ -248,7 +314,7 @@ export function ProjectsTable({
         { value: "all", label: "All coordinators" },
         ...coordinators.map((c) => ({ value: c.id, label: c.full_name })),
       ],
-      predicate: (p, v) => p.coordinator_id === v,
+      predicate: (p, v) => matchesCoordinator(p, v),
     },
   ];
 
@@ -271,7 +337,7 @@ export function ProjectsTable({
         columns={columns}
         filters={filters}
         search={search}
-        noun="projects"
+        noun={noun}
         emptyMessage="No projects found."
         emptyState={
           <EmptyState
@@ -293,7 +359,7 @@ export function ProjectsTable({
       filters={filters}
       search={search}
       initialSort={{ id: "created", asc: false }}
-      noun="projects"
+      noun={noun}
       emptyMessage="No projects found."
       getRowHref={(p) => `/projects/${p.id}`}
     />

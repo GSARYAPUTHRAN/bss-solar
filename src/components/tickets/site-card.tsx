@@ -15,7 +15,8 @@ export type SiteDetails = Pick<
 
 /**
  * Everything an engineer needs to reach and identify the site: who to call,
- * where to go, and the plant/KSEB references to quote on arrival.
+ * where to go, and the system/KSEB references to quote on arrival. "System" is
+ * the capacity of a solar plant, or what a custom plan sold.
  */
 export function SiteCard({ site }: { site: SiteDetails }) {
   return (
@@ -28,7 +29,7 @@ export function SiteCard({ site }: { site: SiteDetails }) {
           value={<AddressLink address={site.address} />}
           className="sm:col-span-2"
         />
-        <Field label="Plant capacity" value={site.plant_capacity} />
+        <Field label="System" value={site.plant_capacity} />
         <Field label="Consumer no." value={site.consumer_number} />
         <Field label="KSEB section" value={site.kseb_section} />
       </FieldGrid>

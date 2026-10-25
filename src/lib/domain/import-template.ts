@@ -10,8 +10,10 @@ import {
 /**
  * The sample CSV offered on the onboarding page: every column, and one row for
  * each case the office meets most — a loan-financed project mid-way through
- * staged payments, a commissioned project with money still due, and a fresh
- * booking with only the required columns. Its rows must always validate
+ * staged payments, a commissioned project with money still due, a fresh
+ * booking, a sale shared by two coordinators, a custom plan and a refunded
+ * sale. Every row names its coordinator (a blank cell fails unless a default
+ * coordinator is chosen), by name or by e-mail. Its rows must always validate
  * (import-template.test.ts).
  */
 
@@ -37,7 +39,7 @@ const TEMPLATE_ROWS: Partial<Record<TemplateColumn, string>>[] = [
     address: "Vytilla, Kochi, Ernakulam",
     advance_amount: "20000",
     order_date: "2026-06-15",
-    coordinator_email: "coord@bsssolar.test",
+    coordinator: "Rahul Menon",
     financing_type: "loan",
     loan_bank_name: "State Bank of India",
     consumer_number: "1156789012345",
@@ -78,6 +80,7 @@ const TEMPLATE_ROWS: Partial<Record<TemplateColumn, string>>[] = [
     address: "TC 14/1023, Kowdiar, Thiruvananthapuram",
     advance_amount: "50000",
     order_date: "2026-03-02",
+    coordinator: "Priya Suresh",
     financing_type: "self",
     consumer_number: "1145678054321",
     kseb_section: "Kowdiar",
@@ -96,8 +99,65 @@ const TEMPLATE_ROWS: Partial<Record<TemplateColumn, string>>[] = [
     payment_2_method: "Bank transfer",
     payment_2_reference: "IMPS 778120",
   },
-  // A fresh booking: only the required columns.
-  { client_name: "Sreeja Pillai", plant_capacity: "2kW", total_cost: "130000" },
+  // A fresh booking: the required columns and who owns it (an e-mail works as
+  // well as a name).
+  {
+    client_name: "Sreeja Pillai",
+    plant_capacity: "2kW",
+    total_cost: "130000",
+    coordinator: "coord@bsssolar.test",
+  },
+  // Shared by two coordinators ("&", "and", "," and "+" all separate names), a
+  // price written as a sum, and a finished project written as plant_complete.
+  // A shared sale carries no incentive here: each person's is set on the
+  // project page afterwards.
+  {
+    client_name: "Joseph Mathew",
+    plant_capacity: "3kW+inverter",
+    total_cost: "235000+23500",
+    order_date: "2026-02-10",
+    coordinator: "Rahul Menon & Priya Suresh",
+    consumer_number: "1167890123456",
+    current_stage: "plant_complete",
+    commissioned_on: "2026-03-14",
+    payment_1_amount: "140000",
+    payment_1_date: "2026-02-10",
+    payment_1_method: "bank_transfer",
+    payment_2_amount: "118500",
+    payment_2_date: "2026-03-14",
+    payment_2_method: "bank_transfer",
+  },
+  // Not a kW plant: a custom plan says what was sold, has no KSEB stages and
+  // is finished with "completed" (handed over on commissioned_on).
+  {
+    client_name: "Rakesh Varma",
+    plan_type: "custom",
+    plant_capacity: "Inverter + panel",
+    total_cost: "23500",
+    order_date: "2026-04-20",
+    coordinator: "Priya Suresh",
+    current_stage: "completed",
+    commissioned_on: "2026-04-25",
+    payment_1_amount: "23500",
+    payment_1_date: "2026-04-20",
+    payment_1_method: "upi",
+  },
+  // Refunded: stays on the books with its payments; the remarks keep the story.
+  // A cancelled row needs its order_date, and may leave the capacity and the
+  // price blank when they were never written down.
+  {
+    client_name: "Suma Devi",
+    plant_capacity: "3kW",
+    total_cost: "235000",
+    order_date: "2026-01-13",
+    coordinator: "Rahul Menon",
+    cancellation: "refunded",
+    cancelled_on: "2026-02-20",
+    cancellation_remarks: "Booking amount of ₹10,000 refunded by bank transfer on 20 Feb",
+    payment_1_amount: "10000",
+    payment_1_date: "2026-01-13",
+    payment_1_method: "bank_transfer",
+  },
 ];
 
 /** A ready-to-edit sample the admin can download. */
