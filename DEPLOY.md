@@ -119,6 +119,21 @@ copy (step 10) never duplicates a payment. So on a DB that was provisioned from
 20. `20261022120300_import_projects_v3.sql` — the importer for resolved coordinators, plans
     and cancelled / refunded rows. Same signature as before; the previous build's rows
     (`coordinator_email`) still import.
+21. `20261104120000_ledger_adjustment_purposes.sql` — adds the payment purposes `refund` and
+    `write_off` (an enum change, so it is a file of its own).
+22. `20261104120100_ledger_adjustments_incentive_instalments.sql` — **ledger adjustments**:
+    `payments.paid_by_office` (a KSEB fee BSS paid for the customer), refunds (money out) and
+    write-offs (a required reason); the advance's method / date / reference on
+    `work_orders` (locked with the advance after approval); **incentive instalments**
+    (`coordinator_incentive_payments` — `coordinator_incentives.amount` is now the *agreed*
+    total, `paid_on` is derived from the instalments); the two list views, `dashboard_metrics`
+    and `incentive_summary` follow (every old column keeps its name, type and position).
+    It backfills one settling instalment for every incentive already marked paid, and holds a
+    short lock on `payments`, `work_orders` and `coordinator_incentives` (10-second limit).
+23. `20261104120200_import_projects_v4.sql` — the importer for day-first dates, advance
+    details, dated refund / write-off / paid-by-office lines and per-coordinator incentive
+    instalments. Same signature; the previous build's rows (and the v3 incentive shape) still
+    import.
 
 Steps 17–20 are **expand-only**: the currently-deployed build keeps working against them
 (see *Behaviour changes* below). A later release removes what they deprecate — the
@@ -162,6 +177,13 @@ build runs against it:
   plan's details (it shows the label in place of a capacity). Its import row for a
   commissioned project with no `commissioned_on` now leaves the date unknown instead of
   stamping the import time.
+- Migrations 21–23 are expand-only too. Until the new build is live the old one: does
+  not know the new payment purposes (a refund or write-off recorded in the gap would not be
+  shown for what it is), records an incentive as an amount with a paid date — a
+  trigger turns "marked paid" into one settling instalment, so nothing entered in the gap is
+  lost, and refuses any other direct change of a settled paid date — and cannot edit the
+  advance's method, date or reference. Do not record refunds or write-offs, or edit incentive
+  instalments, until the new build is live.
 - **Rolling back** the build after it has gone live keeps every sale, payment and
   incentive row, but it is not entirely hands-off: the old build sees the first coordinator
   as the owner, a shared sale stays visible to its partners, and cancelled projects show no
@@ -179,7 +201,8 @@ build runs against it:
   to everyone else on the sale and puts the sale on their list. The database refuses a
   coordinator adding an admin or the Super Admin. The office can take a partner off again
   (**Change** next to the coordinators on the work order's page); the database refuses
-  only while an incentive is set for them, so clear that first.
+  only while an incentive is set for them, so clear that first (on the project page: remove
+  its payments, then save the agreed amount empty).
 
 Keep the gap short by merging `master → production` once CI is green.
 
@@ -407,7 +430,7 @@ There are two scripts. Pick by what you want to keep:
 
 | Script | Deletes | Keeps |
 | ------ | ------- | ----- |
-| [`wipe-business-data.sql`](supabase/scripts/wipe-business-data.sql) | every work order, project, milestone, payment, service ticket, who shares each sale, every coordinator's incentive, every notification | **every account** (sign-ins, names, roles) and every push subscription |
+| [`wipe-business-data.sql`](supabase/scripts/wipe-business-data.sql) | every work order, project, milestone, payment, service ticket, who shares each sale, every coordinator's incentive and its instalments, every notification | **every account** (sign-ins, names, roles) and every push subscription |
 | [`reset-business-data.sql`](supabase/scripts/reset-business-data.sql) | the same, **plus every account not in its keep-list** | the accounts you list |
 
 Each has a read-only **preview** next to it. Both are one atomic block: they abort without
@@ -433,14 +456,12 @@ everything back if their final check fails.
    `Ravi + Abhijith`, `Ravi & Abhijith`, `Ravi, Abhijith` (up to five; the first is the
    coordinator who logged it). A spelling that is close but not exact — `Abhijit` for
    *Abhijith* — is **never** guessed: it fails with a "did you mean". An account created
-   without a name has its e-mail as its name, and the importer flags it. The Team page
-   cannot rename an account, so either create the account through **Team → Add Member**
-   (which asks for a name) or set the name in the SQL Editor, using the account's id from
-   **Authentication → Users**:
-
-   ```sql
-   update profiles set full_name = '…' where id = '…';
-   ```
+   without a name has its e-mail as its name, and the importer flags it. A misspelt name,
+   or a placeholder e-mail (`ravi@bsssolar.invalid`), is fixed on the **Team** page with
+   **Edit** (an admin edits the name and phone of anyone but the Super Admin, and the e-mail and
+   password of coordinators, engineers and themself; only the Super Admin changes another
+   admin's or the Super Admin's e-mail or password). Names must be unique. Editing an e-mail or
+   password does not sign the person out of a session they already have.
 
    Service engineers cannot own a sale.
 4. **Check file.** Onboarding → paste or upload the CSV → **Check file**. This validates
@@ -493,9 +514,28 @@ If trial accounts must go too, use the reset instead of the wipe:
 - **Amounts** may be sums: `235000+23500`.
 - **Dates are never invented.** A commissioned row with no `commissioned_on` is imported
   with its date *not recorded* (a commissioned row that has a feasibility date must give it).
-- **Incentives** (`coordinator_incentive`, `incentive_paid_on`) are accepted only on a row
-  whose single coordinator is named in the cell; on a shared sale set each person's
-  incentive on the project page afterwards.
+- **Incentives.** For a row with one coordinator, `coordinator_incentive` (an amount, or a
+  sum — `12000+5000` is two instalments) with `incentive_paid_on` (one date, or one date per
+  amount) is enough; an amount with no date is agreed but unpaid. A **shared sale** takes
+  explicit groups instead — `incentive_1_coordinator`, `incentive_1_amount`,
+  `incentive_1_date`, then `incentive_2_*`… — one group per instalment, a group with a date
+  being paid and one without the still-unpaid part of that coordinator's agreed incentive.
+  The importer never splits one amount between coordinators by guess.
+- **Dates are read day-first**: `4/2/25` and `04-02-25` are 4 February 2025; ISO
+  (`2025-02-04`) still works. A date that cannot be read fails its row rather than being
+  guessed. If the sheet came out of Excel with a US locale, check a few dates first — a
+  typed `dd/mm` can be stored as a month/day-swapped value; **Check file** shows how the file
+  was read and warns when the order dates spread across several months.
+- **Advance details**: `advance_method`, `advance_date`, `advance_reference` go with
+  `advance_amount`.
+- **Ledger lines** (`payment_N_*`). `payment_N_purpose` is `contract` (default), `kseb_fees`,
+  `refund` or `write_off`; `payment_N_paid_by_office` (yes / no) marks a KSEB fee BSS paid
+  for the customer — a separate line that never counts towards the contract. A refund cannot
+  exceed what was received before it; a write-off cannot exceed the balance and needs its
+  reason in `payment_N_reference`.
+- **Capacity** may be a sum with units: `3kW+2kW` is 5 kW.
+- **The template's example rows** are refused ("this is one of the template's example rows —
+  delete it"): remove them before uploading.
 
 ---
 
