@@ -8,11 +8,13 @@ import {
   IMPORT_COLUMN_GROUPS,
   IMPORT_ERROR_COLUMN,
   IMPORT_HEADER_ALIASES,
+  INCENTIVE_FIELDS,
   MAX_IMPORT_ROWS,
   NOT_RECORDED_LABEL,
   PAYMENT_FIELDS,
   REQUIRED_IMPORT_HEADERS,
   type ImportHeader,
+  type IncentiveField,
   type PaymentField,
 } from "@/lib/domain/import";
 import {
@@ -25,6 +27,7 @@ import {
   STAGE_VOCABULARY,
 } from "@/lib/domain/import-cells";
 import { KSEB_FEES } from "@/lib/domain/kseb";
+import { PAYMENT_LIMITS } from "@/lib/domain/payment-limits";
 import { PLAN_LABEL_MAX } from "@/lib/domain/plan";
 import { ROLE_LABELS, WORK_ORDER_OWNER_ROLES } from "@/lib/domain/role";
 import { formatCurrency } from "@/lib/format";
@@ -45,12 +48,17 @@ function aliasesOf(column: ImportHeader): string {
 /** What each column holds. Typed by the header list, so none can go undocumented. */
 const COLUMN_HINTS: Record<ImportHeader, string> = {
   client_name: "Customer's name.",
-  plant_capacity: `For a solar plant: a number with its unit — 3kW, 5 kWp or 3000W. KSEB fees are priced from it. For plan_type custom: what was sold, up to ${PLAN_LABEL_MAX} characters (1 panel, Inverter + panel). A cancelled or refunded row may leave it blank — it is stored as "${NOT_RECORDED_LABEL}".`,
+  plant_capacity: `For a solar plant: a number with its unit — 3kW, 5 kWp or 3000W. Capacities written as a sum, every term with its unit (3kW+2kW), are stored as their total (5kW) and the results say so; 3kW+inverter is read as 3kW. KSEB fees are priced from it. For plan_type custom: what was sold, up to ${PLAN_LABEL_MAX} characters (1 panel, Inverter + panel). A cancelled or refunded row may leave it blank — it is stored as "${NOT_RECORDED_LABEL}".`,
   total_cost:
     "Contract value in rupees. A sum is fine: 235000+23500. A cancelled or refunded row may leave it blank — it is stored as 0, unless advance_amount is filled: then give the total, or clear the advance.",
   client_phone: "Customer's phone.",
   address: "Site address.",
   advance_amount: "Booking advance in rupees (a sum is fine). Blank is 0.",
+  advance_method:
+    "How the advance was paid, by key or label (below). Blank is not recorded. Needs advance_amount.",
+  advance_date:
+    "Date the advance was received. Blank is not recorded — it is never assumed to be order_date. Needs advance_amount.",
+  advance_reference: `Cheque number, UTR or UPI reference of the advance, up to ${PAYMENT_LIMITS.advanceReferenceLength} characters. Needs advance_amount.`,
   order_date:
     "Date the order was booked. Blank is today — the row still imports, but it is flagged. Required for a cancelled or refunded row.",
   coordinator: `Who owns the sale: a full name, a first name that only one coordinator or office account has, or a login e-mail. Several people share it when joined by +, &, "and", a comma, ; or / — Ravi + Abhijith (up to ${MAX_SALE_COORDINATORS}; the first is the first coordinator). Text in brackets is a remark and is kept in the notes. A name that is only close (Abhijit for Abhijith) is refused with a suggestion, never assumed. Blank uses the default coordinator, or fails when none is chosen. Also accepted as the column name: ${aliasesOf("coordinator")}.`,
@@ -74,8 +82,17 @@ const COLUMN_HINTS: Record<ImportHeader, string> = {
   cancellation_remarks: `Up to ${CANCELLATION_REMARKS_MAX.toLocaleString("en-IN")} characters: the refund amount and mode, the reason. Needs cancellation.`,
   feasibility_date: `Date KSEB issued feasibility. It is valid for ${FEASIBILITY_DAYS} days; every further ${FEASIBILITY_DAYS}-day period until commissioning costs BSS ${RENEWAL_FEE}. Not for a custom plan.`,
   coordinator_incentive:
-    "Incentive for the coordinator on this project, in rupees. Only on a row that names one coordinator itself: a shared sale's incentives are set on the project page afterwards, and a row that took the default coordinator cannot carry one.",
-  incentive_paid_on: "Date the incentive was paid. Needs coordinator_incentive.",
+    "Shorthand for ONE coordinator's incentive, in rupees. A sum is several instalments — 12000+5000 — and then incentive_paid_on takes one date for each, joined by +. An amount with no date is an incentive not yet paid. Only on a row that names one coordinator itself: a row that took the default coordinator cannot carry one, and a shared sale uses the incentive_N_* columns below.",
+  incentive_paid_on:
+    "When the incentive was paid: one date for one amount, or exactly one date per amount joined by + (2025-05-15+2025-05-16). One date for several amounts is refused. Needs coordinator_incentive.",
+};
+
+const INCENTIVE_HINTS: Record<IncentiveField, string> = {
+  coordinator:
+    "Whose incentive this is: the same names and e-mails as the coordinator column, and one of the sale's own coordinators. Required on a shared sale; blank means the sale's only coordinator.",
+  amount:
+    "Rupees, more than zero — one part of the agreed incentive. Required once any cell of the group is filled.",
+  date: "When this part was paid. A group with a date is a payment already made; a group without one is a part of the agreed incentive still to pay. Not in the future.",
 };
 
 const PAYMENT_HINTS: Record<PaymentField, string> = {
@@ -83,8 +100,11 @@ const PAYMENT_HINTS: Record<PaymentField, string> = {
   date: "Date received. Required once any cell of the group is filled.",
   method: "How it was paid. Blank is other.",
   purpose:
-    "contract counts towards the contract; kseb_fees records KSEB charges collected and does not. Blank is contract.",
-  reference: "Cheque number, UTR or UPI reference.",
+    "contract counts towards the contract. kseb_fees is a KSEB charge, kept apart from it. refund is money returned to the customer — never more than was collected up to then. write_off gives up a balance — never more than was due, and it needs its reason. Blank is contract.",
+  reference:
+    "Cheque number, UTR or UPI reference. For a write_off this is the reason, and it is required (the row's notes are used when it is blank).",
+  paid_by_office:
+    "yes when the BSS office paid KSEB on the customer's behalf; blank or no when the customer paid. Only for kseb_fees. Neither counts towards the contract.",
 };
 
 const REQUIRED = new Set<string>(REQUIRED_IMPORT_HEADERS);
@@ -132,14 +152,35 @@ export default async function OnboardingPage() {
             </ColumnGroup>
           ))}
           <ColumnGroup
+            title="Incentives — per coordinator"
+            intro={
+              <>
+                One group of columns per instalment of a coordinator&rsquo;s incentive:{" "}
+                <Code>incentive_1_coordinator</Code>, <Code>incentive_1_amount</Code>,{" "}
+                <Code>incentive_1_date</Code>, then <Code>incentive_2_…</Code> and so on. A
+                coordinator&rsquo;s agreed incentive is the sum of all their groups; the groups
+                with a date are paid, the rest are still to pay. Use these on a shared sale,
+                or instead of the coordinator_incentive shorthand — never both in one row.
+              </>
+            }
+          >
+            {INCENTIVE_FIELDS.map((field) => (
+              <ColumnDoc
+                key={field}
+                name={`incentive_N_${field}`}
+                hint={INCENTIVE_HINTS[field]}
+              />
+            ))}
+          </ColumnGroup>
+          <ColumnGroup
             title="Payments"
             intro={
               <>
-                One group of columns per payment after the advance:{" "}
+                One group of columns per ledger entry after the advance:{" "}
                 <Code>payment_1_amount</Code>, <Code>payment_1_date</Code>, …, then{" "}
                 <Code>payment_2_…</Code> and so on. Add as many groups as needed — a
-                customer may pay in 3 stages or 8. Rows with fewer payments leave the
-                extra groups blank.
+                customer may pay in 3 stages or 8, and a refund or a write-off is a group
+                too. Rows with fewer entries leave the extra groups blank.
               </>
             }
           >
@@ -167,6 +208,27 @@ export default async function OnboardingPage() {
               column="payment_N_method"
               spellings={PAYMENT_METHOD_VOCABULARY.spellings}
             />
+            <AcceptedValues
+              column="advance_method"
+              spellings={PAYMENT_METHOD_VOCABULARY.spellings}
+            />
+            <div className="space-y-1">
+              <dt className="font-mono text-xs font-medium">payment_N_paid_by_office</dt>
+              <dd className="text-muted-foreground">
+                yes / true / y / 1, or no / false / n / 0. Blank is no. Only for a{" "}
+                <Code>kseb_fees</Code> payment.
+              </dd>
+            </div>
+            <div className="space-y-1">
+              <dt className="font-mono text-xs font-medium">dates</dt>
+              <dd className="text-muted-foreground">
+                Always day first, never month first: <Code>13/02/2025</Code>,{" "}
+                <Code>13-02-2025</Code>, <Code>13.02.2025</Code>, <Code>13/02/25</Code> (a
+                two-digit year of 00–69 is 20xx, 70–99 is 19xx) or <Code>2025-02-13</Code>.
+                So <Code>04/02/2025</Code> and <Code>04-02-25</Code> are 4 February. None may
+                be in the future.
+              </dd>
+            </div>
             <div className="space-y-1">
               <dt className="font-mono text-xs font-medium">is_completed</dt>
               <dd className="text-muted-foreground">
@@ -254,9 +316,16 @@ function HowItWorks() {
         row goes in completely or not at all.
       </li>
       <li>
-        Dates are YYYY-MM-DD and none may be in the future. Amounts are in rupees; the
-        advance plus contract payments may not exceed total_cost. The import never
-        invents a date: an unknown commissioning date stays unknown.
+        Dates are written day first (13/02/2025) or as YYYY-MM-DD, never month first,
+        and none may be in the future; Check file says when it read dates day first and
+        warns when a monthly sheet has order dates in more than one month. Amounts are in
+        rupees; the advance plus contract payments, less refunds and plus write-offs, may
+        not exceed total_cost — a refund or a write-off is how an overpayment is put
+        right. The import never invents a date: an unknown commissioning date stays unknown.
+      </li>
+      <li>
+        The rows of the downloadable template are examples: left in a file they are
+        refused (&ldquo;this is one of the template&rsquo;s example rows — delete it&rdquo;).
       </li>
       <li>
         Up to {MAX_IMPORT_ROWS.toLocaleString("en-IN")} rows per file. Download the

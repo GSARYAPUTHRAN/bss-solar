@@ -156,7 +156,7 @@ export default async function DashboardPage() {
           value={formatCurrency(metrics.incentivePending)}
           icon={HandCoins}
           accent={ACCENT.indigo}
-          hint="Coordinator incentives not yet paid"
+          hint="Agreed incentives less the instalments paid"
           href="/projects?view=list&incentive=pending"
         />
       </KpiGroup>

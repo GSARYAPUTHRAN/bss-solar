@@ -126,6 +126,7 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
     projectId: "pr-1",
     clientName: "Anil Kumar",
     amount: 50000,
+    purpose: "contract",
     balanceDue: 25000,
     cancellation: null,
   },
@@ -137,6 +138,15 @@ const EVENTS: { [K in NotificationType]: EventOf<K> } = {
     clientName: "Anil Kumar",
     amount: 5000,
     paidOn: null,
+  },
+  "incentive.paid": {
+    type: "incentive.paid",
+    actorId: "admin-1",
+    coordinatorId: "coord-1",
+    projectId: "pr-1",
+    clientName: "Anil Kumar",
+    amount: 2360,
+    pending: 2640,
   },
   "ticket.assigned": {
     type: "ticket.assigned",
@@ -214,6 +224,14 @@ const VARIANTS: NotificationEvent[] = [
   { ...EVENTS["payment.recorded"], balanceDue: -100 },
   { ...EVENTS["payment.recorded"], balanceDue: 0, cancellation: "cancelled" },
   { ...EVENTS["payment.recorded"], balanceDue: 0, cancellation: "refunded" },
+  { ...EVENTS["payment.recorded"], purpose: "kseb_fees" },
+  { ...EVENTS["payment.recorded"], purpose: "kseb_fees", paidByOffice: true },
+  { ...EVENTS["payment.recorded"], purpose: "refund" },
+  { ...EVENTS["payment.recorded"], purpose: "refund", balanceDue: 0 },
+  { ...EVENTS["payment.recorded"], purpose: "refund", balanceDue: 0, cancellation: "refunded" },
+  { ...EVENTS["payment.recorded"], purpose: "write_off", balanceDue: 0 },
+  { ...EVENTS["payment.recorded"], purpose: "write_off", balanceDue: 1200 },
+  { ...EVENTS["incentive.paid"], pending: 0 },
   { ...EVENTS["incentive.updated"], amount: null },
   { ...EVENTS["incentive.updated"], paidOn: "2026-10-01" },
   { ...EVENTS["incentive.updated"], amount: 0 },
@@ -254,6 +272,16 @@ describe("NOTIFICATION_TYPES", () => {
       "work_order.coordinator_removed",
       "work_order.updated",
     ]);
+  });
+
+  it("catalogues the incentive instalment as a pushed payment-category event", () => {
+    expect(NOTIFICATION_TYPES["incentive.paid"]).toEqual({
+      label: "Incentive instalment paid",
+      push: true,
+      category: "payment",
+    });
+    expect(categoryOf("incentive.paid")).toBe("payment");
+    expect(categoryOf("payment.recorded")).toBe("payment");
   });
 
   it("catalogues the sale-team and cancellation events", () => {
@@ -312,6 +340,7 @@ describe("audienceFor", () => {
     ["project.reinstated", { office: true, users: ["coord-1"] }],
     ["payment.recorded", { office: false, users: ["coord-1"] }],
     ["incentive.updated", { office: false, users: ["coord-1"] }],
+    ["incentive.paid", { office: false, users: ["coord-1"] }],
     ["ticket.assigned", { office: false, users: ["eng-1"] }],
     ["ticket.unassigned", { office: false, users: ["eng-1"] }],
     ["ticket.status_changed", { office: true, users: [] }],
@@ -390,9 +419,18 @@ describe("audienceFor", () => {
     });
 
     it("keeps an incentive with its one person", () => {
-      const incentive = EVENTS["incentive.updated"];
-      expect(audienceFor(incentive)).toEqual({ office: false, users: ["coord-1"] });
-      expect("coordinatorIds" in incentive).toBe(false);
+      for (const incentive of [EVENTS["incentive.updated"], EVENTS["incentive.paid"]]) {
+        expect(audienceFor(incentive)).toEqual({ office: false, users: ["coord-1"] });
+        expect("coordinatorIds" in incentive).toBe(false);
+      }
+    });
+
+    it("tells the person an instalment was paid to, never their partner, and not the office that paid it", () => {
+      const paid = { ...EVENTS["incentive.paid"], coordinatorId: "coord-2" };
+      expect(heard(paid, "admin-1")).toEqual(["coord-2"]);
+      expect(heard(paid, null)).toEqual(["coord-2"]);
+      // The person is never told of their own action.
+      expect(heard(paid, "coord-2")).toEqual([]);
     });
 
     it("sends added and removed people their own events only", () => {
@@ -682,6 +720,76 @@ describe("describe — content per type", () => {
     expect(describeEvent({ ...EVENTS["payment.recorded"], projectId: null }).link).toBe(
       "/work-orders/wo-1",
     );
+  });
+
+  it("payment.recorded says contract money was received, as it always did", () => {
+    expect(describeEvent(EVENTS["payment.recorded"])).toEqual({
+      title: `Payment received: ${formatCurrency(50000)}`,
+      body: `Anil Kumar — ${formatCurrency(25000)} still due`,
+      link: "/projects/pr-1",
+      dedupeKey: null,
+    });
+  });
+
+  it("payment.recorded tells a KSEB fee the customer paid from one the office paid, and neither touches the contract", () => {
+    const fee = { ...EVENTS["payment.recorded"], amount: 4540, purpose: "kseb_fees" } as const;
+    expect(describeEvent(fee)).toMatchObject({
+      title: `KSEB fee received: ${formatCurrency(4540)}`,
+      body: "Anil Kumar — collected for KSEB, not part of the contract",
+    });
+    expect(describeEvent({ ...fee, paidByOffice: false }).title).toBe(
+      `KSEB fee received: ${formatCurrency(4540)}`,
+    );
+    expect(describeEvent({ ...fee, paidByOffice: true })).toMatchObject({
+      title: `KSEB fee paid by the office: ${formatCurrency(4540)}`,
+      body: "Anil Kumar — paid to KSEB on the customer's behalf",
+    });
+    // Whatever the contract balance or the project's state, a fee says nothing about them.
+    for (const over of [{ balanceDue: 0 }, { cancellation: "cancelled" as const }]) {
+      expect(describeEvent({ ...fee, ...over }).body).toBe(
+        "Anil Kumar — collected for KSEB, not part of the contract",
+      );
+    }
+  });
+
+  it("payment.recorded names a refund, and what is due after it", () => {
+    const refund = { ...EVENTS["payment.recorded"], amount: 10000, purpose: "refund" } as const;
+    expect(describeEvent(refund)).toMatchObject({
+      title: `Refund recorded: ${formatCurrency(10000)}`,
+      body: `Anil Kumar — ${formatCurrency(25000)} still due`,
+      link: "/projects/pr-1",
+    });
+    expect(describeEvent({ ...refund, balanceDue: 0 }).body).toBe("Anil Kumar — paid in full");
+    expect(describeEvent({ ...refund, balanceDue: 0, cancellation: "refunded" }).body).toBe(
+      "Anil Kumar — project refunded",
+    );
+  });
+
+  it("payment.recorded names a write-off, and says the sale is settled rather than paid in full", () => {
+    const writeOff = { ...EVENTS["payment.recorded"], amount: 800, purpose: "write_off" } as const;
+    expect(describeEvent({ ...writeOff, balanceDue: 0 })).toMatchObject({
+      title: `Balance written off: ${formatCurrency(800)}`,
+      body: "Anil Kumar — settled",
+    });
+    expect(describeEvent({ ...writeOff, balanceDue: 1200 }).body).toBe(
+      `Anil Kumar — ${formatCurrency(1200)} still due`,
+    );
+    expect(describeEvent({ ...writeOff, balanceDue: 0, cancellation: "cancelled" }).body).toBe(
+      "Anil Kumar — project cancelled",
+    );
+  });
+
+  it("incentive.paid says what was paid and what is still to pay, or that it is fully paid", () => {
+    expect(describeEvent(EVENTS["incentive.paid"])).toEqual({
+      title: `${formatCurrency(2360)} incentive instalment paid`,
+      body: `Anil Kumar · ${formatCurrency(2640)} still to pay`,
+      link: "/projects/pr-1",
+      dedupeKey: null,
+    });
+    expect(describeEvent({ ...EVENTS["incentive.paid"], pending: 0 })).toMatchObject({
+      title: `${formatCurrency(2360)} incentive instalment paid`,
+      body: "Anil Kumar · fully paid",
+    });
   });
 
   it("incentive.updated distinguishes set, paid and removed", () => {

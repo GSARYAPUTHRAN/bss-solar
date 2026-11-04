@@ -305,3 +305,136 @@ describe("importProjects — the team's accounts", () => {
     expect(repo.run).not.toHaveBeenCalled();
   });
 });
+
+describe("importProjects — the row the database is sent (import_projects v4)", () => {
+  const COLUMNS = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "advance_amount",
+    "advance_method",
+    "advance_date",
+    "order_date",
+    "coordinator",
+    "incentive_1_coordinator",
+    "incentive_1_amount",
+    "incentive_1_date",
+    "incentive_2_coordinator",
+    "incentive_2_amount",
+    "incentive_2_date",
+    "payment_1_amount",
+    "payment_1_date",
+    "payment_1_purpose",
+    "payment_1_reference",
+    "payment_1_paid_by_office",
+    "payment_2_amount",
+    "payment_2_date",
+    "payment_2_purpose",
+    "payment_2_reference",
+  ];
+  const SHEET = [
+    COLUMNS.join(","),
+    [
+      "Mohan Das",
+      "3kW+2kW",
+      "250000",
+      "50000",
+      "UPI",
+      "04-02-25",
+      "04/02/2025",
+      "Rahul & Priya",
+      "Rahul",
+      "20000",
+      "15/05/2025",
+      "Priya",
+      "15000",
+      "",
+      "4540",
+      "20/03/2025",
+      "kseb_fees",
+      "KSEB fee",
+      "yes",
+      "800",
+      "21/03/2025",
+      "write_off",
+      "Short by 800",
+    ].join(","),
+  ].join("\n");
+
+  it("sends the advance, the incentives with their instalments and the ledger lines as the RPC reads them", async () => {
+    const state = await post({ csv: SHEET, intent: "import" });
+    expect(state.counts.imported).toBe(1);
+
+    const [row] = repo.run.mock.calls[0][0];
+    expect(row).toMatchObject({
+      row_no: 2,
+      plant_capacity: "5kW",
+      advance_amount: 50000,
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      advance_reference: null,
+      order_date: "2025-02-04",
+    });
+    expect(row.incentives).toEqual([
+      {
+        coordinator_id: RAHUL.id,
+        amount: 20000,
+        payments: [{ amount: 20000, paid_on: "2025-05-15", note: null }],
+      },
+      { coordinator_id: PRIYA.id, amount: 15000, payments: [] },
+    ]);
+    expect(row.payments).toEqual([
+      {
+        amount: 4540,
+        paid_on: "2025-03-20",
+        method: "other",
+        purpose: "kseb_fees",
+        paid_by_office: true,
+        reference: "KSEB fee",
+        notes: null,
+      },
+      {
+        amount: 800,
+        paid_on: "2025-03-21",
+        method: "other",
+        purpose: "write_off",
+        paid_by_office: false,
+        reference: null,
+        notes: "Short by 800",
+      },
+    ]);
+  });
+
+  it("sends nothing the RPC would read as the previous build's shape", async () => {
+    await post({ csv: SHEET, intent: "import" });
+    const [row] = repo.run.mock.calls[0][0];
+    // A v3 incentive was {coordinator_id, amount, paid_on}: a paid_on beside payments would be counted twice.
+    for (const incentive of row.incentives) expect(incentive).not.toHaveProperty("paid_on");
+    expect(row).not.toHaveProperty("coordinator_incentive");
+    expect(row).not.toHaveProperty("incentive_paid_on");
+  });
+
+  it("tells the office how the dates were read, in a check and in an import", async () => {
+    for (const intent of ["check", "import"]) {
+      const state = await post({ csv: SHEET, intent });
+      expect(state.notes).toEqual([
+        expect.stringMatching(/^\d+ date cells were written day first \(in 1 row\) and read that way/),
+      ]);
+    }
+  });
+
+  it("never sends a template example, and says to delete it", async () => {
+    const csv = [
+      "client_name,plant_capacity,total_cost,order_date,coordinator,consumer_number",
+      "Anand Kumar,3kW,195000,2026-06-15,Rahul,1156789012345",
+      "Real Customer,3kW,195000,2025-01-10,Rahul,",
+    ].join("\n");
+    const state = await post({ csv, intent: "import" });
+    expect(repo.run.mock.calls[0][0].map((r) => r.client_name)).toEqual(["Real Customer"]);
+    expect(state.results[0]).toMatchObject({
+      status: "failed",
+      message: "this is one of the template's example rows — delete it",
+    });
+    expect(state.retryCsv).toContain("Anand Kumar");
+  });
+});

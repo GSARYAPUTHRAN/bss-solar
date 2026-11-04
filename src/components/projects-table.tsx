@@ -18,6 +18,7 @@ import { IncentiveTotal, SaleIncentiveLine } from "@/components/projects/incenti
 import { PROJECT_STAGES } from "@/lib/constants";
 import { formatDate } from "@/lib/format";
 import { FINANCING, statusOptions } from "@/lib/domain/status";
+import { amount } from "@/lib/domain/payment";
 import { PLAN_TYPE, PLAN_TYPES, completionLabel } from "@/lib/domain/plan";
 import { teamNote } from "@/lib/domain/work-order-list";
 import {
@@ -97,6 +98,7 @@ function MobileSummary({
       </div>
       <SaleIncentiveLine
         total={p.incentive_total}
+        paid={amount(p.incentive_paid)}
         count={p.incentive_count}
         unpaidCount={p.incentive_unpaid_count}
         label={showAll ? "Incentive" : "Your incentive"}
@@ -211,6 +213,7 @@ export function ProjectsTable({
       cell: (p) => (
         <IncentiveTotal
           total={p.incentive_total}
+          paid={amount(p.incentive_paid)}
           count={p.incentive_count}
           unpaidCount={p.incentive_unpaid_count}
         />

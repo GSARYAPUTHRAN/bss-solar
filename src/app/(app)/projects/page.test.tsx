@@ -82,7 +82,11 @@ describe("ProjectsPage — board", () => {
       }),
     );
     expect(incentiveSummary).toHaveBeenCalledWith(null);
-    expect(screen.getByRole("region", { name: /coordinator incentives/i })).toBeInTheDocument();
+    const tiles = screen.getByRole("region", { name: /coordinator incentives/i });
+    // What was agreed, what instalments have paid of it, what is left.
+    expect(tiles).toHaveTextContent(/incentives agreeds*₹20,000/i);
+    expect(tiles).toHaveTextContent(/incentives paids*₹5,000/i);
+    expect(tiles).toHaveTextContent(/incentives pendings*₹15,000/i);
   });
 
   it("tells a coordinator who they are, loads no coordinator options and sums only their own", async () => {
@@ -136,7 +140,8 @@ describe("ProjectsPage — list", () => {
     await renderPage({ view: "list", coordinator: PRIYA });
 
     expect(incentiveSummary).toHaveBeenCalledWith(PRIYA);
-    expect(screen.getByText(/Priya Suresh · 2 projects awaiting payment/)).toBeInTheDocument();
+    expect(screen.getByText("Priya Suresh · 3 projects")).toBeInTheDocument();
+    expect(screen.getByText("2 projects awaiting payment")).toBeInTheDocument();
   });
 
   it("passes the viewer and the page to the table", async () => {

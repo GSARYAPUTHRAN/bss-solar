@@ -16,7 +16,9 @@ async function signInAsOffice(page: Page, email: string, password: string) {
 test("a plain admin gets no delete affordances", async ({ page }) => {
   await signInAsOffice(page, ADMIN.email, ADMIN.password);
 
-  await page.goto("/team");
+  // Every member on one page: other specs add members, so the demo accounts must
+  // not depend on where they fall in the list.
+  await page.goto("/team?size=100");
   await expect(page.getByRole("heading", { name: /team management/i })).toBeVisible();
   await expect(page.getByRole("button", { name: /^delete /i })).toHaveCount(0);
 

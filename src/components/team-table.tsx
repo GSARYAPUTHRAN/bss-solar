@@ -6,10 +6,12 @@ import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { RoleEditor } from "@/components/role-editor";
 import { ConfirmSubmit } from "@/components/confirm-submit";
+import { TeamMemberDialog } from "@/components/team-member-dialog";
 import { deleteTeamMember } from "@/app/(app)/team/actions";
 import { ROLE_LABELS } from "@/lib/domain/role";
+import { hasPlaceholderEmail, type TeamMember } from "@/lib/domain/team";
 import { formatDate } from "@/lib/format";
-import type { Profile } from "@/lib/types";
+import type { UserRole } from "@/lib/types";
 
 function initials(name: string) {
   return name
@@ -22,17 +24,18 @@ function initials(name: string) {
 
 export function TeamTable({
   profiles,
-  meId,
+  viewer,
   canDelete = false,
   server,
 }: {
-  profiles: Profile[];
-  meId: string;
+  profiles: TeamMember[];
+  /** Who is looking: sets who they may edit (server re-checks) and marks their own row. */
+  viewer: { id: string; role: UserRole };
   /** Show the delete action — SuperAdmin only (server re-checks). */
   canDelete?: boolean;
   server?: { total: number; page: number; pageSize: number };
 }) {
-  const columns: ColumnDef<Profile>[] = [
+  const columns: ColumnDef<TeamMember>[] = [
     {
       id: "member",
       header: "Member",
@@ -48,10 +51,18 @@ export function TeamTable({
           </Avatar>
           <span className="font-medium">
             {p.full_name}
-            {p.id === meId && (
+            {p.id === viewer.id && (
               <span className="ml-2 text-xs text-muted-foreground">(you)</span>
             )}
+            {hasPlaceholderEmail(p.email) && (
+              <span className="block text-xs font-normal text-muted-foreground">
+                No sign-in yet
+              </span>
+            )}
           </span>
+          {/* Beside the name, not at the row's end: on a phone the table scrolls
+              sideways and this stays in view. */}
+          <TeamMemberDialog member={p} viewer={viewer} />
         </div>
       ),
     },
@@ -68,7 +79,7 @@ export function TeamTable({
       id: "role",
       header: "Role",
       cell: (p) => (
-        <RoleEditor userId={p.id} role={p.role} disabled={p.id === meId} />
+        <RoleEditor userId={p.id} role={p.role} disabled={p.id === viewer.id} />
       ),
     },
     {
@@ -78,7 +89,7 @@ export function TeamTable({
       hidden: !canDelete,
       // Never offer to delete yourself, nor the Super Admin account.
       cell: (p) =>
-        p.id === meId || p.role === "superadmin" ? null : (
+        p.id === viewer.id || p.role === "superadmin" ? null : (
           <ConfirmSubmit
             action={deleteTeamMember}
             fields={{ user_id: p.id }}
@@ -95,7 +106,7 @@ export function TeamTable({
     },
   ];
 
-  const filters: FilterDef<Profile>[] = [
+  const filters: FilterDef<TeamMember>[] = [
     {
       id: "role",
       placeholder: "Role",
@@ -109,7 +120,7 @@ export function TeamTable({
     },
   ];
 
-  const search: SearchDef<Profile> = {
+  const search: SearchDef<TeamMember> = {
     placeholder: "Search name or phone…",
     columns: ["full_name", "phone"],
     predicate: (p, q) =>

@@ -1,5 +1,6 @@
 import { Field, FieldGrid } from "@/components/layout";
 import { PaymentBadge } from "@/components/status-badges";
+import { Badge } from "@/components/ui/badge";
 import { collectedPct, paymentSummary, type PaymentSource } from "@/lib/domain/payment";
 import { formatCurrency } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -7,8 +8,17 @@ import type { ProjectCancellation } from "@/lib/types";
 
 /**
  * Where a contract stands: what was agreed, what has come in (booking advance +
- * ledger instalments) and what is still due. Shared by the project's payments
- * section and the work-order page so both always read the same figures.
+ * ledger instalments), what went back (refunds), what was given up (write-offs)
+ * and what is still due. Shared by the project's payments section and the
+ * work-order page so both always read the same figures.
+ *
+ *   collected    = advance + instalments
+ *   net received = collected − refunded
+ *   balance due  = total − net received − written off
+ *
+ * The refund and write-off lines appear only once there is one, so a plain
+ * contract reads as before. A balance a write-off closed reads "Settled — ₹800
+ * written off": it is settled, but not collected.
  *
  * Once the project is cancelled or refunded the balance is no longer
  * receivable: it is shown as what was not collected (muted, never red) and the
@@ -19,30 +29,43 @@ export function ContractSummary({
   isCompleted,
   cancellation,
   ksebFeesCollected = 0,
+  ksebFeesByOffice = 0,
 }: {
+  /** Include `refunded_total` and `written_off_total` (see `withLedger`) once there are any. */
   source: PaymentSource;
   isCompleted?: boolean | null;
   /** The project's state; null or absent while it is live. */
   cancellation?: ProjectCancellation | null;
-  /** KSEB charges collected through BSS — shown, never added to the contract. */
+  /** KSEB charges the customer paid through BSS — shown, never added to the contract. */
   ksebFeesCollected?: number;
+  /** KSEB charges the BSS office paid on the customer's behalf — shown, never added either. */
+  ksebFeesByOffice?: number;
 }) {
   const summary = paymentSummary(source);
   const pct = collectedPct(source);
   const alarming = Boolean(isCompleted) && !summary.isSettled && !cancellation;
+  const settledByWriteOff = !cancellation && summary.writtenOff > 0 && summary.isSettled;
 
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-sm font-medium">
-            {pct}% collected
+            {settledByWriteOff
+              ? `Settled — ${formatCurrency(summary.writtenOff)} written off`
+              : `${pct}% collected`}
           </p>
-          <PaymentBadge
-            source={source}
-            isCompleted={isCompleted}
-            cancellation={cancellation}
-          />
+          {settledByWriteOff ? (
+            <Badge className="border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300">
+              Settled
+            </Badge>
+          ) : (
+            <PaymentBadge
+              source={source}
+              isCompleted={isCompleted}
+              cancellation={cancellation}
+            />
+          )}
         </div>
         <div
           role="progressbar"
@@ -72,7 +95,25 @@ export function ContractSummary({
         <Field label="Contract total" value={formatCurrency(summary.totalCost)} />
         <Field label="Advance (at booking)" value={formatCurrency(summary.advance)} />
         <Field label="Instalments" value={formatCurrency(summary.ledger)} />
-        <Field label="Total received" value={formatCurrency(summary.received)} />
+        {summary.refunded > 0 ? (
+          <>
+            <Field label="Collected" value={formatCurrency(summary.collected)} />
+            <Field
+              label="Refunded"
+              value={
+                <span className="tabular-nums text-red-700 dark:text-red-300">
+                  −{formatCurrency(summary.refunded)}
+                </span>
+              }
+            />
+            <Field label="Net received" value={formatCurrency(summary.received)} />
+          </>
+        ) : (
+          <Field label="Total received" value={formatCurrency(summary.received)} />
+        )}
+        {summary.writtenOff > 0 && (
+          <Field label="Written off" value={formatCurrency(summary.writtenOff)} />
+        )}
         <Field
           label="Balance due"
           value={
@@ -97,6 +138,12 @@ export function ContractSummary({
           <Field
             label="KSEB fees collected"
             value={formatCurrency(ksebFeesCollected)}
+          />
+        )}
+        {ksebFeesByOffice > 0 && (
+          <Field
+            label="KSEB fees paid by office"
+            value={formatCurrency(ksebFeesByOffice)}
           />
         )}
       </FieldGrid>

@@ -27,11 +27,11 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 /**
  * The incentive row the viewer is entitled to: a coordinator's own ("Your
  * incentive"), or the office's view of the whole sale ("Incentives"). Nobody
- * else's pay is ever passed in.
+ * else's pay is ever passed in. `paid` is Σ instalments.
  */
 export type SummaryIncentive =
-  | { view: "own"; amount: number | null; paidOn: string | null }
-  | { view: "sale"; total: number | null; count: number; unpaidCount: number };
+  | { view: "own"; amount: number | null; paid: number }
+  | { view: "sale"; total: number | null; paid: number; count: number; unpaidCount: number };
 
 /**
  * The project at a glance. The incentive row is rendered only when the caller
@@ -129,8 +129,8 @@ export function ProjectSummaryCard({
         {incentive?.view === "own" && (
           <Row label="Your incentive">
             <IncentiveAmount
-              incentive={incentive.amount}
-              paidOn={incentive.paidOn}
+              amount={incentive.amount}
+              paid={incentive.paid}
               className="justify-end"
             />
           </Row>
@@ -139,6 +139,7 @@ export function ProjectSummaryCard({
           <Row label="Incentives">
             <IncentiveTotal
               total={incentive.total}
+              paid={incentive.paid}
               count={incentive.count}
               unpaidCount={incentive.unpaidCount}
               className="justify-end"

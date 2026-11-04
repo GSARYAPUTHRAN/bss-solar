@@ -6,25 +6,25 @@ import {
   feasibilityDateRefusal,
   hasUndatedCommissioning,
   incentiveChanged,
-  incentiveTotals,
+  INCENTIVE_NOTE_MAX,
+  incentiveWriteMessage,
   MAX_INCENTIVE,
   parseFeasibilitySetting,
+  parseIncentiveInstalment,
   parseIncentiveSetting,
   reinstateClockImpact,
+  saleIncentives,
   UNDATED_COMMISSIONING_FEASIBILITY_ERROR,
   unpaidIncentives,
 } from "./project-settings";
 
 const TODAY = "2026-10-10";
 
-function incentive(input: { amount?: string | null; paidOn?: string | null }) {
-  return parseIncentiveSetting(
-    { amount: input.amount ?? null, paidOn: input.paidOn ?? null },
-    TODAY,
-  );
+function incentive(input: { amount?: string | null }) {
+  return parseIncentiveSetting({ amount: input.amount ?? null });
 }
 
-function incentiveError(input: { amount?: string | null; paidOn?: string | null }) {
+function incentiveError(input: { amount?: string | null }) {
   const res = incentive(input);
   return res.ok ? null : res.error;
 }
@@ -61,19 +61,17 @@ describe("parseFeasibilitySetting", () => {
 });
 
 describe("parseIncentiveSetting", () => {
-  it("accepts an all-empty form as 'clear the incentive'", () => {
-    expect(incentive({})).toEqual({ ok: true, data: { amount: null, paid_on: null } });
+  it("accepts an empty field as 'remove the incentive'", () => {
+    expect(incentive({})).toEqual({ ok: true, data: { amount: null } });
   });
 
-  it("accepts an amount, pending or paid", () => {
-    expect(incentive({ amount: "2500" })).toEqual({
-      ok: true,
-      data: { amount: 2500, paid_on: null },
-    });
-    expect(incentive({ amount: "2500", paidOn: TODAY })).toEqual({
-      ok: true,
-      data: { amount: 2500, paid_on: TODAY },
-    });
+  it("accepts an amount", () => {
+    expect(incentive({ amount: "2500" })).toEqual({ ok: true, data: { amount: 2500 } });
+  });
+
+  it("never carries a paid date: the database derives it from the instalments", () => {
+    const res = incentive({ amount: "2500" });
+    expect(res.ok && Object.keys(res.data)).toEqual(["amount"]);
   });
 
   describe("amount", () => {
@@ -112,57 +110,90 @@ describe("parseIncentiveSetting", () => {
       expect(incentiveError({ amount: String(MAX_INCENTIVE) })).toBeNull();
     });
   });
-
-  describe("paid on", () => {
-    it("needs an amount to have been paid", () => {
-      expect(incentiveError({ paidOn: "2026-10-01" })).toBe(
-        "Enter the incentive amount before marking it paid.",
-      );
-    });
-
-    it("rejects a future date", () => {
-      expect(incentiveError({ amount: "1000", paidOn: "2026-12-01" })).toBe(
-        "Incentive paid-on date cannot be in the future.",
-      );
-    });
-
-    it("rejects an invalid date", () => {
-      expect(incentiveError({ amount: "1000", paidOn: "2026-13-01" })).toBe(
-        "Incentive paid-on date must be a valid date.",
-      );
-    });
-  });
-
-  it("reports the amount's problem before the date's", () => {
-    expect(incentiveError({ amount: "-5", paidOn: "nope" })).toBe(
-      "Incentive cannot be negative.",
-    );
-  });
 });
 
 describe("incentiveChanged", () => {
-  const SET = { amount: 3000, paid_on: null };
+  const SET = { amount: 3000 };
 
-  it("is false when nothing about the incentive changed", () => {
+  it("is false when the agreed amount did not change", () => {
     expect(incentiveChanged(SET, { ...SET })).toBe(false);
   });
 
   it("treats a numeric string from the database as the same amount", () => {
-    const fromDb = { amount: "3000.00" as unknown as number, paid_on: null };
+    const fromDb = { amount: "3000.00" as unknown as number };
     expect(incentiveChanged(fromDb, SET)).toBe(false);
   });
 
   it("detects a new, changed or removed amount", () => {
-    const none = { amount: null, paid_on: null };
+    const none = { amount: null };
     expect(incentiveChanged(none, SET)).toBe(true);
-    expect(incentiveChanged(SET, { ...SET, amount: 3500 })).toBe(true);
+    expect(incentiveChanged(SET, { amount: 3500 })).toBe(true);
     expect(incentiveChanged(SET, none)).toBe(true);
   });
+});
 
-  it("detects the incentive being marked paid (or unpaid)", () => {
-    const paid = { ...SET, paid_on: "2026-10-09" };
-    expect(incentiveChanged(SET, paid)).toBe(true);
-    expect(incentiveChanged(paid, SET)).toBe(true);
+describe("parseIncentiveInstalment", () => {
+  const form = (over: Partial<Parameters<typeof parseIncentiveInstalment>[0]> = {}) =>
+    parseIncentiveInstalment({ amount: "2360", paidOn: "2026-10-01", note: null, ...over });
+
+  it("reads the amount, the date as typed and the note", () => {
+    expect(form({ note: "Second part" })).toEqual({
+      ok: true,
+      data: { amount: 2360, paidOn: "2026-10-01", note: "Second part" },
+    });
+  });
+
+  it("tolerates how people type money", () => {
+    const res = form({ amount: "₹ 22,360.50" });
+    expect(res.ok && res.data.amount).toBe(22360.5);
+  });
+
+  it("needs an amount", () => {
+    expect(form({ amount: null })).toEqual({ ok: false, error: "Enter the instalment amount." });
+  });
+
+  it.each([
+    ["abc", "Instalment must be an amount in rupees, e.g. 2500."],
+    ["-5", "Instalment cannot be negative."],
+    [String(MAX_INCENTIVE + 1), "Instalment is too large."],
+  ])("refuses %s", (amount, error) => {
+    expect(form({ amount })).toEqual({ ok: false, error });
+  });
+
+  it("leaves the date to planIncentiveInstalment, which says what is wrong with it", () => {
+    // Missing, malformed or future dates are that function's rules, in one place.
+    const res = form({ paidOn: null });
+    expect(res.ok && res.data.paidOn).toBe("");
+  });
+
+  it("keeps a note within its length", () => {
+    expect(form({ note: "x".repeat(INCENTIVE_NOTE_MAX) }).ok).toBe(true);
+    expect(form({ note: "x".repeat(INCENTIVE_NOTE_MAX + 1) })).toEqual({
+      ok: false,
+      error: `The note can be at most ${INCENTIVE_NOTE_MAX} characters.`,
+    });
+  });
+});
+
+describe("incentiveWriteMessage", () => {
+  it.each([
+    ["Set the incentive amount first", "Set the incentive amount first."],
+    [
+      "Instalments exceed the incentive",
+      "That would take the payments above the agreed incentive — it may have changed meanwhile; reload to see what has been paid.",
+    ],
+    [
+      "The incentive cannot be less than the 4500.00 already paid",
+      `The incentive cannot be less than the ${formatCurrency(4500)} already paid.`,
+    ],
+  ])("words the database's %j for the person", (raw, worded) => {
+    expect(incentiveWriteMessage(raw)).toBe(worded);
+  });
+
+  it("passes anything else through as it came", () => {
+    expect(incentiveWriteMessage("permission denied for table coordinator_incentives")).toBe(
+      "permission denied for table coordinator_incentives",
+    );
   });
 });
 
@@ -252,53 +283,61 @@ describe("hasUndatedCommissioning", () => {
   });
 });
 
-describe("incentiveTotals", () => {
-  it("sums everyone whose incentive is set, and how much of it is still unpaid", () => {
+/** A person's incentive as the page loads it. */
+const person = (amount: number | null, ...paid: number[]) => ({
+  incentive: {
+    amount,
+    paid_on: null,
+    payments: paid.map((p, i) => ({
+      id: `i${i}`,
+      amount: p,
+      paid_on: "2026-10-01",
+      note: null,
+      recorded_by: null,
+    })),
+    paid: paid.reduce((sum, p) => sum + p, 0),
+  },
+});
+
+describe("saleIncentives", () => {
+  it("sums what is agreed, what is paid and what is left, over everyone whose incentive is set", () => {
     expect(
-      incentiveTotals([
-        { incentive: { amount: 2000, paid_on: null } },
-        { incentive: { amount: 1500.5, paid_on: "2026-10-01" } },
-        { incentive: { amount: null, paid_on: null } },
+      saleIncentives([
+        person(2000),
+        person(1500.5, 1000.25),
+        person(null),
         { incentive: null },
       ]),
-    ).toEqual({ count: 2, total: 3500.5, unpaidCount: 1, unpaidTotal: 2000 });
+    ).toEqual({ total: 3500.5, paid: 1000.25, pending: 2500.25, count: 2, unpaidCount: 2 });
   });
 
-  it("is null, not zero, when nobody has one (the badge reads 'Not set')", () => {
-    expect(incentiveTotals([{ incentive: null }, { incentive: { amount: null, paid_on: null } }])).toEqual({
+  it("is a total of nothing when nobody has one (the badge reads 'Not set')", () => {
+    expect(saleIncentives([{ incentive: null }, person(null)])).toMatchObject({
       count: 0,
-      total: null,
+      total: 0,
       unpaidCount: 0,
-      unpaidTotal: 0,
     });
   });
 
-  it("a zero incentive is still a record", () => {
-    expect(incentiveTotals([{ incentive: { amount: 0, paid_on: null } }])).toMatchObject({
-      count: 1,
-      total: 0,
-      unpaidCount: 1,
+  it("a person paid in full is not unpaid; a zero incentive owes nothing", () => {
+    expect(saleIncentives([person(9000, 9000), person(0)])).toMatchObject({
+      count: 2,
+      pending: 0,
+      unpaidCount: 0,
     });
   });
 });
 
 describe("unpaidIncentives", () => {
-  it("sums what is set and not yet paid, per person", () => {
+  it("is what is still to pay, per person: agreed less instalments", () => {
     const team = [
-      { incentive: { amount: 2000, paid_on: null } },
-      { incentive: { amount: 1500.5, paid_on: null } },
-      { incentive: { amount: 9000, paid_on: "2026-10-01" } },
-      { incentive: { amount: null, paid_on: null } },
+      person(2000),
+      person(1500.5, 500.5),
+      person(9000, 4000, 5000),
+      person(null),
       { incentive: null },
     ];
-    expect(unpaidIncentives(team)).toEqual({ count: 2, total: 3500.5 });
-  });
-
-  it("counts a zero incentive that was set (it is still a record)", () => {
-    expect(unpaidIncentives([{ incentive: { amount: 0, paid_on: null } }])).toEqual({
-      count: 1,
-      total: 0,
-    });
+    expect(unpaidIncentives(team)).toEqual({ count: 2, total: 3000 });
   });
 
   it("is empty for a sale with no incentive", () => {
@@ -376,12 +415,12 @@ describe("cancellationImpact", () => {
     expect(
       cancellationImpact({ ...BASE, unpaid: { count: 2, total: 5500 } }).at(-1),
     ).toBe(
-      `2 unpaid incentives (${formatCurrency(5500)}) stay owed — clear them under Coordinator incentives if they won't be paid`,
+      `2 unpaid incentives (${formatCurrency(5500)} still to pay) stay owed — lower or clear them under Coordinator incentives if they won't be paid in full`,
     );
     expect(
       cancellationImpact({ ...BASE, unpaid: { count: 1, total: 2000 } }).at(-1),
     ).toBe(
-      `1 unpaid incentive (${formatCurrency(2000)}) stays owed — clear it under Coordinator incentives if it won't be paid`,
+      `1 unpaid incentive (${formatCurrency(2000)} still to pay) stays owed — lower or clear it under Coordinator incentives if it won't be paid in full`,
     );
   });
 });

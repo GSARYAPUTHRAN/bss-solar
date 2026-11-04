@@ -3,17 +3,24 @@ import { createClient } from "@/lib/supabase/server";
 import type { Payment, PaymentMethod, PaymentPurpose } from "@/lib/types";
 
 /** Explicit columns + the recorder's name (no SELECT *). */
-const SELECT = `id, work_order_id, amount, paid_on, method, purpose, reference,
-  notes, recorded_by, created_at, updated_at,
+const SELECT = `id, work_order_id, amount, paid_on, method, purpose, paid_by_office,
+  reference, notes, recorded_by, created_at, updated_at,
   recorder:profiles!payments_recorded_by_fkey(id, full_name)`;
 
-/** The editable body of a ledger entry. */
+/**
+ * The editable body of a ledger entry. `amount` is always positive: a refund is
+ * money going out and a write-off closes a balance, but neither is stored as a
+ * negative number — the purpose says which way it counts.
+ */
 export interface PaymentInput {
   amount: number;
   paid_on: string;
   method: PaymentMethod;
   purpose: PaymentPurpose;
+  /** `kseb_fees` only: the BSS office paid KSEB on the customer's behalf. */
+  paid_by_office: boolean;
   reference: string | null;
+  /** The reason, for a write-off (the database refuses one without). */
   notes: string | null;
 }
 

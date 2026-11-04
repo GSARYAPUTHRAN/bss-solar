@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { formatCurrency } from "@/lib/format";
 import type { DashboardMetrics } from "@/server/data";
 
 /**
@@ -113,6 +114,20 @@ describe("Dashboard — pipeline tiles", () => {
       "href",
       "/projects?view=list&incentive=pending",
     );
+  });
+});
+
+describe("Dashboard — incentives pending", () => {
+  it("shows what is still to pay — agreed less the instalments paid, as the database adds it up", async () => {
+    await renderDashboard({ incentivePending: 17500.5 });
+    const incentives = tile(/^incentives pending$/i);
+    expect(incentives).toHaveTextContent(formatCurrency(17500.5));
+    expect(incentives).toHaveTextContent("Agreed incentives less the instalments paid");
+  });
+
+  it("is ₹0 once every incentive is paid up — still a link to the list, which will be empty", async () => {
+    await renderDashboard({ incentivePending: 0 });
+    expect(tile(/^incentives pending$/i)).toHaveTextContent(formatCurrency(0));
   });
 });
 

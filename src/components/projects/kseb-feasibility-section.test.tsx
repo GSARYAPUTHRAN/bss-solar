@@ -176,18 +176,18 @@ describe("KsebFeasibilitySection — custom plan and cancellation", () => {
 
 describe("IncentiveAmount", () => {
   it("shows an em dash when no incentive is set", () => {
-    const { container } = render(<IncentiveAmount incentive={null} paidOn={null} />);
+    const { container } = render(<IncentiveAmount amount={null} paid={0} />);
     expect(container).toHaveTextContent("—");
   });
 
   it("shows the amount with its pending state", () => {
-    render(<IncentiveAmount incentive={2750} paidOn={null} />);
+    render(<IncentiveAmount amount={2750} paid={0} />);
     expect(screen.getByText(formatCurrency(2750))).toBeInTheDocument();
     expect(screen.getByText("Pending")).toBeInTheDocument();
   });
 
-  it("shows when it was paid", () => {
-    render(<IncentiveAmount incentive={2750} paidOn="2026-10-01" />);
-    expect(screen.getByText(/^Paid /)).toHaveTextContent("Paid 01 Oct 2026");
+  it("shows that it is paid once the instalments reach it", () => {
+    render(<IncentiveAmount amount={2750} paid={2750} />);
+    expect(screen.getByText("Paid")).toBeInTheDocument();
   });
 });

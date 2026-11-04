@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { parseCsv } from "@/lib/csv";
+import { formatCurrency } from "@/lib/format";
 import { CoordinatorDirectory } from "./coordinator-match";
 import { planImport, validateImportHeaders, type ImportPlan, type ImportRow } from "./import";
 import {
@@ -31,6 +32,9 @@ const ROW: ImportRow = {
   plant_capacity: "3kW",
   total_cost: 195000,
   advance_amount: 20000,
+  advance_method: null,
+  advance_paid_on: null,
+  advance_reference: null,
   order_date: "2026-06-15",
   coordinator_ids: [RAHUL.id],
   financing_type: "self",
@@ -49,13 +53,17 @@ const ROW: ImportRow = {
   payments: [],
 };
 
-const payment = (amount: number, purpose: "contract" | "kseb_fees" = "contract") => ({
+const payment = (
+  amount: number,
+  purpose: "contract" | "kseb_fees" | "refund" | "write_off" = "contract",
+) => ({
   amount,
   paid_on: "2026-07-01",
   method: "upi" as const,
   purpose,
+  paid_by_office: false,
   reference: null,
-  notes: null,
+  notes: purpose === "write_off" ? "Customer was short at handover" : null,
 });
 
 function plan(csv: string, defaultCoordinatorId: string | null = null): ImportPlan {
@@ -107,6 +115,28 @@ describe("row statuses", () => {
   it("shows Ready and Failed for a check, never Imported or Skipped", () => {
     expect(IMPORT_COUNT_STATUSES.check).toEqual(["ready", "failed"]);
     expect(IMPORT_COUNT_STATUSES.import).toEqual(["imported", "skipped", "failed"]);
+  });
+});
+
+describe("the notes of a check", () => {
+  it("say how the sheet's dates were read, in a check and in an import", () => {
+    const planned = plan(
+      [
+        "client_name,plant_capacity,total_cost,order_date,coordinator",
+        "A,3kW,1,13/02/2026,Rahul",
+        "B,3kW,1,2026-02-14,Rahul",
+      ].join("\n"),
+    );
+    const note = /^1 date cell was written day first \(in 1 row\) and read that way — "13\/02\/2026" is 13 Feb 2026\. Dates are never read month first\.$/;
+    expect(checkedState(planned).notes).toEqual([expect.stringMatching(note)]);
+    expect(
+      summarizeImport(planned, outcomes({ row_no: 2, status: "imported", message: null })).notes,
+    ).toEqual([expect.stringMatching(note)]);
+  });
+
+  it("start empty, and an error run has none", () => {
+    expect(IMPORT_INITIAL.notes).toEqual([]);
+    expect(importError("nope").notes).toEqual([]);
   });
 });
 
@@ -192,6 +222,66 @@ describe("importedMessage", () => {
   });
 });
 
+describe("importedMessage — refunds, write-offs and incentives", () => {
+  const rahul = ["Rahul Menon"];
+  const done = { ...ROW, is_completed: true, current_stage: "plant_commissioning" as const };
+
+  it("does not count a refund or a write-off as a payment recorded, and says each on its own", () => {
+    const row = {
+      ...done,
+      total_cost: 175000,
+      payments: [payment(155000), payment(5000, "refund"), payment(5000, "write_off")],
+    };
+    expect(importedMessage(row, rahul, false)).toBe(
+      `Commissioned · settled · 1 payment recorded · ${formatCurrency(5000)} refund recorded · ${formatCurrency(5000)} written off · Rahul Menon`,
+    );
+  });
+
+  it("states what is outstanding after a refund puts the balance back", () => {
+    const row = { ...done, payments: [payment(175000), payment(10000, "refund")] };
+    expect(importedMessage(row, rahul, false)).toBe(
+      `Commissioned · ${formatCurrency(10000)} outstanding · 1 payment recorded · ${formatCurrency(10000)} refund recorded · Rahul Menon`,
+    );
+  });
+
+  it("calls a sale with nothing written off paid in full, not settled", () => {
+    expect(importedMessage({ ...done, payments: [payment(175000)] }, rahul, false)).toBe(
+      "Commissioned · paid in full · 1 payment recorded · Rahul Menon",
+    );
+  });
+
+  it("says a refund is still to record in a check, and a payment is to record too", () => {
+    const row = { ...ROW, payments: [payment(5000), payment(1000, "refund")] };
+    expect(readyMessage(row, rahul, false)).toBe(
+      `Ready · At Material Dispatch (Panels & Structure) · 1 payment to record · ${formatCurrency(1000)} refund to record · Rahul Menon`,
+    );
+  });
+
+  it("names the agreed incentive and what of it is paid, summed over the sale's coordinators", () => {
+    const instalment = (amount: number) => ({ amount, paid_on: "2026-07-01", note: null });
+    const row = {
+      ...ROW,
+      incentives: [
+        { coordinator_id: RAHUL.id, amount: 15000, payments: [instalment(12000)] },
+        { coordinator_id: PRIYA.id, amount: 8000, payments: [instalment(8000)] },
+      ],
+    };
+    expect(importedMessage(row, ["Rahul Menon", "Priya Suresh"], false)).toBe(
+      `Imported at Material Dispatch (Panels & Structure) · Incentive ${formatCurrency(23000)} (${formatCurrency(20000)} paid) · Rahul Menon & Priya Suresh`,
+    );
+  });
+
+  it("calls an incentive with no instalment unpaid", () => {
+    const row = {
+      ...ROW,
+      incentives: [{ coordinator_id: RAHUL.id, amount: 5000, payments: [] }],
+    };
+    expect(importedMessage(row, rahul, false)).toBe(
+      `Imported at Material Dispatch (Panels & Structure) · Incentive ${formatCurrency(5000)} (unpaid) · Rahul Menon`,
+    );
+  });
+});
+
 describe("readyMessage", () => {
   it("says what the row would become, before anything is written", () => {
     expect(
@@ -206,9 +296,9 @@ describe("readyMessage", () => {
 describe("summarizeImport", () => {
   const csv = [
     "client_name,plant_capacity,total_cost,consumer_number,coordinator",
-    "Anand Kumar,3kW,195000,1156789012345,Rahul",
+    "Anand Kumar,3kW,195000,1156789000111,Rahul",
     "No Capacity,,1000,,Rahul",
-    "Meera Nair,5kW,310000,1145678054321,Priya",
+    "Meera Nair,5kW,310000,1145678000222,Priya",
     '"Joseph ""Jo"" Mathew",2kW,130000,,Rahul',
   ].join("\n");
 
@@ -220,7 +310,7 @@ describe("summarizeImport", () => {
         {
           row_no: 4,
           status: "skipped",
-          message: "Consumer number 1145678054321 already exists (Meera Nair)",
+          message: "Consumer number 1145678000222 already exists (Meera Nair)",
         },
         {
           row_no: 5,
@@ -267,11 +357,12 @@ describe("summarizeImport", () => {
     ]);
   });
 
-  it("carries the coordinator matches and the file warnings of the plan", () => {
+  it("carries the coordinator matches, the file warnings and the notes of the plan", () => {
     const planned = plan(csv);
     const state = summarizeImport(planned, outcomes());
     expect(state.coordinatorMatches).toBe(planned.coordinatorMatches);
     expect(state.warnings).toBe(planned.warnings);
+    expect(state.notes).toBe(planned.notes);
     expect(state.warnings[0]).toMatch(/consumer_number/);
   });
 
@@ -408,9 +499,9 @@ describe("summarizeImport", () => {
 describe("checkedState", () => {
   const csv = [
     "client_name,plant_capacity,total_cost,consumer_number,coordinator",
-    "Anand Kumar,3kW,195000,1156789012345,Rahul",
+    "Anand Kumar,3kW,195000,1156789000111,Rahul",
     "No Capacity,,1000,,Rahul",
-    "Meera Nair,5kW,310000,1145678054321,Abhijit",
+    "Meera Nair,5kW,310000,1145678000222,Abhijit",
     "Joseph Mathew,2kW,130000,,Rahul & Priya",
   ].join("\n");
 
@@ -472,11 +563,12 @@ describe("checkedState", () => {
     expect(state.counts.failed).toBe(0);
   });
 
-  it("carries the matches, the file warnings and the row warnings", () => {
+  it("carries the matches, the file warnings, the notes and the row warnings", () => {
     const planned = plan(csv);
     const state = checkedState(planned);
     expect(state.coordinatorMatches).toBe(planned.coordinatorMatches);
     expect(state.warnings).toBe(planned.warnings);
+    expect(state.notes).toBe(planned.notes);
     expect(state.results[0].warnings).toEqual([`order_date is blank — today (${TODAY}) will be used`]);
     // The problem entry (Abhijit) comes before the resolved ones.
     expect(state.coordinatorMatches[0]).toMatchObject({ written: "Abhijit", account: null });

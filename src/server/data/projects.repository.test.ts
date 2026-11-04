@@ -64,10 +64,15 @@ vi.mock("@/lib/supabase/server", () => ({
           },
         },
       ),
-    rpc: (fn: string) => builder({ table: `rpc:${fn}`, calls: [] }),
+    rpc: (fn: string, args?: unknown) => {
+      const recorded: Recorded = { table: `rpc:${fn}`, calls: [["rpc", args]] };
+      queries.push(recorded);
+      return builder(recorded);
+    },
   })),
 }));
 
+import { formatCurrency } from "@/lib/format";
 import { projectsRepository } from "./projects.repository";
 
 beforeEach(() => {
@@ -139,6 +144,7 @@ function listRow(id: string, over: Partial<ProjectListRow> = {}): ProjectListRow
     coordinator_ids: [RAVI],
     incentive_count: 0,
     incentive_unpaid_count: 0,
+    incentive_paid: 0,
     incentive_unpaid_coordinator_ids: [],
     incentive_paid_coordinator_ids: [],
     ...over,
@@ -190,16 +196,26 @@ const ROWS: ProjectListRow[] = [
     incentive_unpaid_coordinator_ids: [RAVI, ABHIJITH],
     coordinator_ids: [RAVI, ABHIJITH],
   }),
+  // Ravi is paid in full; Abhijith has had nothing.
   listRow("incentive-partly-paid", {
     incentive_count: 2,
     incentive_unpaid_count: 1,
+    incentive_paid: 6000,
     incentive_unpaid_coordinator_ids: [ABHIJITH],
     incentive_paid_coordinator_ids: [RAVI],
     coordinator_ids: [RAVI, ABHIJITH],
   }),
+  // One person, paid in two instalments of three: still owed the rest.
+  listRow("incentive-instalments", {
+    incentive_count: 1,
+    incentive_unpaid_count: 1,
+    incentive_paid: 4000,
+    incentive_unpaid_coordinator_ids: [RAVI],
+  }),
   listRow("incentive-paid", {
     incentive_count: 1,
     incentive_unpaid_count: 0,
+    incentive_paid: 6000,
     incentive_paid_coordinator_ids: [RAVI],
   }),
 ];
@@ -285,6 +301,9 @@ describe("projectsRepository.page — filters agree with the row predicates", ()
       ["pending", ABHIJITH],
       ["paid", RAVI],
       ["paid", ABHIJITH],
+      ["partly_paid", undefined],
+      ["partly_paid", RAVI],
+      ["partly_paid", ABHIJITH],
     ] as [IncentiveFilter, string | undefined][])(
       "incentive=%s coordinator=%s",
       async (incentive, coordinator) => {
@@ -303,10 +322,22 @@ describe("projectsRepository.page — filters agree with the row predicates", ()
 
     it("a sale is 'pending' while anyone is unpaid and 'paid' only when everyone set is paid", async () => {
       expect(idsOf(await filtered({ incentive: "pending" }))).toEqual([
+        "incentive-instalments",
         "incentive-partly-paid",
         "incentive-pending",
       ]);
       expect(idsOf(await filtered({ incentive: "paid" }))).toEqual(["incentive-paid"]);
+    });
+
+    it("'partly paid' is money paid with something still to pay — instalments count, not only people", async () => {
+      expect(idsOf(await filtered({ incentive: "partly_paid" }))).toEqual([
+        "incentive-instalments",
+        "incentive-partly-paid",
+      ]);
+      expect(callsNamed("gt")).toEqual([
+        ["gt", "incentive_unpaid_count", 0],
+        ["gt", "incentive_paid", 0],
+      ]);
     });
 
     it("narrowed to one person, it is about that person's own incentive", async () => {
@@ -316,7 +347,17 @@ describe("projectsRepository.page — filters agree with the row predicates", ()
         "incentive-partly-paid",
       ]);
       expect(idsOf(await filtered({ incentive: "pending", coordinator: RAVI }))).toEqual([
+        "incentive-instalments",
         "incentive-pending",
+      ]);
+    });
+
+    it("narrowed to one person, 'partly paid' needs them to be owed while money has been paid", async () => {
+      expect(idsOf(await filtered({ incentive: "partly_paid", coordinator: RAVI }))).toEqual([
+        "incentive-instalments",
+      ]);
+      expect(idsOf(await filtered({ incentive: "partly_paid", coordinator: ABHIJITH }))).toEqual([
+        "incentive-partly-paid",
       ]);
     });
   });
@@ -356,7 +397,11 @@ describe("projectsRepository.page — search and order", () => {
       // An import creates every row in one transaction: created_at, the
       // coordinators and the stage all tie, and paging over ties skips and repeats rows.
       expect(callsNamed("order").at(-1)).toEqual(["order", "id", { ascending: true }]);
-      expect(callsNamed("order")).toHaveLength(2);
+      // The sort, then the newest first, then id — except a created_at sort, which is the newest first already.
+      expect(callsNamed("order")).toHaveLength(sort === null ? 2 : 3);
+      if (sort !== null) {
+        expect(callsNamed("order")[1]).toEqual(["order", "created_at", { ascending: false }]);
+      }
     },
   );
 });
@@ -380,7 +425,7 @@ describe("projectsRepository.byId", () => {
     created_at: "2026-09-02T10:00:00Z",
     profile: { id: ABHIJITH, full_name: "Abhijith Nair" },
     // Newer PostgREST: the one-to-one embed arrives as an object…
-    incentive: { amount: "3500.00", paid_on: null },
+    incentive: { amount: "3500.00", paid_on: null, payments: [] },
   };
   const MEMBER_FIRST = {
     coordinator_id: RAVI,
@@ -388,7 +433,34 @@ describe("projectsRepository.byId", () => {
     created_at: "2026-09-01T10:00:00Z",
     profile: { id: RAVI, full_name: "Ravi Kumar" },
     // …older versions wrap it in an array.
-    incentive: [{ amount: 2000, paid_on: "2026-10-01" }],
+    incentive: [
+      {
+        amount: 2000,
+        paid_on: "2026-10-01",
+        // Out of order, as nothing orders a nested embed: oldest first is ours.
+        payments: [
+          {
+            id: "pay-2",
+            amount: "1500.00",
+            paid_on: "2026-10-01",
+            note: "Cheque 004211",
+            recorded_by: "admin-1",
+            created_at: "2026-10-01T09:00:00Z",
+            recorder: { full_name: "BSS Admin" },
+          },
+          {
+            id: "pay-1",
+            amount: 500,
+            paid_on: "2026-09-20",
+            note: null,
+            recorded_by: null,
+            created_at: "2026-09-20T09:00:00Z",
+            // The recorder's profile is gone (ON DELETE SET NULL).
+            recorder: null,
+          },
+        ],
+      },
+    ],
   };
   const DETAIL = {
     id: "p1",
@@ -416,13 +488,85 @@ describe("projectsRepository.byId", () => {
     const project = await projectsRepository.byId("p1");
 
     expect(project?.coordinators).toEqual([
-      { id: RAVI, full_name: "Ravi Kumar", sort_order: 1, incentive: { amount: 2000, paid_on: "2026-10-01" } },
-      { id: ABHIJITH, full_name: "Abhijith Nair", sort_order: 2, incentive: { amount: 3500, paid_on: null } },
+      {
+        id: RAVI,
+        full_name: "Ravi Kumar",
+        sort_order: 1,
+        incentive: {
+          amount: 2000,
+          paid_on: "2026-10-01",
+          // Oldest first; amounts are numbers; the recorder is named when known.
+          payments: [
+            {
+              id: "pay-1",
+              amount: 500,
+              paid_on: "2026-09-20",
+              note: null,
+              recorded_by: null,
+              recorded_by_name: null,
+            },
+            {
+              id: "pay-2",
+              amount: 1500,
+              paid_on: "2026-10-01",
+              note: "Cheque 004211",
+              recorded_by: "admin-1",
+              recorded_by_name: "BSS Admin",
+            },
+          ],
+          paid: 2000,
+        },
+      },
+      {
+        id: ABHIJITH,
+        full_name: "Abhijith Nair",
+        sort_order: 2,
+        incentive: { amount: 3500, paid_on: null, payments: [], paid: 0 },
+      },
     ]);
     expect(project?.cancelled_by_name).toBe("BSS Admin");
     // The work order is the order alone; the people live on the project.
     expect(project?.work_order).not.toHaveProperty("coordinators");
     expect(project?.work_order).toMatchObject({ client_name: "Anand Kumar", plan_type: "solar" });
+  });
+
+  it("a recorder embedded as a one-element array still names who recorded it", async () => {
+    response = {
+      data: {
+        ...DETAIL,
+        work_order: {
+          ...DETAIL.work_order,
+          coordinators: [
+            {
+              ...MEMBER_FIRST,
+              incentive: {
+                amount: 1000,
+                paid_on: null,
+                payments: [
+                  {
+                    id: "pay-1",
+                    amount: "400.50",
+                    paid_on: "2026-10-01",
+                    note: null,
+                    recorded_by: "admin-1",
+                    created_at: "2026-10-01T09:00:00Z",
+                    recorder: [{ full_name: "BSS Admin" }],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      error: null,
+    };
+    const project = await projectsRepository.byId("p1");
+    expect(project?.coordinators[0].incentive?.payments[0]).toMatchObject({
+      amount: 400.5,
+      recorded_by_name: "BSS Admin",
+    });
+    // Σ instalments, to the paisa.
+    expect(project?.coordinators[0].incentive?.paid).toBe(400.5);
   });
 
   it("a coordinator never sees a partner's incentive: RLS hides the row, and so do we", async () => {
@@ -441,10 +585,13 @@ describe("projectsRepository.byId", () => {
       error: null,
     };
     const project = await projectsRepository.byId("p1");
-    expect(project?.coordinators.map((c) => c.incentive)).toEqual([
-      { amount: 2000, paid_on: "2026-10-01" },
-      null,
-    ]);
+    const [own, partner] = project!.coordinators;
+    // Their own instalments come with the row…
+    expect(own.incentive).toMatchObject({ amount: 2000, paid: 2000 });
+    expect(own.incentive?.payments).toHaveLength(2);
+    // …and nothing of the partner's: no amount, no instalments.
+    expect(partner.incentive).toBeNull();
+    expect(JSON.stringify(partner)).not.toMatch(/3500|payments/);
     expect(project?.cancelled_by_name).toBeNull();
   });
 
@@ -454,13 +601,20 @@ describe("projectsRepository.byId", () => {
         ...DETAIL,
         work_order: {
           ...DETAIL.work_order,
-          coordinators: [{ ...MEMBER_FIRST, incentive: { amount: null, paid_on: null } }],
+          coordinators: [
+            { ...MEMBER_FIRST, incentive: { amount: null, paid_on: null, payments: [] } },
+          ],
         },
       },
       error: null,
     };
     const project = await projectsRepository.byId("p1");
-    expect(project?.coordinators[0].incentive).toEqual({ amount: null, paid_on: null });
+    expect(project?.coordinators[0].incentive).toEqual({
+      amount: null,
+      paid_on: null,
+      payments: [],
+      paid: 0,
+    });
   });
 
   it("is null for a project that is not there", async () => {
@@ -477,7 +631,15 @@ describe("projectsRepository.byId", () => {
       "coordinators:work_order_coordinators!work_order_coordinators_work_order_id_fkey(",
     );
     expect(columns).toContain("profiles!work_order_coordinators_coordinator_id_fkey(id, full_name)");
-    expect(columns).toContain("incentive:coordinator_incentives(amount, paid_on)");
+    // The instalments hang off the incentive by the composite key — always named — and
+    // the recorder by its own; a bare embed would be ambiguous.
+    expect(columns).toContain("incentive:coordinator_incentives(amount, paid_on,");
+    expect(columns).toContain(
+      "payments:coordinator_incentive_payments!coordinator_incentive_payments_incentive_fkey(",
+    );
+    expect(columns).toContain(
+      "recorder:profiles!coordinator_incentive_payments_recorded_by_fkey(full_name)",
+    );
     expect(columns).toContain("cancelled_by_profile:profiles!projects_cancelled_by_fkey(full_name)");
     // projects.coordinator_id / coordinator_incentive / incentive_paid_on are deprecated.
     expect(columns).not.toContain("projects_coordinator_id_fkey");
@@ -510,7 +672,20 @@ describe("projectsRepository.brief", () => {
               sort_order: 1,
               created_at: "2026-09-01T10:00:00Z",
               profile: { id: RAVI, full_name: "Ravi Kumar" },
-              incentive: { amount: 1000, paid_on: null },
+              incentive: {
+                amount: 1000,
+                paid_on: null,
+                payments: [
+                  {
+                    id: "pay-1",
+                    amount: "250.00",
+                    paid_on: "2026-10-01",
+                    note: null,
+                    recorded_by: "admin-1",
+                    created_at: "2026-10-01T09:00:00Z",
+                  },
+                ],
+              },
             },
           ],
         },
@@ -530,9 +705,39 @@ describe("projectsRepository.brief", () => {
       plan_type: "custom",
       order_date: "2026-08-01",
       coordinators: [
-        { id: RAVI, full_name: "Ravi Kumar", sort_order: 1, incentive: { amount: 1000, paid_on: null } },
+        {
+          id: RAVI,
+          full_name: "Ravi Kumar",
+          sort_order: 1,
+          // The brief carries the instalments (the actions plan against them), not who recorded them.
+          incentive: {
+            amount: 1000,
+            paid_on: null,
+            payments: [
+              {
+                id: "pay-1",
+                amount: 250,
+                paid_on: "2026-10-01",
+                note: null,
+                recorded_by: "admin-1",
+                recorded_by_name: null,
+              },
+            ],
+            paid: 250,
+          },
+        },
       ],
     });
+  });
+
+  it("asks for the instalments but not their recorders", async () => {
+    response = { data: null, error: null };
+    await projectsRepository.brief("p1");
+    const columns = String(lastQuery().calls[0][1]);
+    expect(columns).toContain(
+      "payments:coordinator_incentive_payments!coordinator_incentive_payments_incentive_fkey(",
+    );
+    expect(columns).not.toContain("recorder:");
   });
 
   it("is null when the work order cannot be read (nothing can be decided without it)", async () => {
@@ -544,15 +749,15 @@ describe("projectsRepository.brief", () => {
 describe("projectsRepository writes", () => {
   const written = () => queries.find((q) => q.calls[0][0] === "update")!;
 
-  it("setCoordinatorIncentive updates that person's row — amount and paid date only", async () => {
+  it("setCoordinatorIncentive updates that person's row — the amount alone, never the derived paid date", async () => {
     response = { data: [{ coordinator_id: ABHIJITH }], error: null };
     const res = await projectsRepository.setCoordinatorIncentive("wo1", ABHIJITH, {
       amount: 3500,
-      paid_on: null,
     });
     expect(res).toEqual({ error: null });
     expect(written().table).toBe("coordinator_incentives");
-    expect(written().calls[0]).toEqual(["update", { amount: 3500, paid_on: null }]);
+    expect(written().calls[0]).toEqual(["update", { amount: 3500 }]);
+    expect(JSON.stringify(written().calls[0])).not.toContain("paid_on");
     expect(written().calls).toContainEqual(["eq", "work_order_id", "wo1"]);
     expect(written().calls).toContainEqual(["eq", "coordinator_id", ABHIJITH]);
   });
@@ -561,9 +766,92 @@ describe("projectsRepository writes", () => {
     response = { data: [], error: null };
     const res = await projectsRepository.setCoordinatorIncentive("wo1", ABHIJITH, {
       amount: 1,
-      paid_on: null,
     });
     expect(res.error).toMatch(/not saved/);
+  });
+
+  it("setCoordinatorIncentive words the database's refusal to go below what is paid", async () => {
+    response = {
+      data: null,
+      error: { message: "The incentive cannot be less than the 4500.00 already paid" },
+    };
+    const res = await projectsRepository.setCoordinatorIncentive("wo1", ABHIJITH, { amount: 100 });
+    expect(res.error).toBe(
+      `The incentive cannot be less than the ${formatCurrency(4500)} already paid.`,
+    );
+  });
+
+  describe("instalments", () => {
+    const PAYMENT = { amount: 2360, paid_on: "2026-10-01", note: "Cheque 004211" };
+    const sent = (op: string) => queries.find((q) => q.calls[0][0] === op)!;
+
+    it("recordIncentivePayment inserts the five writable columns — who recorded it is the database's", async () => {
+      response = { data: [{ id: "pay-1" }], error: null };
+      const res = await projectsRepository.recordIncentivePayment("wo1", ABHIJITH, PAYMENT);
+      expect(res).toEqual({ error: null });
+      expect(sent("insert").table).toBe("coordinator_incentive_payments");
+      expect(sent("insert").calls[0]).toEqual([
+        "insert",
+        { work_order_id: "wo1", coordinator_id: ABHIJITH, ...PAYMENT },
+      ]);
+      expect(JSON.stringify(sent("insert").calls[0])).not.toContain("recorded_by");
+    });
+
+    it.each([
+      ["Set the incentive amount first", "Set the incentive amount first."],
+      [
+        "Instalments exceed the incentive",
+        "That would take the payments above the agreed incentive — it may have changed meanwhile; reload to see what has been paid.",
+      ],
+    ])("recordIncentivePayment words the database's refusal %j", async (message, worded) => {
+      response = { data: null, error: { message } };
+      const res = await projectsRepository.recordIncentivePayment("wo1", ABHIJITH, PAYMENT);
+      expect(res).toEqual({ error: worded });
+    });
+
+    it("recordIncentivePayment explains a person who has left the sale (no incentive row to pay against)", async () => {
+      response = {
+        data: null,
+        error: { message: "violates foreign key constraint", code: "23503" },
+      } as unknown as Response;
+      const res = await projectsRepository.recordIncentivePayment("wo1", ABHIJITH, PAYMENT);
+      expect(res.error).toBe("That person no longer has an incentive on this sale.");
+    });
+
+    it("recordIncentivePayment does not claim a write nothing stored", async () => {
+      response = { data: [], error: null };
+      const res = await projectsRepository.recordIncentivePayment("wo1", ABHIJITH, PAYMENT);
+      expect(res.error).toMatch(/not saved/);
+    });
+
+    it("updateIncentivePayment changes amount, date and note of that one instalment", async () => {
+      response = { data: [{ id: "pay-1" }], error: null };
+      const res = await projectsRepository.updateIncentivePayment("pay-1", PAYMENT);
+      expect(res).toEqual({ error: null });
+      expect(written().table).toBe("coordinator_incentive_payments");
+      expect(written().calls[0]).toEqual(["update", PAYMENT]);
+      expect(written().calls).toContainEqual(["eq", "id", "pay-1"]);
+    });
+
+    it("updateIncentivePayment reports an instalment RLS filtered out or that is gone", async () => {
+      response = { data: [], error: null };
+      const res = await projectsRepository.updateIncentivePayment("pay-1", PAYMENT);
+      expect(res.error).toBe("That payment was not found, or you cannot change it.");
+    });
+
+    it("deleteIncentivePayment removes that one instalment", async () => {
+      response = { data: [{ id: "pay-1" }], error: null };
+      const res = await projectsRepository.deleteIncentivePayment("pay-1");
+      expect(res).toEqual({ error: null });
+      expect(sent("delete").table).toBe("coordinator_incentive_payments");
+      expect(sent("delete").calls).toContainEqual(["eq", "id", "pay-1"]);
+    });
+
+    it("deleteIncentivePayment reports a delete that removed nothing", async () => {
+      response = { data: [], error: null };
+      const res = await projectsRepository.deleteIncentivePayment("pay-1");
+      expect(res.error).toBe("That payment was not found, or you cannot remove it.");
+    });
   });
 
   it("setCancellation writes the status, date and remarks — never who recorded it", async () => {
@@ -635,5 +923,43 @@ describe("projectsRepository.options", () => {
       { id: "p1", client_name: "A", plant_capacity: "3kW", cancellation: null },
       { id: "p2", client_name: "B", plant_capacity: "Inverter + panel", cancellation: "refunded" },
     ]);
+  });
+});
+
+describe("projectsRepository.incentiveSummary", () => {
+  it("reads agreed, paid and pending as numbers (the RPC returns numerics as strings)", async () => {
+    response = {
+      data: { projects: "3", pending_projects: 2, total: "90000.00", paid: "50000.50", pending: "39999.50" },
+      error: null,
+    };
+    expect(await projectsRepository.incentiveSummary()).toEqual({
+      projects: 3,
+      pendingProjects: 2,
+      total: 90000,
+      paid: 50000.5,
+      pending: 39999.5,
+    });
+    expect(lastQuery().table).toBe("rpc:incentive_summary");
+    // No scope: the caller's own (a coordinator) or everyone's (the office).
+    expect(lastQuery().calls[0]).toEqual(["rpc", {}]);
+  });
+
+  it("narrows the office to one coordinator", async () => {
+    response = { data: null, error: null };
+    await projectsRepository.incentiveSummary(ABHIJITH);
+    expect(lastQuery().calls[0]).toEqual(["rpc", { p_coordinator: ABHIJITH }]);
+  });
+
+  it("is zero for nobody with an incentive, and null — hidden — when it cannot be read", async () => {
+    response = { data: null, error: null };
+    expect(await projectsRepository.incentiveSummary()).toEqual({
+      projects: 0,
+      pendingProjects: 0,
+      total: 0,
+      paid: 0,
+      pending: 0,
+    });
+    response = { data: null, error: { message: "boom" } };
+    expect(await projectsRepository.incentiveSummary()).toBeNull();
   });
 });

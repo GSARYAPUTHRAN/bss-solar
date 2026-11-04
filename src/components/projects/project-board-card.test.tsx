@@ -8,6 +8,8 @@ import { formatCurrency } from "@/lib/format";
 import type { ProjectListRow } from "@/lib/types";
 import { ProjectBoardCard } from "./project-board-card";
 import {
+  PAID_INCENTIVE,
+  PART_PAID_INCENTIVE,
   PENDING_INCENTIVE,
   PRIYA,
   RAHUL,
@@ -41,6 +43,7 @@ describe("ProjectBoardCard — incentive", () => {
       card(
         sharedSale({
           incentive_total: 12000,
+          incentive_paid: 6000,
           incentive_unpaid: 6000,
           incentive_count: 2,
           incentive_unpaid_count: 1,
@@ -50,6 +53,31 @@ describe("ProjectBoardCard — incentive", () => {
     const line = screen.getByText("Incentive").parentElement;
     expect(line).toHaveTextContent(formatCurrency(12000));
     expect(line).toHaveTextContent("Partly paid");
+  });
+
+  it("shows what instalments have paid of one person's incentive, and Partly paid", () => {
+    render(card(projectListRow({ ...PART_PAID_INCENTIVE })));
+    const line = screen.getByText("Incentive").parentElement;
+    expect(line).toHaveTextContent(formatCurrency(6000));
+    expect(line).toHaveTextContent(`${formatCurrency(4000)} paid`);
+    expect(line).toHaveTextContent("Partly paid");
+  });
+
+  it("says Paid once it is all paid", () => {
+    render(card(projectListRow({ ...PAID_INCENTIVE })));
+    expect(screen.getByText("Incentive").parentElement).toHaveTextContent("Paid");
+  });
+
+  it("reads the paid total as the database's numeric string", () => {
+    render(
+      card(
+        projectListRow({
+          ...PART_PAID_INCENTIVE,
+          incentive_paid: "4000.00" as unknown as number,
+        }),
+      ),
+    );
+    expect(screen.getByText("Incentive").parentElement).toHaveTextContent("Partly paid");
   });
 
   it("leaves the incentive out when none is set", () => {

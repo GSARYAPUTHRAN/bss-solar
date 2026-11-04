@@ -71,6 +71,23 @@ test("the office refunds a project with remarks; the badge, the record and the f
 
   // Live: milestones can be worked on, and the way out is one click away.
   await expect(admin.getByRole("button", { name: /complete next milestone/i })).toBeVisible();
+
+  // Rahul's incentive: ₹3,000 agreed, ₹1,000 paid — ₹2,000 is still owed.
+  const incentive = admin.getByRole("group", {
+    name: `Incentive for ${ACCOUNTS.rahul.fullName}`,
+  });
+  await incentive.getByLabel(/agreed amount/i).fill("3000");
+  await incentive.getByRole("button", { name: "Save", exact: true }).click();
+  await expectFlash(admin, /incentive saved for/i);
+  await incentive
+    .getByRole("button", { name: `Record payment for ${ACCOUNTS.rahul.fullName}` })
+    .click();
+  const payment = admin.getByRole("dialog", { name: /record payment/i });
+  await payment.getByLabel(/^amount/i).fill("1000");
+  await payment.getByRole("button", { name: /^record payment$/i }).click();
+  await expectFlash(admin, /₹1,000(\.00)? recorded for .* — ₹2,000(\.00)? still to pay/i);
+  await expect(payment).toBeHidden();
+
   await admin.getByRole("button", { name: "Mark refunded" }).click();
 
   const dialog = admin.getByRole("dialog", { name: /cancel or refund this project/i });
@@ -78,10 +95,28 @@ test("the office refunds a project with remarks; the badge, the record and the f
   // It says what happens before anything does: the money stays on record.
   await expect(dialog.getByText(/collected stays in the ledger/i)).toBeVisible();
   await expect(dialog.getByText(/no longer counted as outstanding/i)).toBeVisible();
+  // …and what it leaves alone: only what is still to pay of the incentive is owed.
+  await expect(
+    dialog.getByText(/1 unpaid incentive \(₹2,000(\.00)? still to pay\) stays owed/i),
+  ).toBeVisible();
   await dialog.getByLabel(/remarks/i).fill(REMARKS);
   await dialog.getByRole("button", { name: "Mark refunded" }).click();
-  await expectFlash(admin, /project marked refunded/i);
+  await expectFlash(
+    admin,
+    /project marked refunded\. ₹2,000(\.00)? of coordinator incentives is still to pay/i,
+  );
   await expect(dialog).toBeHidden();
+
+  // A cancellation leaves incentives alone: the rest can still be paid.
+  await expect(incentive).toBeVisible();
+  await incentive
+    .getByRole("button", { name: `Record payment for ${ACCOUNTS.rahul.fullName}` })
+    .click();
+  const rest = admin.getByRole("dialog", { name: /record payment/i });
+  await rest.getByLabel(/^amount/i).fill("2000");
+  await rest.getByRole("button", { name: /^record payment$/i }).click();
+  await expectFlash(admin, /₹2,000(\.00)? recorded for .* — fully paid/i);
+  await expect(rest).toBeHidden();
 
   // The record: status, who entered it, the remarks.
   const status = statusCard(admin);
@@ -115,7 +150,12 @@ test("the sale's coordinator sees a read-only banner — on a phone too", async 
   await expect(rahul.getByLabel(/^status for/i)).toHaveCount(0);
   await expect(rahul.getByRole("button", { name: /complete next milestone/i })).toHaveCount(0);
   // Not even the office's record of who entered it.
-  await expect(rahul.getByText("Recorded by")).toHaveCount(0);
+  await expect(rahul.getByText("Recorded by", { exact: true })).toHaveCount(0);
+  // The incentive is not frozen with the milestones: Rahul reads what was paid
+  // him (his own two instalments), with nothing to change.
+  const own = rahul.locator('[data-slot="card"]').filter({ hasText: "Your incentive payments" });
+  await expect(own).toContainText(/₹3,000(\.00)?/);
+  await expect(own.getByRole("listitem")).toHaveCount(2);
   expect(await horizontalOverflow(rahul)).toBeLessThanOrEqual(0);
   await rahul.context().close();
 

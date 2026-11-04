@@ -9,7 +9,7 @@ import { fail } from "@/lib/result";
 
 /**
  * Run one of the project actions that answer with a result (cancel/refund,
- * reinstate, a coordinator's incentive) from a form.
+ * reinstate, a coordinator's incentive and its instalments) from a form.
  *
  *   - success: the action's message is toasted, then `onSaved` runs (a dialog
  *     closes);

@@ -53,7 +53,7 @@ export function ProjectStatusSection({
   project: ProjectDetail;
   /** IST date from the server. */
   today: string;
-  /** Collected so far (advance + instalments) and what was still due. */
+  /** Held now (advance + instalments − refunds) and what is still due (after write-offs). */
   money: { received: number; balanceDue: number };
   /** Incentives set and not yet paid (the office's view of the whole sale). */
   unpaid: { count: number; total: number };

@@ -9,7 +9,7 @@ import type {
   ProjectStage,
 } from "@/lib/types";
 import { CANCELLATION } from "./cancellation";
-import { isIsoDate } from "./dates";
+import { parseDateText, type DateTextResult } from "./dates";
 import {
   FINANCING_LABELS,
   PAYMENT_METHOD_LABELS,
@@ -62,23 +62,10 @@ function toPaise(digits: string): number {
 }
 
 /**
- * Rupees: digits with up to 2 decimals. Thousands separators, a ₹ sign and a
- * "Rs." prefix are tolerated because that is how amounts get typed.
- *
- * A cell may also be a sum — `235000+23500`, `₹1,000 + Rs. 500` — because a
- * price is often written as base plus extras. The parts are added in paise
- * (0.1 + 0.2 is exactly 0.30) and the zero / maximum rules apply to the total.
- * Each part must itself be a plain, non-negative amount: `100+-5` is refused
- * rather than read as a discount.
+ * The `+`-separated parts of an amount cell, each in paise. Every part must be a
+ * plain, non-negative amount: `100+-5` is refused rather than read as a discount.
  */
-export function moneyCell(
-  raw: string | undefined,
-  column: string,
-  { positive = false }: { positive?: boolean } = {},
-): Cell<number | null> {
-  const s = (raw ?? "").trim();
-  if (!s) return ok(null);
-
+function paiseParts(s: string, column: string): Cell<number[]> {
   const parts = s.split("+").map(plainAmount);
   const isSum = parts.length > 1;
   if (isSum && parts.some((p) => p === "")) {
@@ -96,46 +83,111 @@ export function moneyCell(
   if (!isSum && parts[0].startsWith("-")) {
     return fail(`${column} cannot be negative (got "${s}")`);
   }
+  return ok(parts.map(toPaise));
+}
 
-  const paise = parts.reduce((sum, p) => sum + toPaise(p), 0);
+/**
+ * Rupees: digits with up to 2 decimals. Thousands separators, a ₹ sign and a
+ * "Rs." prefix are tolerated because that is how amounts get typed.
+ *
+ * A cell may also be a sum — `235000+23500`, `₹1,000 + Rs. 500` — because a
+ * price is often written as base plus extras. The parts are added in paise
+ * (0.1 + 0.2 is exactly 0.30) and the zero / maximum rules apply to the total.
+ * Each part must itself be a plain, non-negative amount: `100+-5` is refused
+ * rather than read as a discount.
+ */
+export function moneyCell(
+  raw: string | undefined,
+  column: string,
+  { positive = false }: { positive?: boolean } = {},
+): Cell<number | null> {
+  const s = (raw ?? "").trim();
+  if (!s) return ok(null);
+
+  const parts = paiseParts(s, column);
+  if (!parts.ok) return parts;
+  const paise = parts.data.reduce((sum, p) => sum + p, 0);
   if (positive && paise === 0) return fail(`${column} must be more than zero`);
   if (paise > MAX_PAISE) return fail(`${column} is too large (got "${s}")`);
   return ok(paise / 100);
 }
 
-/** "15/03/2026" or "15-3-2026" → "2026-03-15", for the hint only. */
-function isoFromDayFirst(s: string): string | null {
-  const m = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/.exec(s);
-  if (!m) return null;
-  const iso = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
-  return isIsoDate(iso) ? iso : null;
+/**
+ * The same cell as `moneyCell`, with each part of a sum kept apart, in rupees
+ * (`12000+5000` → `[12000, 5000]`; a plain amount is a list of one) — for a cell
+ * where every part is a payment of its own. The maximum applies to the total.
+ */
+export function moneyPartsCell(
+  raw: string | undefined,
+  column: string,
+): Cell<number[] | null> {
+  const s = (raw ?? "").trim();
+  if (!s) return ok(null);
+
+  const parts = paiseParts(s, column);
+  if (!parts.ok) return parts;
+  if (parts.data.reduce((sum, p) => sum + p, 0) > MAX_PAISE) {
+    return fail(`${column} is too large (got "${s}")`);
+  }
+  return ok(parts.data.map((p) => p / 100));
+}
+
+/** A date cell that was read, and how. */
+export interface DateRead {
+  /** The calendar date, `YYYY-MM-DD`. */
+  iso: string;
+  /** The cell as typed (trimmed). */
+  written: string;
+  /** Read as day / month / year: anything but plain ISO. */
+  dayFirst: boolean;
+}
+
+function dateProblem(
+  column: string,
+  written: string,
+  problem: Extract<DateTextResult, { ok: false }>,
+): string {
+  if (problem.problem === "unreadable") {
+    return `${column} "${written}" is not a date — write it day first, like 13/02/2025, or as 2025-02-13`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(written)) {
+    return `${column} ${written} is not a real calendar date`;
+  }
+  const hint = problem.swapped ? ` — did you mean ${problem.swapped}?` : "";
+  return `${column} "${written}" is not a real date — dates are written day first, like 13/02/2025${hint}`;
 }
 
 /**
- * Strict `YYYY-MM-DD` calendar date. A day-first date is NOT converted (03/04
- * is ambiguous) but the message offers the ISO form to copy. `notAfter` is the
- * caller's "today" — pure code never reads the clock.
+ * A calendar date, day first: `YYYY-MM-DD`, `D/M/YYYY`, `DD-MM-YYYY`,
+ * `DD.MM.YYYY` or `D/M/YY` (see `parseDateText`). Never US order — 04/02/2025
+ * is 4 February. `notAfter` is the caller's "today" — pure code never reads the
+ * clock.
  */
-export function dateCell(
+export function dateCellRead(
   raw: string | undefined,
   column: string,
   { notAfter }: { notAfter?: string } = {},
-): Cell<string | null> {
+): Cell<DateRead | null> {
   const s = (raw ?? "").trim();
   if (!s) return ok(null);
-  if (!isIsoDate(s)) {
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
-      return fail(`${column} ${s} is not a real calendar date`);
-    }
-    const hint = isoFromDayFirst(s);
-    return fail(
-      `${column} must be written YYYY-MM-DD (got "${s}"${hint ? ` — did you mean ${hint}?` : ""})`,
-    );
+  const parsed = parseDateText(s);
+  if (!parsed.ok) return fail(dateProblem(column, s, parsed));
+  if (notAfter && parsed.iso > notAfter) {
+    const shown = parsed.dayFirst ? `${s} (${parsed.iso})` : parsed.iso;
+    return fail(`${column} ${shown} is in the future`);
   }
-  if (notAfter && s > notAfter) {
-    return fail(`${column} ${s} is in the future`);
-  }
-  return ok(s);
+  return ok({ iso: parsed.iso, written: s, dayFirst: parsed.dayFirst });
+}
+
+/** `dateCellRead`, reduced to the ISO date. */
+export function dateCell(
+  raw: string | undefined,
+  column: string,
+  options: { notAfter?: string } = {},
+): Cell<string | null> {
+  const read = dateCellRead(raw, column, options);
+  if (!read.ok) return read;
+  return ok(read.data?.iso ?? null);
 }
 
 const YES = new Set(["true", "yes", "y", "1"]);
@@ -274,7 +326,13 @@ export function paymentMethodCell(
 
 export const PAYMENT_PURPOSE_VOCABULARY = new Vocabulary<PaymentPurpose>(
   PAYMENT_PURPOSE_LABELS,
-  { KSEB: "kseb_fees", "KSEB fee": "kseb_fees" },
+  {
+    KSEB: "kseb_fees",
+    "KSEB fee": "kseb_fees",
+    refunded: "refund",
+    writeoff: "write_off",
+    "written off": "write_off",
+  },
 );
 
 /** Defaults to "contract" when blank. */
@@ -287,6 +345,19 @@ export function paymentPurposeCell(
   return (
     nullable(PAYMENT_PURPOSE_VOCABULARY.get(s)) ??
     fail(PAYMENT_PURPOSE_VOCABULARY.unknown(column, s))
+  );
+}
+
+/** The method of the booking advance: `null` when blank — nothing is guessed. */
+export function advanceMethodCell(
+  raw: string | undefined,
+  column: string,
+): Cell<PaymentMethod | null> {
+  const s = (raw ?? "").trim();
+  if (!s) return ok(null);
+  return (
+    nullable(PAYMENT_METHOD_VOCABULARY.get(s)) ??
+    fail(PAYMENT_METHOD_VOCABULARY.unknown(column, s))
   );
 }
 

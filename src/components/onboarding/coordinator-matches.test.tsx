@@ -84,15 +84,14 @@ describe("CoordinatorMatches", () => {
     expect(screen.getByRole("listitem")).toHaveTextContent("rows 6 and 9");
   });
 
-  it("flags an account whose name is its e-mail, and says what can really be done", () => {
+  it("flags an account whose name is its e-mail, and points to Edit on the Team page", () => {
     render(<CoordinatorMatches matches={[match({ written: "Sudheesh", account: UNNAMED })]} />);
     const note = screen.getByText(/this account has no name/i);
     expect(note).toBeVisible();
-    // The Team page has no rename: it can add a member (with a name), not edit one.
-    expect(note).toHaveTextContent(/the team page cannot rename it/i);
-    expect(note).toHaveTextContent(/team → add member/i);
-    expect(note).toHaveTextContent(/ask whoever manages the database to set it/i);
-    expect(note).not.toHaveTextContent(/set it on the team page/i);
+    // The Team page can rename a member (Edit), so that is the way out.
+    expect(note).toHaveTextContent(/give it one with edit on the team page/i);
+    expect(note).toHaveTextContent(/check the file again/i);
+    expect(note).not.toHaveTextContent(/cannot rename/i);
   });
 
   it("does not flag an account that has a name", () => {

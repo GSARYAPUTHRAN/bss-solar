@@ -13,7 +13,12 @@ import {
 } from "@/lib/pagination";
 import { normalizeCoordinatorIds } from "@/lib/domain/coordinators";
 import { FEASIBILITY_WARNING_DAYS } from "@/lib/domain/kseb";
+import { incentivePaid } from "@/lib/domain/incentives";
 import { amount, isFinancingType } from "@/lib/domain/payment";
+import {
+  incentiveWriteMessage,
+  type IncentiveSetting,
+} from "@/lib/domain/project-settings";
 import {
   isFeasibilityFilter,
   isIncentiveFilter,
@@ -25,6 +30,7 @@ import {
 import { oneToOne } from "./embeds";
 import type {
   CoordinatorIncentive,
+  IncentivePayment,
   MilestoneStatus,
   PlanType,
   Project,
@@ -55,28 +61,56 @@ const WORK_ORDER_COLUMNS = `id, coordinator_id, client_name, client_phone, addre
 
 /**
  * Everyone on the sale with the incentive the caller may read: the office gets
- * every row, a coordinator only their own (RLS) — the others' come back null.
- * Every embed names its foreign key: `coordinator_incentives` has none of its
- * own towards `work_orders`/`profiles` precisely so these stay unambiguous.
+ * every row, a coordinator only their own (RLS) — the others' come back null,
+ * and so do their instalments (a partner's are never read, whoever recorded
+ * them). Every embed names its foreign key: `coordinator_incentives` has none of
+ * its own towards `work_orders`/`profiles` precisely so these stay unambiguous,
+ * and the instalments hang off it by the composite key.
+ *
+ * The recorder's name is only worth a join where it is shown (the project
+ * page); a partner cannot read the office's profiles, so there it is null.
  */
-const COORDINATORS_EMBED = `coordinators:work_order_coordinators!work_order_coordinators_work_order_id_fkey(
+function coordinatorsEmbed(withRecorder: boolean): string {
+  const recorder = withRecorder
+    ? ",\n        recorder:profiles!coordinator_incentive_payments_recorded_by_fkey(full_name)"
+    : "";
+  return `coordinators:work_order_coordinators!work_order_coordinators_work_order_id_fkey(
     coordinator_id, sort_order, created_at,
     profile:profiles!work_order_coordinators_coordinator_id_fkey(id, full_name),
-    incentive:coordinator_incentives(amount, paid_on))`;
+    incentive:coordinator_incentives(amount, paid_on,
+      payments:coordinator_incentive_payments!coordinator_incentive_payments_incentive_fkey(
+        id, amount, paid_on, note, recorded_by, created_at${recorder})))`;
+}
 
 const SELECT_DETAIL = `${PROJECT_COLUMNS},
   work_order:work_orders!projects_work_order_id_fkey(${WORK_ORDER_COLUMNS},
-    ${COORDINATORS_EMBED}),
+    ${coordinatorsEmbed(true)}),
   cancelled_by_profile:profiles!projects_cancelled_by_fkey(full_name),
   milestones:project_milestones(id, project_id, stage, sort_order, status, notes, completed_at)`;
 
 const SELECT_BRIEF = `id, work_order_id, is_completed, completed_at, feasibility_date,
   cancellation, cancelled_on, cancellation_remarks,
   work_order:work_orders!projects_work_order_id_fkey(client_name, plan_type, order_date,
-    ${COORDINATORS_EMBED})`;
+    ${coordinatorsEmbed(false)})`;
 
 /** The work order as the project page shows it (its coordinators are on the project). */
 export type ProjectWorkOrder = Omit<WorkOrder, "coordinators" | "coordinator" | "project">;
+
+/** One instalment, and who recorded it where the viewer may read profiles. */
+export interface IncentiveInstalment extends IncentivePayment {
+  /** Null (or absent) when the recorder is gone, or the viewer cannot read profiles. */
+  recorded_by_name?: string | null;
+}
+
+/** A coordinator's incentive with its instalments' recorders named. */
+export type DetailIncentive = Omit<CoordinatorIncentive, "payments"> & {
+  payments: IncentiveInstalment[];
+};
+
+/** A `SaleCoordinator` whose instalments say who recorded them. */
+export type ProjectCoordinator = Omit<SaleCoordinator, "incentive"> & {
+  incentive: DetailIncentive | null;
+};
 
 /**
  * A project with everything its detail page shows. `coordinators` are the
@@ -94,7 +128,7 @@ export type ProjectDetail = Omit<
   | "milestones"
 > & {
   work_order: ProjectWorkOrder | null;
-  coordinators: SaleCoordinator[];
+  coordinators: ProjectCoordinator[];
   /** Who recorded the cancellation, as far as the viewer may read profiles. */
   cancelled_by_name: string | null;
   milestones: ProjectMilestone[];
@@ -132,17 +166,52 @@ export type MilestoneSlice = Pick<
   "id" | "stage" | "sort_order" | "status" | "completed_at"
 >;
 
-/** Coordinator incentive totals (rupees) over projects with an incentive set. */
+/**
+ * Coordinator incentive totals (rupees) over projects with an incentive set:
+ * what was agreed, what instalments have paid of it, and what is left.
+ */
 export interface IncentiveSummary {
   projects: number;
-  /** Projects whose incentive is set but not yet paid. */
+  /** Projects on which some incentive is still to pay (instalments short of the agreed amount). */
   pendingProjects: number;
+  /** Σ agreed amounts. */
   total: number;
+  /** Σ instalments paid. */
   paid: number;
+  /** total − paid. */
   pending: number;
 }
 
 type WriteResult = { error: string | null };
+
+/** What an instalment's writable columns take (who recorded it is the database's). */
+export interface IncentivePaymentInput {
+  amount: number;
+  paid_on: string;
+  note: string | null;
+}
+
+type Money = number | string;
+type Embedded<T> = T | T[] | null | undefined;
+
+/** One `coordinator_incentive_payments` row as the embed returns it. */
+interface InstalmentRow {
+  id: string;
+  amount: Money;
+  paid_on: string;
+  note: string | null;
+  recorded_by: string | null;
+  created_at: string;
+  /** Only embedded where the recorder is shown. */
+  recorder?: Embedded<{ full_name: string }>;
+}
+
+/** One `coordinator_incentives` row as the embed returns it. */
+interface IncentiveRow {
+  amount: Money | null;
+  paid_on: string | null;
+  payments?: Embedded<InstalmentRow>;
+}
 
 /** One `work_order_coordinators` row as the embed returns it. */
 interface MemberRow {
@@ -150,17 +219,50 @@ interface MemberRow {
   sort_order: number;
   created_at: string;
   profile: { id: string; full_name: string } | null;
-  incentive:
-    | { amount: number | string | null; paid_on: string | null }
-    | { amount: number | string | null; paid_on: string | null }[]
-    | null;
+  incentive: Embedded<IncentiveRow>;
+}
+
+/** A to-many embed is an array; tolerate the lone object a to-one reading would give. */
+function manyOf<T>(embed: Embedded<T>): T[] {
+  if (Array.isArray(embed)) return embed;
+  return embed ? [embed] : [];
+}
+
+/** Oldest first: by the day paid, then the order they were recorded in. */
+function byPaidDate(a: InstalmentRow, b: InstalmentRow): number {
+  return (
+    (a.paid_on < b.paid_on ? -1 : a.paid_on > b.paid_on ? 1 : 0) ||
+    (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0) ||
+    (a.id < b.id ? -1 : 1)
+  );
+}
+
+function mapIncentive(row: IncentiveRow | null): DetailIncentive | null {
+  if (!row) return null;
+  const payments: IncentiveInstalment[] = manyOf(row.payments)
+    .sort(byPaidDate)
+    .map((p) => ({
+      id: p.id,
+      amount: Number(p.amount),
+      paid_on: p.paid_on,
+      note: p.note,
+      recorded_by: p.recorded_by,
+      recorded_by_name: oneToOne(p.recorder)?.full_name ?? null,
+    }));
+  return {
+    amount: row.amount === null ? null : Number(row.amount),
+    // Derived by the database from the instalments; never written from here.
+    paid_on: row.paid_on,
+    payments,
+    paid: incentivePaid(payments),
+  };
 }
 
 /**
  * The embed's rows as the sale's ordered coordinators — the order the database
  * keeps its first coordinator by (sort_order, then who joined first, then id).
  */
-function mapCoordinators(members: readonly MemberRow[] | null | undefined): SaleCoordinator[] {
+function mapCoordinators(members: readonly MemberRow[] | null | undefined): ProjectCoordinator[] {
   return [...(members ?? [])]
     .sort(
       (a, b) =>
@@ -168,18 +270,12 @@ function mapCoordinators(members: readonly MemberRow[] | null | undefined): Sale
         (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0) ||
         (a.coordinator_id < b.coordinator_id ? -1 : 1),
     )
-    .map((member) => {
-      const row = oneToOne(member.incentive);
-      const incentive: CoordinatorIncentive | null = row
-        ? { amount: row.amount === null ? null : Number(row.amount), paid_on: row.paid_on }
-        : null;
-      return {
-        id: member.coordinator_id,
-        full_name: member.profile?.full_name ?? "Unknown",
-        sort_order: member.sort_order,
-        incentive,
-      };
-    });
+    .map((member) => ({
+      id: member.coordinator_id,
+      full_name: member.profile?.full_name ?? "Unknown",
+      sort_order: member.sort_order,
+      incentive: mapIncentive(oneToOne(member.incentive)),
+    }));
 }
 
 type DetailRow = Omit<ProjectDetail, "work_order" | "coordinators" | "cancelled_by_name"> & {
@@ -325,16 +421,25 @@ export const projectsRepository = {
 
       // The incentive columns are the caller's own (RLS): the office sees every
       // coordinator's, so it may narrow to one person; a coordinator only ever
-      // sees theirs.
+      // sees theirs. "Unpaid" is instalments short of the agreed amount.
       if (isIncentiveFilter(incentive)) {
-        if (incentive === "pending") {
-          query = coordinatorId
+        const owed = () =>
+          coordinatorId
             ? query.contains("incentive_unpaid_coordinator_ids", [coordinatorId])
             : query.gt("incentive_unpaid_count", 0);
-        } else {
-          query = coordinatorId
-            ? query.contains("incentive_paid_coordinator_ids", [coordinatorId])
-            : query.gt("incentive_count", 0).eq("incentive_unpaid_count", 0);
+        switch (incentive) {
+          case "pending":
+            query = owed();
+            break;
+          // Something is still owed AND money has been paid on the sale.
+          case "partly_paid":
+            query = owed().gt("incentive_paid", 0);
+            break;
+          case "paid":
+            query = coordinatorId
+              ? query.contains("incentive_paid_coordinator_ids", [coordinatorId])
+              : query.gt("incentive_count", 0).eq("incentive_unpaid_count", 0);
+            break;
         }
       }
       return query;
@@ -347,14 +452,22 @@ export const projectsRepository = {
       {
         // Rows without a value (no feasibility clock, no incentive) sort last in
         // either direction, so "most urgent first" never opens on blanks.
-        rows: () =>
-          filtered(false)
-            .order(sortCol, { ascending: params.dir === "asc", nullsFirst: false })
-            // Unique last: a bulk import creates every row in one transaction with
-            // the same created_at, so ties are the norm and without this the same
-            // project can land on two pages while another lands on none.
+        rows: () => {
+          const sorted = filtered(false).order(sortCol, {
+            ascending: params.dir === "asc",
+            nullsFirst: false,
+          });
+          // Ties show the newest project first. A bulk import creates every row in
+          // one transaction with the same created_at, so `id` goes last: a unique
+          // key, without which the same project can land on two pages while
+          // another lands on none.
+          return (sortCol === "created_at"
+            ? sorted
+            : sorted.order("created_at", { ascending: false })
+          )
             .order("id", { ascending: true })
-            .range(from, to),
+            .range(from, to);
+        },
         countOnly: () => filtered(true),
       },
       "projects",
@@ -509,26 +622,92 @@ export const projectsRepository = {
   },
 
   /**
-   * One person's incentive on a sale: amount and paid date only (the column
-   * grant says the same). The row exists for every coordinator of the sale — the
-   * database opens it with the membership — so no row means that person is not
-   * on the sale (any more), or the caller is not office staff.
+   * One person's agreed incentive on a sale (null removes it). The amount is
+   * the only column written: the paid date is derived by the database from the
+   * instalments, and the column grant says the same. The row exists for every
+   * coordinator of the sale — the database opens it with the membership — so no
+   * row means that person is not on the sale (any more), or the caller is not
+   * office staff. The database refuses an amount below what has been paid.
    */
   async setCoordinatorIncentive(
     workOrderId: string,
     coordinatorId: string,
-    incentive: CoordinatorIncentive,
+    incentive: IncentiveSetting,
   ): Promise<WriteResult> {
     const supabase = await createClient();
     const { data, error } = await supabase
       .from("coordinator_incentives")
-      .update({ amount: incentive.amount, paid_on: incentive.paid_on })
+      .update({ amount: incentive.amount })
       .eq("work_order_id", workOrderId)
       .eq("coordinator_id", coordinatorId)
       .select("coordinator_id");
-    if (error) return { error: error.message };
+    if (error) return { error: incentiveWriteMessage(error.message) };
     if (!data || data.length === 0) {
       return { error: "The incentive was not saved — that person may no longer be on this sale." };
+    }
+    return { error: null };
+  },
+
+  /**
+   * Record one instalment against a person's incentive. Who recorded it is
+   * stamped by the database from the session. The database refuses one that
+   * would take the instalments past the agreed amount, or one on an incentive
+   * with no amount.
+   */
+  async recordIncentivePayment(
+    workOrderId: string,
+    coordinatorId: string,
+    payment: IncentivePaymentInput,
+  ): Promise<WriteResult> {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("coordinator_incentive_payments")
+      .insert({ work_order_id: workOrderId, coordinator_id: coordinatorId, ...payment })
+      .select("id");
+    if (error) {
+      return {
+        error:
+          // The incentive row went with the person when they left the sale.
+          error.code === "23503"
+            ? "That person no longer has an incentive on this sale."
+            : incentiveWriteMessage(error.message),
+      };
+    }
+    if (!data || data.length === 0) {
+      return { error: "The payment was not saved — office staff only." };
+    }
+    return { error: null };
+  },
+
+  /** Correct an instalment's amount, date or note (never which incentive it belongs to). */
+  async updateIncentivePayment(
+    id: string,
+    payment: IncentivePaymentInput,
+  ): Promise<WriteResult> {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("coordinator_incentive_payments")
+      .update(payment)
+      .eq("id", id)
+      .select("id");
+    if (error) return { error: incentiveWriteMessage(error.message) };
+    if (!data || data.length === 0) {
+      return { error: "That payment was not found, or you cannot change it." };
+    }
+    return { error: null };
+  },
+
+  /** Remove an instalment (a mistaken one): the incentive is owed again. */
+  async deleteIncentivePayment(id: string): Promise<WriteResult> {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("coordinator_incentive_payments")
+      .delete()
+      .eq("id", id)
+      .select("id");
+    if (error) return { error: incentiveWriteMessage(error.message) };
+    if (!data || data.length === 0) {
+      return { error: "That payment was not found, or you cannot remove it." };
     }
     return { error: null };
   },
