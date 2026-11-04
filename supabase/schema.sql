@@ -43,9 +43,11 @@ create type financing_type as enum ('self', 'loan');
 create type payment_method as enum (
   'cash', 'upi', 'bank_transfer', 'cheque', 'loan_disbursement', 'other'
 );
--- `kseb_fees` records KSEB charges collected through BSS without inflating the
--- contract receivable.
-create type payment_purpose as enum ('contract', 'kseb_fees');
+-- `kseb_fees` records KSEB charges kept apart from the contract (paid by the
+-- customer through BSS, or by the office on their behalf: payments.paid_by_office).
+-- `refund` is money handed back to the customer; `write_off` a balance the
+-- office gives up (its reason is required).
+create type payment_purpose as enum ('contract', 'kseb_fees', 'refund', 'write_off');
 -- A sale is a kW solar plant or a custom plan (e.g. "1 panel", "Inverter +
 -- panel"): a custom plan's details live in work_orders.plant_capacity, it has no
 -- kW, no KSEB feasibility and a single Handover milestone.
@@ -220,6 +222,10 @@ create table work_orders (
            then parse_capacity_kw(plant_capacity) end
     ) stored,
   advance_amount numeric(12,2) default 0, -- the booking advance (first money in)
+  -- How and when the advance was paid; optional, locked with the advance.
+  advance_method payment_method,
+  advance_paid_on date,
+  advance_reference text,
   total_cost numeric(12,2) not null default 0,
   order_date date not null default current_date,
   status work_order_status not null default 'pending',
@@ -340,8 +346,10 @@ create trigger on_project_created
 -- a project's coordinators are its work order's. work_orders.coordinator_id is
 -- the FIRST coordinator (lowest sort_order), kept by trigger.
 -- Each person's incentive lives in coordinator_incentives (one row per
--- membership, opened and closed by trigger; the office edits amount and paid
--- date only) and is private: office all, a coordinator their own row.
+-- membership, opened and closed by trigger; the office edits the agreed amount,
+-- and what is paid out of it is recorded in dated instalments in
+-- coordinator_incentive_payments) and is private: office all, a coordinator
+-- their own row.
 
 -- Most people who can share one sale (a typo guard). Mirrored as
 -- MAX_SALE_COORDINATORS in lib/domain/coordinators.ts; a test pins the two.
@@ -389,13 +397,77 @@ create index idx_coordinator_incentives_coordinator
   where amount is not null;
 
 -- Writes only through SECURITY DEFINER code (triggers, set_work_order_coordinators,
--- import_projects). The office edits an incentive's amount and paid date only.
+-- import_projects). The office edits an incentive's agreed amount (and, for the
+-- previous build, its paid date — derived from the instalments since 2026-11-04).
 revoke insert, update, delete on work_order_coordinators from anon, authenticated;
 revoke insert, update, delete on coordinator_incentives from anon, authenticated;
 grant select on work_order_coordinators, coordinator_incentives to authenticated;
 grant update (amount, paid_on) on coordinator_incentives to authenticated;
 grant select, insert, update, delete
   on work_order_coordinators, coordinator_incentives to service_role;
+
+-- ---- Incentive instalments ------------------------------------------------
+-- coordinator_incentives.amount is the AGREED incentive; what is paid out of it
+-- is recorded here in dated instalments (paid = Σ instalments, pending = amount
+-- − paid). coordinator_incentives.paid_on is DERIVED from them by trigger.
+-- One row per dated payment against a coordinator's incentive. The composite
+-- foreign key (no direct one to work_orders) keeps PostgREST embeds from
+-- projects / work_order_coordinators unambiguous; name the key in an embed.
+create table coordinator_incentive_payments (
+  id uuid primary key default gen_random_uuid(),
+  work_order_id  uuid not null,
+  coordinator_id uuid not null,
+  amount numeric(12,2) not null
+    constraint coordinator_incentive_payments_amount_positive check (amount > 0),
+  paid_on date not null,
+  note text,
+  recorded_by uuid references profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint coordinator_incentive_payments_incentive_fkey
+    foreign key (work_order_id, coordinator_id)
+    references coordinator_incentives (work_order_id, coordinator_id)
+    on delete cascade
+);
+create index idx_incentive_payments_incentive
+  on coordinator_incentive_payments (work_order_id, coordinator_id, paid_on);
+
+alter table coordinator_incentive_payments enable row level security;
+
+-- The office records, corrects and removes instalments; a coordinator reads
+-- their own. Column grants: who recorded it, when, and which incentive it
+-- belongs to are never client-writable.
+revoke all on coordinator_incentive_payments from anon, authenticated;
+grant select on coordinator_incentive_payments to authenticated;
+grant insert (work_order_id, coordinator_id, amount, paid_on, note)
+  on coordinator_incentive_payments to authenticated;
+grant update (amount, paid_on, note) on coordinator_incentive_payments to authenticated;
+grant delete on coordinator_incentive_payments to authenticated;
+grant select, insert, update, delete
+  on coordinator_incentive_payments to service_role;
+
+-- Σ instalments, and the date an incentive was settled in full. Internal
+-- (triggers only). Instalments never exceed the amount, so "settled" means
+-- Σ = amount, and the instalment that settles it is the latest by date.
+create or replace function incentive_paid(p_work_order_id uuid, p_coordinator_id uuid)
+returns numeric language sql stable set search_path = public as $$
+  select coalesce(sum(p.amount), 0)
+  from coordinator_incentive_payments p
+  where p.work_order_id = p_work_order_id and p.coordinator_id = p_coordinator_id;
+$$;
+revoke execute on function incentive_paid(uuid, uuid) from public, anon, authenticated;
+grant execute on function incentive_paid(uuid, uuid) to service_role;
+
+create or replace function incentive_paid_date(
+  p_work_order_id uuid, p_coordinator_id uuid, p_amount numeric
+)
+returns date language sql stable set search_path = public as $$
+  select case when p_amount > 0 and sum(p.amount) >= p_amount then max(p.paid_on) end
+  from coordinator_incentive_payments p
+  where p.work_order_id = p_work_order_id and p.coordinator_id = p_coordinator_id;
+$$;
+revoke execute on function incentive_paid_date(uuid, uuid, numeric) from public, anon, authenticated;
+grant execute on function incentive_paid_date(uuid, uuid, numeric) to service_role;
 
 -- Membership helpers. SECURITY DEFINER: they read work_order_coordinators
 -- without its RLS, so policies call them without recursing. Set-returning, so
@@ -436,6 +508,11 @@ returns uuid language sql stable security definer set search_path = public as $$
 $$;
 revoke execute on function first_coordinator(uuid) from public, anon, authenticated;
 grant execute on function first_coordinator(uuid) to service_role;
+
+comment on column coordinator_incentives.amount is
+  'The agreed incentive. What has been paid out of it is coordinator_incentive_payments.';
+comment on column coordinator_incentives.paid_on is
+  'DERIVED by trigger from coordinator_incentive_payments: the date the incentive was settled in full, NULL while any of it is unpaid.';
 
 -- ============ SERVICE TICKETS (BSS Service Sheet) ============
 create table service_tickets (
@@ -506,7 +583,8 @@ create index idx_tickets_assigned_to
 -- Every collection after the booking advance, in any number of stages, keyed to
 -- the work order (the money's natural anchor: it exists before approval and
 -- survives a project being rebuilt).
---   contract received = work_orders.advance_amount + Σ payments (purpose = contract)
+--   net received = work_orders.advance_amount + Σ contract − Σ refund
+--   balance due  = total_cost − net received − Σ write_off
 create table payments (
   id uuid primary key default gen_random_uuid(),
   work_order_id uuid not null references work_orders(id) on delete cascade,
@@ -517,6 +595,9 @@ create table payments (
   purpose payment_purpose not null default 'contract',
   reference text,
   notes text,
+  -- kseb_fees only: false = the customer paid the fee through BSS, true = the
+  -- BSS office paid KSEB for the customer.
+  paid_by_office boolean not null default false,
   recorded_by uuid references profiles(id) on delete set null,
   -- Which of the old fixed work-order slots (1 = first, 2 = second payment,
   -- dropped 2026-10) this row was carried over from; NULL for every payment
@@ -524,12 +605,19 @@ create table payments (
   legacy_slot smallint
     constraint payments_legacy_slot_valid check (legacy_slot in (1, 2)),
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  constraint payments_paid_by_office_only_kseb
+    check (paid_by_office = false or purpose = 'kseb_fees'),
+  -- A write-off without its reason is not recordable.
+  constraint payments_write_off_needs_reason
+    check (purpose <> 'write_off' or nullif(btrim(notes), '') is not null)
 );
 create index idx_payments_work_order on payments (work_order_id, paid_on);
 create unique index uniq_payments_legacy_slot
   on payments (work_order_id, legacy_slot)
   where legacy_slot is not null;
+comment on column payments.paid_by_office is
+  'kseb_fees only: false = the customer paid the fee through BSS, true = the BSS office paid KSEB for the customer.';
 
 -- ============ NOTIFICATIONS (in-app inbox) ============
 -- Rows are written ONLY by trusted server code (service role, through
@@ -615,6 +703,8 @@ create trigger t_proj_updated before update on projects
 create trigger t_ticket_updated before update on service_tickets
   for each row execute function touch_updated_at();
 create trigger t_payment_updated before update on payments
+  for each row execute function touch_updated_at();
+create trigger t_cip_updated before update on coordinator_incentive_payments
   for each row execute function touch_updated_at();
 
 -- ============ ROW LEVEL SECURITY ============
@@ -723,6 +813,18 @@ create policy ci_select on coordinator_incentives for select using (
 create policy ci_admin_update on coordinator_incentives for update
   using ((select is_admin())) with check ((select is_admin()));
 
+-- INCENTIVE INSTALMENTS: the office records, corrects and removes them; a
+-- coordinator reads their own (never anyone else's).
+create policy cip_select on coordinator_incentive_payments for select using (
+  (select is_admin()) or coordinator_id = (select auth.uid())
+);
+create policy cip_admin_insert on coordinator_incentive_payments
+  for insert with check ((select is_admin()));
+create policy cip_admin_update on coordinator_incentive_payments
+  for update using ((select is_admin())) with check ((select is_admin()));
+create policy cip_admin_delete on coordinator_incentive_payments
+  for delete using ((select is_admin()));
+
 -- NOTIFICATIONS / PUSH: own rows only; no INSERT/UPDATE policies (see above).
 create policy notification_select_own on notifications for select
   using (recipient_id = auth.uid());
@@ -788,9 +890,10 @@ create trigger t_profiles_guard_role before update on profiles
 -- Office decisions on a work order. A signed-in non-admin may create one only
 -- as 'pending' (an order inserted as 'approved' would skip approval and never
 -- get its project — t_wo_create_project fires on UPDATE only), may never change
--- its status or owner, and may not change its advance or total cost once it has
--- left 'pending' (both feed the money received and the balance). In EVERY
--- context the plan is fixed once the work order has a project.
+-- its status or owner, and may not change its advance (amount, method, date or
+-- reference) or total cost once it has left 'pending' (they feed the money
+-- received and the balance). In EVERY context the plan is fixed once the work
+-- order has a project.
 create or replace function guard_work_order_update()
 returns trigger language plpgsql security definer set search_path = public as $$
 begin
@@ -819,7 +922,10 @@ begin
     end if;
     if old.status <> 'pending'
        and (coalesce(new.advance_amount, 0) is distinct from coalesce(old.advance_amount, 0)
-            or new.total_cost is distinct from old.total_cost) then
+            or new.total_cost is distinct from old.total_cost
+            or new.advance_method is distinct from old.advance_method
+            or new.advance_paid_on is distinct from old.advance_paid_on
+            or new.advance_reference is distinct from old.advance_reference) then
       raise exception 'Only the office can change the amounts of an approved or rejected work order'
         using errcode = '42501';
     end if;
@@ -927,6 +1033,148 @@ $$;
 create trigger t_ci_touch
   before update on coordinator_incentives
   for each row execute function touch_coordinator_incentive();
+
+-- ---- Incentive instalments: caps, derived paid date ------------------------
+-- An instalment needs the agreed amount, and the instalments together can never
+-- exceed it. The incentive row is locked first, so two instalments recorded at
+-- once cannot both slip under the cap. Who recorded it comes from the session.
+create or replace function guard_incentive_payment()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_amount numeric;
+  v_others numeric;
+begin
+  -- A BEFORE trigger runs ahead of the row policy, and this one reads an
+  -- incentive its caller may not be allowed to see: without this a coordinator's
+  -- insert aimed at a partner's incentive would learn from the messages below
+  -- whether it is set and how much of it is still unpaid.
+  if auth.uid() is not null and not public.is_admin() then
+    raise exception 'new row violates row-level security policy for table "coordinator_incentive_payments"'
+      using errcode = '42501';
+  end if;
+
+  if tg_op = 'INSERT' then
+    new.recorded_by := coalesce(auth.uid(), new.recorded_by);
+  else
+    if new.work_order_id is distinct from old.work_order_id
+       or new.coordinator_id is distinct from old.coordinator_id then
+      raise exception 'A payment cannot move to another incentive' using errcode = '23514';
+    end if;
+    -- Never re-attributed; the FK's ON DELETE SET NULL (a profile deleted) passes.
+    if new.recorded_by is not null and new.recorded_by is distinct from old.recorded_by then
+      new.recorded_by := old.recorded_by;
+    end if;
+  end if;
+
+  select i.amount into v_amount
+  from coordinator_incentives i
+  where i.work_order_id = new.work_order_id and i.coordinator_id = new.coordinator_id
+  for update;
+  if not found then
+    return new;   -- the foreign key refuses it
+  end if;
+  if v_amount is null then
+    raise exception 'Set the incentive amount first' using errcode = '23514';
+  end if;
+
+  select coalesce(sum(p.amount), 0) into v_others
+  from coordinator_incentive_payments p
+  where p.work_order_id = new.work_order_id
+    and p.coordinator_id = new.coordinator_id
+    and p.id <> new.id;
+  if v_others + new.amount > v_amount then
+    raise exception 'Instalments exceed the incentive' using errcode = '23514';
+  end if;
+  return new;
+end;
+$$;
+create trigger t_cip_guard
+  before insert or update on coordinator_incentive_payments
+  for each row execute function guard_incentive_payment();
+
+-- coordinator_incentives.paid_on follows the instalments. The write is skipped
+-- when nothing changes, so a part-payment does not restamp the incentive.
+create or replace function sync_incentive_paid_on()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_wo uuid := case tg_op when 'DELETE' then old.work_order_id else new.work_order_id end;
+  v_co uuid := case tg_op when 'DELETE' then old.coordinator_id else new.coordinator_id end;
+begin
+  update coordinator_incentives i
+     set paid_on = incentive_paid_date(i.work_order_id, i.coordinator_id, i.amount)
+   where i.work_order_id = v_wo
+     and i.coordinator_id = v_co
+     and i.amount > 0
+     and i.paid_on is distinct from incentive_paid_date(i.work_order_id, i.coordinator_id, i.amount);
+  return null;
+end;
+$$;
+create trigger t_cip_sync_paid_on
+  after insert or update or delete on coordinator_incentive_payments
+  for each row execute function sync_incentive_paid_on();
+
+-- The agreed amount can never drop below what has been paid out of it, and the
+-- paid date is the derived one. The previous build writes (amount, paid_on) in
+-- one update: a date newly set while part of the amount is unpaid means "paid
+-- in full" there, kept as written for settle_incentive_paid_on to record as the
+-- settling instalment. Any other direct change of the date — clearing or moving
+-- the date of an incentive the instalments have settled — is refused. A stale
+-- date that is merely re-sent, or left behind by a changed amount, is derived.
+-- Runs before t_ci_touch, which then stamps the final figures.
+create or replace function guard_incentive_paid()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_paid numeric := incentive_paid(new.work_order_id, new.coordinator_id);
+  v_derived date;
+begin
+  if v_paid > 0 and (new.amount is null or new.amount < v_paid) then
+    raise exception 'The incentive cannot be less than the % already paid', v_paid
+      using errcode = '23514';
+  end if;
+  -- No amount: nothing to derive (coordinator_incentives_paid_needs_amount
+  -- refuses a date). A zero incentive has no instalment to date it by.
+  if new.amount is null or new.amount = 0 then
+    return new;
+  end if;
+
+  v_derived := incentive_paid_date(new.work_order_id, new.coordinator_id, new.amount);
+  if new.paid_on is distinct from old.paid_on and new.paid_on is distinct from v_derived then
+    if new.paid_on is not null and v_paid < new.amount then
+      return new;
+    end if;
+    raise exception 'The paid date follows the incentive payments — record, change or remove a payment instead'
+      using errcode = '23514';
+  end if;
+  new.paid_on := v_derived;
+  return new;
+end;
+$$;
+create trigger t_ci_guard_paid
+  before update on coordinator_incentives
+  for each row execute function guard_incentive_paid();
+
+-- Records the instalment that settles an incentive the previous build marked
+-- paid (the rest of the amount, on the date it entered).
+create or replace function settle_incentive_paid_on()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_paid numeric := incentive_paid(new.work_order_id, new.coordinator_id);
+begin
+  if new.amount > 0 and v_paid < new.amount then
+    insert into coordinator_incentive_payments
+      (work_order_id, coordinator_id, amount, paid_on, note, recorded_by)
+    values
+      (new.work_order_id, new.coordinator_id, new.amount - v_paid, new.paid_on,
+       'Marked paid', auth.uid());
+  end if;
+  return null;
+end;
+$$;
+create trigger t_ci_settle_paid
+  after update of paid_on on coordinator_incentives
+  for each row
+  when (new.paid_on is not null and new.paid_on is distinct from old.paid_on)
+  execute function settle_incentive_paid_on();
 
 -- Every new work order starts with its coordinator as first member (the app,
 -- the import and fixtures alike).
@@ -1165,8 +1413,11 @@ create trigger t_ticket_assign_no before insert on service_tickets
 -- ============ FLATTENED LIST VIEWS (server-side pagination) ============
 -- SECURITY INVOKER: the caller's RLS on every base table (payments included)
 -- still applies.
---   amount_received = advance + Σ contract payments
---   balance_due     = total_cost − amount_received
+--   amount_received = advance + Σ contract − Σ refund   (net of refunds)
+--   balance_due     = total_cost − amount_received − Σ write-off
+-- refunded_total, written_off_total, kseb_fees_collected (the customer paid) and
+-- kseb_fees_by_office are the other ledger totals; an incentive is unpaid while
+-- its instalments fall short of its agreed amount (incentive_paid = Σ instalments).
 -- coordinator_name lists every coordinator of the sale ("A, B"). Cancelled /
 -- refunded projects leave payment_pending and feasibility_days_left, and their
 -- feasibility clock stops at cancelled_on. The incentive columns are the
@@ -1186,16 +1437,25 @@ select
   coalesce(pay.contract_total, 0)::numeric(12,2) as payments_total,
   coalesce(pay.contract_count, 0)::integer as payment_count,
   pay.last_paid_on as last_payment_on,
-  (coalesce(w.advance_amount, 0) + coalesce(pay.contract_total, 0))::numeric(12,2)
+  -- Net of refunds: money handed back is no longer received.
+  (coalesce(w.advance_amount, 0) + coalesce(pay.contract_total, 0)
+     - coalesce(pay.refunded_total, 0))::numeric(12,2)
     as amount_received,
-  (w.total_cost - coalesce(w.advance_amount, 0) - coalesce(pay.contract_total, 0))::numeric(12,2)
+  -- Net received and written-off both reduce what is still due.
+  (w.total_cost - coalesce(w.advance_amount, 0) - coalesce(pay.contract_total, 0)
+     + coalesce(pay.refunded_total, 0) - coalesce(pay.written_off_total, 0))::numeric(12,2)
     as balance_due,
   -- 2026-10-22
   coalesce(team.ids, '{}'::uuid[]) as coordinator_ids,
   coalesce(team.names, '{}'::text[]) as coordinator_names,
   w.plan_type,
   pr.cancellation,
-  pr.cancelled_on
+  pr.cancelled_on,
+  -- 2026-11-04
+  coalesce(pay.refunded_total, 0)::numeric(12,2) as refunded_total,
+  coalesce(pay.written_off_total, 0)::numeric(12,2) as written_off_total,
+  coalesce(pay.kseb_collected, 0)::numeric(12,2) as kseb_fees_collected,
+  coalesce(pay.kseb_by_office, 0)::numeric(12,2) as kseb_fees_by_office
 from work_orders w
 left join projects pr on pr.work_order_id = w.id
 left join lateral (
@@ -1212,7 +1472,11 @@ left join lateral (
   select
     sum(p.amount) filter (where p.purpose = 'contract') as contract_total,
     count(*) filter (where p.purpose = 'contract') as contract_count,
-    max(p.paid_on) filter (where p.purpose = 'contract') as last_paid_on
+    max(p.paid_on) filter (where p.purpose = 'contract') as last_paid_on,
+    sum(p.amount) filter (where p.purpose = 'refund') as refunded_total,
+    sum(p.amount) filter (where p.purpose = 'write_off') as written_off_total,
+    sum(p.amount) filter (where p.purpose = 'kseb_fees' and not p.paid_by_office) as kseb_collected,
+    sum(p.amount) filter (where p.purpose = 'kseb_fees' and p.paid_by_office) as kseb_by_office
   from payments p
   where p.work_order_id = w.id
 ) pay on true;
@@ -1233,15 +1497,18 @@ select
   coalesce(pay.contract_total, 0)::numeric(12,2) as payments_total,
   coalesce(pay.contract_count, 0)::integer as payment_count,
   pay.last_paid_on as last_payment_on,
-  (coalesce(wo.advance_amount, 0) + coalesce(pay.contract_total, 0))::numeric(12,2)
+  (coalesce(wo.advance_amount, 0) + coalesce(pay.contract_total, 0)
+     - coalesce(pay.refunded_total, 0))::numeric(12,2)
     as amount_received,
   (coalesce(wo.total_cost, 0) - coalesce(wo.advance_amount, 0)
-     - coalesce(pay.contract_total, 0))::numeric(12,2) as balance_due,
+     - coalesce(pay.contract_total, 0) + coalesce(pay.refunded_total, 0)
+     - coalesce(pay.written_off_total, 0))::numeric(12,2) as balance_due,
   -- Commissioned, not fully collected, and not cancelled / refunded (whose
   -- balance is no longer receivable).
   (pr.is_completed and pr.cancellation is null
     and coalesce(wo.total_cost, 0) - coalesce(wo.advance_amount, 0)
-        - coalesce(pay.contract_total, 0) > 0) as payment_pending,
+        - coalesce(pay.contract_total, 0) + coalesce(pay.refunded_total, 0)
+        - coalesce(pay.written_off_total, 0) > 0) as payment_pending,
   pr.feasibility_date,
   fz.periods as feasibility_periods,
   (fz.periods - 1) as feasibility_renewals,
@@ -1257,7 +1524,8 @@ select
   inc.total::numeric(12,2) as coordinator_incentive,
   case when inc.set_count > 0 and inc.unpaid_count = 0 then inc.last_paid_on end
     as incentive_paid_on,
-  -- 2026-10-22
+  -- 2026-10-22. An incentive is unpaid while its instalments fall short of its
+  -- agreed amount.
   coalesce(team.ids, '{}'::uuid[]) as coordinator_ids,
   coalesce(team.names, '{}'::text[]) as coordinator_names,
   wo.plan_type,
@@ -1269,7 +1537,13 @@ select
   coalesce(inc.set_count, 0)::integer as incentive_count,
   coalesce(inc.unpaid_count, 0)::integer as incentive_unpaid_count,
   coalesce(inc.unpaid_ids, '{}'::uuid[]) as incentive_unpaid_coordinator_ids,
-  coalesce(inc.paid_ids, '{}'::uuid[]) as incentive_paid_coordinator_ids
+  coalesce(inc.paid_ids, '{}'::uuid[]) as incentive_paid_coordinator_ids,
+  -- 2026-11-04
+  coalesce(pay.refunded_total, 0)::numeric(12,2) as refunded_total,
+  coalesce(pay.written_off_total, 0)::numeric(12,2) as written_off_total,
+  coalesce(pay.kseb_collected, 0)::numeric(12,2) as kseb_fees_collected,
+  coalesce(pay.kseb_by_office, 0)::numeric(12,2) as kseb_fees_by_office,
+  coalesce(inc.paid, 0)::numeric(12,2) as incentive_paid
 from projects pr
 left join work_orders wo on wo.id = pr.work_order_id
 left join lateral (
@@ -1285,22 +1559,37 @@ left join lateral (
   select
     sum(p.amount) filter (where p.purpose = 'contract') as contract_total,
     count(*) filter (where p.purpose = 'contract') as contract_count,
-    max(p.paid_on) filter (where p.purpose = 'contract') as last_paid_on
+    max(p.paid_on) filter (where p.purpose = 'contract') as last_paid_on,
+    sum(p.amount) filter (where p.purpose = 'refund') as refunded_total,
+    sum(p.amount) filter (where p.purpose = 'write_off') as written_off_total,
+    sum(p.amount) filter (where p.purpose = 'kseb_fees' and not p.paid_by_office) as kseb_collected,
+    sum(p.amount) filter (where p.purpose = 'kseb_fees' and p.paid_by_office) as kseb_by_office
   from payments p
   where p.work_order_id = pr.work_order_id
 ) pay on true
 left join lateral (
-  -- RLS: the office sees everyone's; a coordinator only their own.
+  -- RLS: the office sees everyone's; a coordinator only their own (instalments
+  -- included).
   select
-    sum(i.amount) as total,
-    sum(i.amount) filter (where i.paid_on is null) as unpaid,
+    sum(x.amount) as total,
+    sum(x.paid) as paid,
+    sum(x.amount - x.paid) as unpaid,
     count(*) as set_count,
-    count(*) filter (where i.paid_on is null) as unpaid_count,
-    max(i.paid_on) as last_paid_on,
-    array_agg(i.coordinator_id order by i.coordinator_id) filter (where i.paid_on is null) as unpaid_ids,
-    array_agg(i.coordinator_id order by i.coordinator_id) filter (where i.paid_on is not null) as paid_ids
-  from coordinator_incentives i
-  where i.work_order_id = pr.work_order_id and i.amount is not null
+    count(*) filter (where x.paid < x.amount) as unpaid_count,
+    max(x.paid_on) as last_paid_on,
+    array_agg(x.coordinator_id order by x.coordinator_id) filter (where x.paid < x.amount) as unpaid_ids,
+    array_agg(x.coordinator_id order by x.coordinator_id) filter (where x.paid >= x.amount) as paid_ids
+  from (
+    select
+      i.coordinator_id, i.amount, i.paid_on,
+      coalesce((
+        select sum(ip.amount)
+        from coordinator_incentive_payments ip
+        where ip.work_order_id = i.work_order_id and ip.coordinator_id = i.coordinator_id
+      ), 0) as paid
+    from coordinator_incentives i
+    where i.work_order_id = pr.work_order_id and i.amount is not null
+  ) x
 ) inc on true
 cross join lateral (
   -- The clock runs from the feasibility date until commissioning or
@@ -1373,18 +1662,24 @@ as $$
     coalesce(
       (select sum(feasibility_extension_cost) from projects_list), 0
     )::numeric,
-    -- Every coordinator's unpaid incentive (a coordinator's call: their own).
+    -- Every coordinator's agreed incentive not yet paid out in instalments (a
+    -- coordinator's call: their own).
     coalesce(
-      (select sum(i.amount) from coordinator_incentives i
+      (select sum(i.amount - coalesce((
+                select sum(ip.amount) from coordinator_incentive_payments ip
+                where ip.work_order_id = i.work_order_id
+                  and ip.coordinator_id = i.coordinator_id), 0))
+         from coordinator_incentives i
          join projects p on p.work_order_id = i.work_order_id
-        where i.amount is not null and i.paid_on is null), 0
+        where i.amount is not null), 0
     )::numeric,
     (select count(*) from projects where cancellation = 'cancelled')::bigint,
     (select count(*) from projects where cancellation = 'refunded')::bigint;
 $$;
 
--- Incentive totals per person; the office may narrow to one coordinator. A shared
--- project counts once.
+-- Incentive totals per person (same signature). SECURITY INVOKER: a
+-- coordinator's call only ever sums their own rows; the office may narrow to
+-- one coordinator. A shared project counts once. paid = Σ instalments.
 create or replace function incentive_summary(p_coordinator uuid default null)
 returns table (
   projects bigint, pending_projects bigint,
@@ -1393,12 +1688,17 @@ returns table (
 language sql stable security invoker set search_path = public as $$
   select
     count(distinct i.work_order_id)::bigint,
-    count(distinct i.work_order_id) filter (where i.paid_on is null)::bigint,
+    count(distinct i.work_order_id) filter (where ip.paid < i.amount)::bigint,
     coalesce(sum(i.amount), 0)::numeric,
-    coalesce(sum(i.amount) filter (where i.paid_on is not null), 0)::numeric,
-    coalesce(sum(i.amount) filter (where i.paid_on is null), 0)::numeric
+    coalesce(sum(ip.paid), 0)::numeric,
+    coalesce(sum(i.amount - ip.paid), 0)::numeric
   from coordinator_incentives i
   join projects p on p.work_order_id = i.work_order_id
+  cross join lateral (
+    select coalesce(sum(x.amount), 0) as paid
+    from coordinator_incentive_payments x
+    where x.work_order_id = i.work_order_id and x.coordinator_id = i.coordinator_id
+  ) ip
   where i.amount is not null
     and (p_coordinator is null or i.coordinator_id = p_coordinator);
 $$;
@@ -1749,18 +2049,24 @@ grant execute on function unregister_push_subscription(text) to authenticated, s
 -- existing consumer number, inserts the approved work order, its extra
 -- coordinators and its project (the trigger seeds the plan's milestones),
 -- advances the milestones to the requested stage, sets the cancellation, the
--- incentives and records every payment in the ledger. Office only; runs with
--- the caller's identity for payments.recorded_by and cancelled_by. Concurrent
--- imports run one after the other. A commissioning date the sheet does not give
--- stays unknown — it is never invented.
+-- incentives (agreed amount first, then each dated instalment) and records
+-- every payment in the ledger. Office only; runs with the caller's identity for
+-- payments.recorded_by and cancelled_by. Concurrent imports run one after the
+-- other. A commissioning date the sheet does not give stays unknown — it is
+-- never invented.
 -- Row (JSON): row_no, client_name, client_phone, address, plant_capacity (the
--- plan label), plan_type, total_cost, advance_amount, order_date,
--- coordinator_ids (1..max_sale_coordinators(), first = first coordinator),
--- current_stage, is_completed, commissioned_on, consumer_number, kseb_section,
--- financing_type, loan_bank_name, notes, feasibility_date, cancellation,
--- cancelled_on, cancellation_remarks, incentives [{coordinator_id, amount,
--- paid_on}], payments [{amount, paid_on, method, purpose, reference, notes}].
--- Still accepted from the previous build: coordinator_email (blank = the
+-- plan label), plan_type, total_cost, advance_amount, advance_method,
+-- advance_paid_on, advance_reference, order_date, coordinator_ids
+-- (1..max_sale_coordinators(), first = first coordinator), current_stage,
+-- is_completed, commissioned_on, consumer_number, kseb_section, financing_type,
+-- loan_bank_name, notes, feasibility_date, cancellation, cancelled_on,
+-- cancellation_remarks, incentives [{coordinator_id, amount (the agreed total),
+-- payments [{amount, paid_on, note}]}] (or the v3 element {coordinator_id,
+-- amount, paid_on}: one instalment for the whole amount), payments [{amount,
+-- paid_on, method, purpose (contract | kseb_fees | refund | write_off), reference,
+-- notes, paid_by_office}] (a write_off's reason is its notes, or its reference
+-- when notes is blank; refund and write-off caps are the app's checks).
+-- Still accepted from the previous builds: coordinator_email (blank = the
 -- default coordinator), coordinator_incentive and incentive_paid_on (its only
 -- coordinator's; refused on a shared sale — use incentives).
 create or replace function import_projects(
@@ -1778,6 +2084,7 @@ declare
   r jsonb;
   pay jsonb;
   inc jsonb;
+  ins jsonb;
   v_row integer;
   v_email text;
   v_ids uuid[];
@@ -1797,6 +2104,10 @@ declare
   v_cancelled_on date;
   v_remarks text;
   v_incentive_for uuid;
+  v_incentive_seen uuid[];
+  v_incentive_amount numeric;
+  v_purpose payment_purpose;
+  v_notes text;
 begin
   if not is_admin() then
     raise exception 'Only office staff can import projects' using errcode = '42501';
@@ -1901,7 +2212,8 @@ begin
 
       insert into work_orders (
         coordinator_id, client_name, client_phone, address, plant_capacity, plan_type,
-        advance_amount, total_cost, order_date, status, consumer_number,
+        advance_amount, advance_method, advance_paid_on, advance_reference,
+        total_cost, order_date, status, consumer_number,
         kseb_section, financing_type, loan_bank_name, notes
       ) values (
         v_ids[1],
@@ -1911,6 +2223,9 @@ begin
         btrim(r->>'plant_capacity'),
         v_plan,
         coalesce(nullif(r->>'advance_amount', '')::numeric, 0),
+        nullif(r->>'advance_method', '')::payment_method,
+        nullif(r->>'advance_paid_on', '')::date,
+        nullif(btrim(r->>'advance_reference'), ''),
         (r->>'total_cost')::numeric,
         v_order_date,
         'approved',
@@ -1971,25 +2286,61 @@ begin
              cancellation_remarks = v_remarks
        where id = v_project;
 
-      -- 4. Incentives, one per coordinator; the previous build's single
-      --    incentive belongs to its only coordinator.
+      -- 4. Incentives, one per coordinator: the agreed amount first, then each
+      --    dated instalment (coordinator_incentive_payments' triggers refuse an
+      --    instalment before the amount, or beyond it). The previous build's
+      --    single incentive belongs to its only coordinator.
       if jsonb_typeof(r->'incentives') = 'array' then
+        v_incentive_seen := '{}';
         for inc in select value from jsonb_array_elements(r->'incentives') loop
           v_incentive_for := (inc->>'coordinator_id')::uuid;
           if not (v_incentive_for = any (v_ids)) then
             raise exception 'An incentive names someone who is not a coordinator on this sale';
           end if;
+          if v_incentive_for = any (v_incentive_seen) then
+            raise exception 'An incentive is listed twice for one coordinator';
+          end if;
+          v_incentive_seen := v_incentive_seen || v_incentive_for;
+          if jsonb_typeof(inc->'payments') = 'array'
+             and nullif(inc->>'paid_on', '') is not null then
+            raise exception 'An incentive takes payments or paid_on, not both';
+          end if;
+
+          v_incentive_amount := nullif(inc->>'amount', '')::numeric;
           update coordinator_incentives
-             set amount = nullif(inc->>'amount', '')::numeric,
-                 paid_on = nullif(inc->>'paid_on', '')::date
+             set amount = v_incentive_amount
            where work_order_id = v_wo and coordinator_id = v_incentive_for;
+
+          if jsonb_typeof(inc->'payments') = 'array' then
+            for ins in select value from jsonb_array_elements(inc->'payments') loop
+              insert into coordinator_incentive_payments
+                (work_order_id, coordinator_id, amount, paid_on, note)
+              values (
+                v_wo, v_incentive_for,
+                (ins->>'amount')::numeric,
+                (ins->>'paid_on')::date,
+                nullif(btrim(ins->>'note'), '')
+              );
+            end loop;
+          elsif nullif(inc->>'paid_on', '') is not null then
+            -- The v3 shape: an amount with a paid date is paid in full that day.
+            -- A zero incentive has nothing to pay; no amount cannot be paid.
+            if v_incentive_amount is null then
+              raise exception 'An incentive cannot be paid without an amount';
+            elsif v_incentive_amount > 0 then
+              insert into coordinator_incentive_payments
+                (work_order_id, coordinator_id, amount, paid_on)
+              values (v_wo, v_incentive_for, v_incentive_amount, (inc->>'paid_on')::date);
+            end if;
+          end if;
         end loop;
       elsif nullif(r->>'coordinator_incentive', '') is not null
          or nullif(r->>'incentive_paid_on', '') is not null then
         -- The previous build's single incentive belongs to its only coordinator;
         -- never guess a split. It is written where its project page still reads
         -- it, and the temporary legacy mirror carries it to that coordinator's
-        -- own row. Dropped with the mirror in the contract release.
+        -- own row (a paid date becomes the settling instalment). Dropped with
+        -- the mirror in the contract release.
         if cardinality(v_ids) > 1 then
           raise exception 'A shared sale takes its incentives per coordinator (incentives), not coordinator_incentive';
         end if;
@@ -1999,21 +2350,28 @@ begin
          where id = v_project;
       end if;
 
-      -- 5. Payments (unchanged).
+      -- 5. Payments. A write-off's reason is its notes (the sheet's reference
+      --    column carries it when no notes are given).
       for pay in
         select value from jsonb_array_elements(coalesce(r->'payments', '[]'::jsonb))
       loop
+        v_purpose := coalesce(nullif(pay->>'purpose', '')::payment_purpose, 'contract');
+        v_notes := nullif(btrim(pay->>'notes'), '');
+        if v_purpose = 'write_off' then
+          v_notes := coalesce(v_notes, nullif(btrim(pay->>'reference'), ''));
+        end if;
         insert into payments (
           work_order_id, amount, paid_on, method, purpose, reference, notes,
-          recorded_by
+          paid_by_office, recorded_by
         ) values (
           v_wo,
           (pay->>'amount')::numeric,
           (pay->>'paid_on')::date,
           coalesce(nullif(pay->>'method', '')::payment_method, 'other'),
-          coalesce(nullif(pay->>'purpose', '')::payment_purpose, 'contract'),
+          v_purpose,
           nullif(btrim(pay->>'reference'), ''),
-          nullif(btrim(pay->>'notes'), ''),
+          v_notes,
+          coalesce((nullif(pay->>'paid_by_office', ''))::boolean, false),
           auth.uid()
         );
       end loop;
@@ -2034,6 +2392,7 @@ begin
   end loop;
 end;
 $$;
+
 revoke execute on function import_projects(jsonb, uuid, boolean) from public, anon;
 grant execute on function import_projects(jsonb, uuid, boolean) to authenticated, service_role;
 

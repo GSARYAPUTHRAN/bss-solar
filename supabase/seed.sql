@@ -18,6 +18,13 @@
 --   Thomas Kurian      -> cancelled project (Sneha)
 --   Ibrahim Kutty      -> refunded project (Priya)
 --
+-- Demo sales added with the ledger-adjustments release (2026-11-04):
+--   Gopinathan Pillai  -> commissioned (Rahul); collected ₹10,000 too much and
+--                         refunded it; advance with method, date and reference;
+--                         incentive ₹6,000 agreed, paid ₹4,000 in two instalments
+--   Sathyan Nambiar    -> commissioned (Priya); ₹800 short at handover, written
+--                         off; KSEB fees paid by the office; incentive settled
+--
 -- NOTE: For local development only. Never run this against production.
 -- ============================================================================
 
@@ -31,7 +38,8 @@
 -- engineer anil    : 00000000-0000-0000-0000-000000000007
 -- engineer vineeth : 00000000-0000-0000-0000-000000000008
 -- work orders 1..14 / projects 1..9 / tickets 1..4: the original demo set;
--- work orders 15..18 / projects 10..13: the 2026-10-22 additions (see below).
+-- work orders 15..18 / projects 10..13: the 2026-10-22 additions (see below);
+-- work orders 19..20 / projects 14..15: the 2026-11-04 additions.
 
 -- ---------- Auth users ----------
 insert into auth.users (
@@ -358,8 +366,9 @@ update public.projects set feasibility_date = current_date - 100
   where id = '20000000-0000-0000-0000-000000000009';
 
 -- ---------- Coordinator incentives ----------
--- One row per coordinator of a sale (opened when they join it), set by the
--- office. The stamps (updated_by, cancelled_by below) come from auth.uid(), so
+-- One row per coordinator of a sale (opened when they join it); the office sets
+-- the agreed amount and records what is paid out of it in dated instalments
+-- (paid_on is derived from them). The stamps (updated_by, cancelled_by below) come from auth.uid(), so
 -- act as the admin for the statements that set them; cleared again after the
 -- 2026-10-22 demo rows.
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000001', false);
@@ -371,10 +380,14 @@ update public.coordinator_incentives set amount = 3000
 update public.coordinator_incentives set amount = 5000
   where work_order_id = '10000000-0000-0000-0000-000000000009'
     and coordinator_id = '00000000-0000-0000-0000-000000000004';
--- P8 (Mary Jose, Rahul): paid
-update public.coordinator_incentives set amount = 5000, paid_on = current_date - 2
+-- P8 (Mary Jose, Rahul): paid (one instalment settles it; paid_on is derived)
+update public.coordinator_incentives set amount = 5000
   where work_order_id = '10000000-0000-0000-0000-000000000005'
     and coordinator_id = '00000000-0000-0000-0000-000000000002';
+insert into public.coordinator_incentive_payments
+  (work_order_id, coordinator_id, amount, paid_on, note)
+values ('10000000-0000-0000-0000-000000000005', '00000000-0000-0000-0000-000000000002',
+        5000, current_date - 2, 'Paid in full');
 -- P9 (Latha Krishnan, Sneha): pending
 update public.coordinator_incentives set amount = 4000
   where work_order_id = '10000000-0000-0000-0000-000000000014'
@@ -523,9 +536,13 @@ insert into public.payments (
 update public.coordinator_incentives set amount = 4000
   where work_order_id = '10000000-0000-0000-0000-000000000015'
     and coordinator_id = '00000000-0000-0000-0000-000000000002';
-update public.coordinator_incentives set amount = 2500, paid_on = current_date - 1
+update public.coordinator_incentives set amount = 2500
   where work_order_id = '10000000-0000-0000-0000-000000000015'
     and coordinator_id = '00000000-0000-0000-0000-000000000003';
+insert into public.coordinator_incentive_payments
+  (work_order_id, coordinator_id, amount, paid_on, note)
+values ('10000000-0000-0000-0000-000000000015', '00000000-0000-0000-0000-000000000003',
+        2500, current_date - 1, 'Paid in full');
 
 -- Cancelled / refunded. The feasibility clock stopped on the day: 35 days on
 -- P12's date is a second period (one ₹1,000 renewal BSS already paid); 75 days
@@ -540,6 +557,89 @@ update public.projects set
     'Refunded ₹95,000 (advance ₹15,000 + instalment ₹80,000) by bank transfer on %s.',
     to_char(current_date - 20, 'DD Mon YYYY'))
   where id = '20000000-0000-0000-0000-000000000013';
+
+-- ---------- Release 2026-11-04: refund, write-off, fees paid by the office, instalments ----------
+-- NEW ids only. The session still acts as the admin (recorded_by, stamps).
+insert into public.work_orders (
+  id, coordinator_id, client_name, client_phone, address,
+  plant_capacity, plan_type, advance_amount, advance_method, advance_paid_on,
+  advance_reference, total_cost, order_date, status,
+  consumer_number, kseb_section, financing_type, loan_bank_name
+) values
+  -- Gopinathan Pillai: collected ₹10,000 more than the contract and sent it back.
+  ('10000000-0000-0000-0000-000000000019', '00000000-0000-0000-0000-000000000002',
+   'Gopinathan Pillai', '+91 98470 12121', 'Ettumanoor, Kottayam, Kerala',
+   '5kW', 'solar', 40000, 'upi', current_date - 112, 'UPI 4410021199',
+   300000, current_date - 115, 'approved',
+   '1156789088888', 'Ettumanoor', 'self', null),
+  -- Sathyan Nambiar: ₹800 short at handover; the office let it go.
+  ('10000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000003',
+   'Sathyan Nambiar', '+91 98470 13131', 'Chengannur, Alappuzha, Kerala',
+   '3kW', 'solar', 15000, 'bank_transfer', current_date - 133, 'UTR 8820113345',
+   175000, current_date - 135, 'approved',
+   '1156789055555', 'Chengannur', 'self', null);
+
+insert into public.projects (
+  id, work_order_id, coordinator_id, current_stage, is_completed, started_at, completed_at
+) values
+  ('20000000-0000-0000-0000-000000000014', '10000000-0000-0000-0000-000000000019',
+   '00000000-0000-0000-0000-000000000002', 'plant_commissioning', true,
+   now() - interval '105 days', now() - interval '45 days'),
+  ('20000000-0000-0000-0000-000000000015', '10000000-0000-0000-0000-000000000020',
+   '00000000-0000-0000-0000-000000000003', 'plant_commissioning', true,
+   now() - interval '125 days', now() - interval '60 days');
+update public.project_milestones set status = 'completed', completed_at = now() - interval '45 days'
+  where project_id = '20000000-0000-0000-0000-000000000014';
+update public.project_milestones set status = 'completed', completed_at = now() - interval '60 days'
+  where project_id = '20000000-0000-0000-0000-000000000015';
+
+-- Gopinathan: advance 40,000 + 1,50,000 + 1,20,000 = 3,10,000 against 3,00,000;
+--   ₹10,000 went back, so the net received is exactly the contract.
+-- Sathyan: advance 15,000 + 1,59,200 = 1,74,200 against 1,75,000; the ₹800 is
+--   written off (the reason is required), so the sale is settled.
+-- KSEB fees stay apart from the contract: one the customer paid through BSS,
+--   one the BSS office paid on the customer's behalf.
+insert into public.payments (
+  work_order_id, amount, paid_on, method, purpose, reference, notes, paid_by_office, recorded_by
+) values
+  ('10000000-0000-0000-0000-000000000019', 150000, current_date - 90,
+   'bank_transfer', 'contract', 'UTR 6620091144', null, false, '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000019', 120000, current_date - 60,
+   'cheque', 'contract', 'CHQ 003317', null, false, '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000019', 10000, current_date - 40,
+   'bank_transfer', 'refund', 'UTR 6620099021', 'Excess collected, returned to the customer',
+   false, '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000019', 4720, current_date - 112,
+   'upi', 'kseb_fees', 'UPI 6610023999', 'KSEB registration, paid by the customer',
+   false, '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000020', 159200, current_date - 100,
+   'bank_transfer', 'contract', 'UTR 7710045522', null, false, '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000020', 800, current_date - 62,
+   'other', 'write_off', null, 'Customer was ₹800 short at handover; waived by the office',
+   false, '00000000-0000-0000-0000-000000000001'),
+  ('10000000-0000-0000-0000-000000000020', 5720, current_date - 128,
+   'cash', 'kseb_fees', null, 'KSEB registration and meter fee, paid by the BSS office for the customer',
+   true, '00000000-0000-0000-0000-000000000001');
+
+-- Incentives in instalments: Rahul's ₹6,000 is paid ₹4,000 so far; Priya's
+-- ₹3,500 was paid in two parts and is settled.
+update public.coordinator_incentives set amount = 6000
+  where work_order_id = '10000000-0000-0000-0000-000000000019'
+    and coordinator_id = '00000000-0000-0000-0000-000000000002';
+update public.coordinator_incentives set amount = 3500
+  where work_order_id = '10000000-0000-0000-0000-000000000020'
+    and coordinator_id = '00000000-0000-0000-0000-000000000003';
+insert into public.coordinator_incentive_payments
+  (work_order_id, coordinator_id, amount, paid_on, note)
+values
+  ('10000000-0000-0000-0000-000000000019', '00000000-0000-0000-0000-000000000002',
+   2000, current_date - 30, 'First instalment'),
+  ('10000000-0000-0000-0000-000000000019', '00000000-0000-0000-0000-000000000002',
+   2000, current_date - 10, 'Second instalment'),
+  ('10000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000003',
+   2000, current_date - 50, 'On handover'),
+  ('10000000-0000-0000-0000-000000000020', '00000000-0000-0000-0000-000000000003',
+   1500, current_date - 40, 'Balance');
 
 -- Back to a context with no signed-in user.
 select set_config('request.jwt.claim.sub', '', false);

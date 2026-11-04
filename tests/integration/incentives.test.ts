@@ -11,11 +11,14 @@ import { createFixtures, must, uniqueTag } from "./fixtures";
 /**
  * Each coordinator's incentive lives in `coordinator_incentives`: one row per
  * member of a sale, private to that person and the office (migrations
- * 20261022120000 / 20261022120200). The office sets `amount` and `paid_on`
- * and nothing else; a coordinator reads their own row and can never set or
- * "mark paid" it. `incentive_summary()` is SECURITY INVOKER, so its totals are
- * scoped by the same RLS. The old `projects.coordinator_incentive` columns
- * are only a temporary, one-way compatibility path for the previous build.
+ * 20261022120000 / 20261022120200). The office sets the agreed `amount` and
+ * nothing else of the row; what is paid out of it is recorded in dated
+ * instalments (coordinator_incentive_payments — see incentive-instalments.test.ts),
+ * and `paid_on` is derived from them. A coordinator reads their own row and can
+ * never set or "mark paid" it. `incentive_summary()` is SECURITY INVOKER, so its
+ * totals are scoped by the same RLS. The old `projects.coordinator_incentive`
+ * columns are only a temporary, one-way compatibility path for the previous
+ * build.
  */
 const svc = serviceClient();
 const fx = createFixtures(svc);
@@ -42,31 +45,46 @@ async function expectedSummary(coordinatorId?: string): Promise<Summary> {
   const incentives = must(
     await svc
       .from("coordinator_incentives")
-      .select("work_order_id, coordinator_id, amount, paid_on")
+      .select("work_order_id, coordinator_id, amount")
       .not("amount", "is", null),
     "incentives",
   );
+  // Paid = the instalments recorded against each incentive.
+  const instalments = must(
+    await svc
+      .from("coordinator_incentive_payments")
+      .select("work_order_id, coordinator_id, amount"),
+    "instalments",
+  );
+  const paidOn = (i: { work_order_id: string; coordinator_id: string }) =>
+    instalments
+      .filter(
+        (p) => p.work_order_id === i.work_order_id && p.coordinator_id === i.coordinator_id,
+      )
+      .reduce((sum, p) => sum + Number(p.amount), 0);
   // An incentive counts while its sale has a project.
   const withProject = new Set(
     must(await svc.from("projects").select("work_order_id"), "projects").map(
       (p) => p.work_order_id,
     ),
   );
-  const rows = incentives.filter(
-    (i) =>
-      withProject.has(i.work_order_id) &&
-      (!coordinatorId || i.coordinator_id === coordinatorId),
-  );
-  const sum = (filter: (r: (typeof rows)[number]) => boolean) =>
-    rows.filter(filter).reduce((s, r) => s + Number(r.amount), 0);
+  const rows = incentives
+    .filter(
+      (i) =>
+        withProject.has(i.work_order_id) &&
+        (!coordinatorId || i.coordinator_id === coordinatorId),
+    )
+    .map((i) => ({ ...i, paid: paidOn(i) }));
   const sales = (filter: (r: (typeof rows)[number]) => boolean) =>
     new Set(rows.filter(filter).map((r) => r.work_order_id)).size;
+  const sum = (value: (r: (typeof rows)[number]) => number) =>
+    rows.reduce((total, r) => total + value(r), 0);
   return {
     projects: sales(() => true),
-    pending_projects: sales((r) => r.paid_on === null),
-    total: sum(() => true),
-    paid: sum((r) => r.paid_on !== null),
-    pending: sum((r) => r.paid_on === null),
+    pending_projects: sales((r) => r.paid < Number(r.amount)),
+    total: sum((r) => Number(r.amount)),
+    paid: sum((r) => r.paid),
+    pending: sum((r) => Number(r.amount) - r.paid),
   };
 }
 
@@ -566,12 +584,41 @@ describe("the previous build's incentive columns (temporary compatibility)", () 
       paid_on: null,
     });
 
-    // Clearing it clears the row.
-    await admin
+    // The paid date arrived as the one instalment that settles it.
+    expect(
+      must(
+        await svc
+          .from("coordinator_incentive_payments")
+          .select("coordinator_id, amount, paid_on, note, recorded_by")
+          .eq("work_order_id", workOrderId),
+        "instalments",
+      ),
+    ).toEqual([
+      {
+        coordinator_id: RAHUL,
+        amount: 4500,
+        paid_on: "2026-10-05",
+        note: "Marked paid",
+        recorded_by: USERS.admin.id,
+      },
+    ]);
+
+    // The record of what was paid is never dropped by clearing the amount.
+    const refused = await admin
       .from("projects")
       .update({ coordinator_incentive: null, incentive_paid_on: null })
       .eq("id", projectId);
-    expect(
+    expect(refused.error?.code).toBe("23514");
+    expect(refused.error?.message).toMatch(/cannot be less than the 4500\.00 already paid/);
+  });
+
+  it("clear an incentive nothing has been paid out of", async () => {
+    const { workOrderId, projectId } = await fx.approvedProject({
+      workOrder: { client_name: `Legacy Clear ${RUN}` },
+    });
+    const admin = await signedInAs(USERS.admin);
+    await admin.from("projects").update({ coordinator_incentive: 800 }).eq("id", projectId);
+    const row = async () =>
       must(
         await svc
           .from("coordinator_incentives")
@@ -580,8 +627,14 @@ describe("the previous build's incentive columns (temporary compatibility)", () 
           .eq("coordinator_id", RAHUL)
           .single(),
         "row",
-      ),
-    ).toEqual({ amount: null, paid_on: null });
+      );
+    expect(await row()).toEqual({ amount: 800, paid_on: null });
+
+    await admin
+      .from("projects")
+      .update({ coordinator_incentive: null, incentive_paid_on: null })
+      .eq("id", projectId);
+    expect(await row()).toEqual({ amount: null, paid_on: null });
   });
 
   it("leave the real incentive alone when a save does not change them (the old Project settings form)", async () => {
@@ -648,15 +701,43 @@ describe("the previous build's incentive columns (temporary compatibility)", () 
     expect(blankSave.error).toBeNull();
     expect(await row(blank.workOrderId)).toEqual({ amount: 4000, paid_on: null });
 
-    // A real edit of the legacy columns is still carried over.
+    // A real edit of the legacy columns is still carried over: a higher amount
+    // with the old paid date means "paid in full" there, so the rest is
+    // recorded as one more instalment, and the row is settled by the latest.
     const edit = await admin
       .from("projects")
-      .update({ coordinator_incentive: 1500 })
+      .update({ coordinator_incentive: 9500 })
       .eq("id", stale.projectId);
     expect(edit.error).toBeNull();
     expect(await row(stale.workOrderId)).toEqual({
-      amount: 1500,
-      paid_on: "2026-09-15",
+      amount: 9500,
+      paid_on: "2026-10-24",
+    });
+    expect(
+      must(
+        await svc
+          .from("coordinator_incentive_payments")
+          .select("amount, paid_on")
+          .eq("work_order_id", stale.workOrderId)
+          .order("paid_on")
+          .order("amount"),
+        "instalments",
+      ),
+    ).toEqual([
+      { amount: 500, paid_on: "2026-09-15" },
+      { amount: 1200, paid_on: "2026-09-15" },
+      { amount: 7800, paid_on: "2026-10-24" },
+    ]);
+
+    // …but never below what has been paid out of it.
+    const below = await admin
+      .from("projects")
+      .update({ coordinator_incentive: 1500 })
+      .eq("id", stale.projectId);
+    expect(below.error?.code).toBe("23514");
+    expect(await row(stale.workOrderId)).toEqual({
+      amount: 9500,
+      paid_on: "2026-10-24",
     });
   });
 

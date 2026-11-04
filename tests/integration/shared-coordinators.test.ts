@@ -730,8 +730,8 @@ describe("set_work_order_coordinators()", () => {
     await fx.incentive(workOrderId, PRIYA, { amount: 1500, paid_on: "2026-10-01" });
     expect((await set([RAHUL])).error?.code).toBe("23514");
 
-    // Cleared by the office first, the removal goes through.
-    await fx.incentive(workOrderId, PRIYA, { amount: null });
+    // Cleared by the office first (its payments, then the amount), the removal goes through.
+    await fx.clearIncentive(workOrderId, PRIYA);
     const removed = await set([RAHUL]);
     expect(removed.error).toBeNull();
     expect(sorted(removed.data)).toEqual([`removed:${PRIYA}`]);
