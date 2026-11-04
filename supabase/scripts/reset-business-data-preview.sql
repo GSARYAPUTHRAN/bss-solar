@@ -75,6 +75,7 @@ report as (
   from (values
     ('notification_dedupe', (select count(*) from public.notification_dedupe)),
     ('notifications', (select count(*) from public.notifications)),
+    ('coordinator_incentive_payments', (select count(*) from public.coordinator_incentive_payments)),
     ('coordinator_incentives', (select count(*) from public.coordinator_incentives)),
     ('work_order_coordinators', (select count(*) from public.work_order_coordinators)),
     ('payments', (select count(*) from public.payments)),

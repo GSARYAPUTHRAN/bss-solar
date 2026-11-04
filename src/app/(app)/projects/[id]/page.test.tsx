@@ -28,6 +28,9 @@ vi.mock("../actions", () => ({
   updateMilestone: vi.fn(),
   updateProjectSettings: vi.fn(),
   updateCoordinatorIncentive: vi.fn(),
+  recordIncentivePayment: vi.fn(),
+  updateIncentivePayment: vi.fn(),
+  deleteIncentivePayment: vi.fn(),
   setProjectCancellation: vi.fn(),
   reinstateProject: vi.fn(),
 }));
@@ -41,8 +44,9 @@ vi.mock("@/components/payments/project-payments-section", () => ({
 import { requireWorkOrderRole } from "@/lib/auth";
 import { projectsRepository, ticketsRepository } from "@/server/data";
 import { paymentsRepository } from "@/server/data/payments.repository";
-import type { Profile, SaleCoordinator, ServiceTicket } from "@/lib/types";
-import type { ProjectDetail } from "@/server/data/projects.repository";
+import { formatCurrency } from "@/lib/format";
+import type { Payment, Profile, ServiceTicket } from "@/lib/types";
+import type { ProjectCoordinator, ProjectDetail } from "@/server/data/projects.repository";
 import ProjectDetailPage from "./page";
 
 const projects = vi.mocked(projectsRepository);
@@ -53,18 +57,59 @@ const ADMIN = { id: "admin-1", role: "admin", full_name: "BSS Admin" } as Profil
 const SUPERADMIN = { id: "super-1", role: "superadmin", full_name: "BSS SuperAdmin" } as Profile;
 const RAVI_PROFILE = { id: "c1", role: "coordinator", full_name: "Ravi Kumar" } as Profile;
 
-const RAVI = (incentive: SaleCoordinator["incentive"]): SaleCoordinator => ({
+const RAVI = (incentive: ProjectCoordinator["incentive"]): ProjectCoordinator => ({
   id: "c1",
   full_name: "Ravi Kumar",
   sort_order: 1,
   incentive,
 });
-const ABHIJITH = (incentive: SaleCoordinator["incentive"]): SaleCoordinator => ({
+const ABHIJITH = (incentive: ProjectCoordinator["incentive"]): ProjectCoordinator => ({
   id: "c2",
   full_name: "Abhijith Nair",
   sort_order: 2,
   incentive,
 });
+
+/** Ravi: ₹6,000 agreed, ₹4,000 paid in two instalments (₹2,000 still to pay). */
+const RAVI_PAID_IN_PART = {
+  amount: 6000,
+  paid_on: null,
+  payments: [
+    {
+      id: "pay-1",
+      amount: 2000,
+      paid_on: "2026-09-01",
+      note: "Advance",
+      recorded_by: "admin-1",
+      recorded_by_name: "BSS Admin",
+    },
+    {
+      id: "pay-2",
+      amount: 2000,
+      paid_on: "2026-09-15",
+      note: "Cheque 004211",
+      recorded_by: "admin-1",
+      recorded_by_name: "BSS Admin",
+    },
+  ],
+  paid: 4000,
+};
+/** Abhijith: ₹3,500 agreed, ₹1,000 paid — what Ravi must never see. */
+const ABHIJITH_PAID_IN_PART = {
+  amount: 3500,
+  paid_on: null,
+  payments: [
+    {
+      id: "pay-9",
+      amount: 1000,
+      paid_on: "2026-09-20",
+      note: "Abhijith only",
+      recorded_by: "admin-1",
+      recorded_by_name: "BSS Admin",
+    },
+  ],
+  paid: 1000,
+};
 
 const MILESTONES: ProjectDetail["milestones"] = [
   {
@@ -104,7 +149,10 @@ function project(over: Partial<ProjectDetail> = {}): ProjectDetail {
     cancellation_remarks: null,
     cancelled_by_name: null,
     // As the office loads it: everyone's incentive.
-    coordinators: [RAVI({ amount: 2000, paid_on: null }), ABHIJITH({ amount: 3500, paid_on: null })],
+    coordinators: [
+      RAVI({ amount: 2000, paid_on: null, payments: [], paid: 0 }),
+      ABHIJITH({ amount: 3500, paid_on: null, payments: [], paid: 0 }),
+    ],
     milestones: MILESTONES,
     work_order: {
       id: "wo1",
@@ -116,6 +164,9 @@ function project(over: Partial<ProjectDetail> = {}): ProjectDetail {
       plan_type: "solar",
       plant_capacity_kw: 3,
       advance_amount: 20000,
+      advance_method: null,
+      advance_paid_on: null,
+      advance_reference: null,
       total_cost: 195000,
       order_date: "2026-08-01",
       status: "approved",
@@ -134,7 +185,7 @@ function project(over: Partial<ProjectDetail> = {}): ProjectDetail {
 /** What Ravi loads: RLS hides his partner's incentive. */
 const asSeenByRavi = (p: ProjectDetail): ProjectDetail => ({
   ...p,
-  coordinators: [RAVI({ amount: 2000, paid_on: null }), ABHIJITH(null)],
+  coordinators: [RAVI({ amount: 2000, paid_on: null, payments: [], paid: 0 }), ABHIJITH(null)],
 });
 
 const REFUNDED = {
@@ -201,9 +252,9 @@ describe("the office's view of a live solar project", () => {
     await renderPage(ADMIN, project());
   });
 
-  it("shows the whole sale: each coordinator's incentive form, the status card and the KSEB clock", () => {
-    expect(screen.getByRole("form", { name: "Incentive for Ravi Kumar" })).toBeInTheDocument();
-    expect(screen.getByRole("form", { name: "Incentive for Abhijith Nair" })).toBeInTheDocument();
+  it("shows the whole sale: each coordinator's incentive block, the status card and the KSEB clock", () => {
+    expect(screen.getByRole("group", { name: "Incentive for Ravi Kumar" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Incentive for Abhijith Nair" })).toBeInTheDocument();
     expect(screen.getByText("Project status")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Mark cancelled" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Mark refunded" })).toBeInTheDocument();
@@ -241,6 +292,43 @@ describe("the office's view of a live solar project", () => {
   });
 });
 
+describe("the office's view of incentive instalments", () => {
+  beforeEach(async () => {
+    await renderPage(
+      ADMIN,
+      project({
+        coordinators: [RAVI(RAVI_PAID_IN_PART), ABHIJITH(ABHIJITH_PAID_IN_PART)],
+      }),
+    );
+  });
+
+  it("lists every coordinator's instalments in their own block, and can record, edit and remove them", () => {
+    const ravi = within(screen.getByRole("group", { name: "Incentive for Ravi Kumar" }));
+    expect(ravi.getByRole("list", { name: "Payments to Ravi Kumar" })).toHaveTextContent(
+      "Cheque 004211",
+    );
+    expect(ravi.getByRole("button", { name: "Record payment for Ravi Kumar" })).toBeEnabled();
+    expect(ravi.getAllByRole("button", { name: /^edit the/i })).toHaveLength(2);
+    expect(ravi.getAllByRole("button", { name: /^remove the/i })).toHaveLength(2);
+
+    const abhijith = within(screen.getByRole("group", { name: "Incentive for Abhijith Nair" }));
+    expect(abhijith.getByRole("list", { name: "Payments to Abhijith Nair" })).toHaveTextContent(
+      "Abhijith only",
+    );
+  });
+
+  it("totals the sale as agreed, paid and where it stands", () => {
+    const row = screen.getByText("Incentives", { selector: "dt" }).nextElementSibling;
+    expect(row).toHaveTextContent(formatCurrency(9500));
+    expect(row).toHaveTextContent(`${formatCurrency(5000)} paid`);
+    expect(row).toHaveTextContent("Partly paid");
+  });
+
+  it("has no read-only 'your incentive' section — that is for the coordinator", () => {
+    expect(screen.queryByText("Your incentive payments")).not.toBeInTheDocument();
+  });
+});
+
 describe("the office's view of a refunded project", () => {
   beforeEach(async () => {
     await renderPage(ADMIN, project({ ...REFUNDED }));
@@ -260,8 +348,9 @@ describe("the office's view of a refunded project", () => {
     expect(screen.queryByLabelText(/^Status for/)).not.toBeInTheDocument();
   });
 
-  it("still lets the office clear an incentive that will not be paid", () => {
-    expect(screen.getByRole("form", { name: "Incentive for Ravi Kumar" })).toBeInTheDocument();
+  it("still lets the office change or clear an incentive that will not be paid", () => {
+    expect(screen.getByRole("group", { name: "Incentive for Ravi Kumar" })).toBeInTheDocument();
+    expect(screen.getByRole("form", { name: "Agreed incentive for Ravi Kumar" })).toBeInTheDocument();
   });
 
   it("owes nothing, and the payments section knows", () => {
@@ -272,6 +361,47 @@ describe("the office's view of a refunded project", () => {
 
   it("shows where the feasibility clock stopped, not a running one", () => {
     expect(screen.getByText(/Stopped — project refunded/)).toBeInTheDocument();
+  });
+});
+
+describe("a sale whose ledger holds a refund and a write-off", () => {
+  // ₹1,95,000 sale: ₹20,000 advance + ₹1,80,000 contract − ₹10,000 refunded
+  // = ₹1,90,000 held, and the ₹5,000 left is written off.
+  const LEDGER = [
+    { id: "a", amount: 180000, purpose: "contract", paid_on: "2026-09-01", paid_by_office: false },
+    { id: "b", amount: 10000, purpose: "refund", paid_on: "2026-09-20", paid_by_office: false },
+    {
+      id: "c",
+      amount: 5000,
+      purpose: "write_off",
+      paid_on: "2026-09-21",
+      paid_by_office: false,
+      notes: "Customer short at handover",
+    },
+  ] as unknown as Payment[];
+
+  beforeEach(async () => {
+    payments.listForWorkOrder.mockResolvedValue(LEDGER);
+    await renderPage(ADMIN, project({ is_completed: true }));
+  });
+
+  it("reads Received net of the refund, like the ledger and the lists", () => {
+    const received = screen.getByText("Received", { selector: "dt" }).nextElementSibling;
+    expect(received).toHaveTextContent(formatCurrency(190000));
+    expect(received).not.toHaveTextContent(formatCurrency(200000));
+  });
+
+  it("calls a written-off balance settled, not 'Payment pending'", () => {
+    const payment = screen.getByText("Payment", { selector: "dt" }).nextElementSibling;
+    expect(payment).toHaveTextContent("Settled — written off");
+    expect(payment).not.toHaveTextContent(/Payment pending|Paid in full/);
+  });
+
+  it("tells the cancel dialog what is held now and that nothing is still outstanding", async () => {
+    await userEvent.click(screen.getByRole("button", { name: "Mark cancelled" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent(`${formatCurrency(190000)} collected stays in the ledger`);
+    expect(dialog).not.toHaveTextContent(/balance is no longer counted as outstanding/);
   });
 });
 
@@ -307,6 +437,60 @@ describe("a coordinator's view of a shared project", () => {
     expect(screen.queryByRole("link", { name: /bss-2610-1001/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /new ticket/i })).not.toBeInTheDocument();
     expect(tickets.listByProject).toHaveBeenCalledWith("p1");
+  });
+});
+
+describe("a coordinator's view of their incentive payments", () => {
+  /** What Ravi loads: his own instalments; RLS hides Abhijith's row and its payments. */
+  const asRavi = () =>
+    project({
+      coordinators: [RAVI(RAVI_PAID_IN_PART), ABHIJITH(null)],
+    });
+
+  beforeEach(async () => {
+    await renderPage(RAVI_PROFILE, asRavi());
+  });
+
+  it("reads what was agreed, what was paid, each payment and what is to come — only his own", () => {
+    const section = screen.getByText("Your incentive payments").closest('[data-slot="card"]')!;
+    const own = within(section as HTMLElement);
+    expect(own.getByText("Agreed").nextElementSibling).toHaveTextContent(formatCurrency(6000));
+    expect(own.getByText("Paid").nextElementSibling).toHaveTextContent(formatCurrency(4000));
+    expect(own.getByText("Still to pay").nextElementSibling).toHaveTextContent(
+      formatCurrency(2000),
+    );
+    expect(own.getByRole("list", { name: "Payments to you" })).toHaveTextContent("Cheque 004211");
+    expect(own.getByText("Partly paid")).toBeInTheDocument();
+  });
+
+  it("never sees a partner's amount, payments or notes — nor any control to record one", () => {
+    expect(screen.queryByText(/3,500/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Abhijith only")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Payments to Abhijith/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("form")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: /^Incentive for/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /record payment/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^(edit|remove) the/i })).not.toBeInTheDocument();
+  });
+
+  it("the summary card's row reads the same figures", () => {
+    const row = screen.getByText("Your incentive", { selector: "dt" }).nextElementSibling;
+    expect(row).toHaveTextContent(formatCurrency(6000));
+    expect(row).toHaveTextContent(`${formatCurrency(4000)} paid`);
+  });
+});
+
+describe("a coordinator whose incentive is not set yet", () => {
+  it("is told so, not shown zeros", async () => {
+    await renderPage(
+      RAVI_PROFILE,
+      project({
+        coordinators: [RAVI({ amount: null, paid_on: null, payments: [], paid: 0 }), ABHIJITH(null)],
+      }),
+    );
+    expect(
+      screen.getByText("The office has not set your incentive on this sale yet."),
+    ).toBeInTheDocument();
   });
 });
 
@@ -350,7 +534,7 @@ describe("a custom plan's project", () => {
 
   it("keeps incentives, payments and tickets like any sale", async () => {
     await renderPage(ADMIN, customPlan());
-    expect(screen.getByRole("form", { name: "Incentive for Ravi Kumar" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Incentive for Ravi Kumar" })).toBeInTheDocument();
     expect(screen.getByTestId("payments")).toBeInTheDocument();
     expect(screen.getByText("Service Tickets")).toBeInTheDocument();
   });

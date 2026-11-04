@@ -4,13 +4,15 @@ import { feasibilityPeriods, feasibilityStatus, KSEB_FEES } from "./kseb";
 import { PLAN_TYPES } from "./plan";
 import {
   FEASIBILITY_FILTERS,
+  INCENTIVE_FILTER_LABELS,
+  INCENTIVE_FILTERS,
   INCENTIVE_STATE,
   PLAN_FILTERS,
   PROJECT_LIST_FILTER_KEYS,
   PROJECT_SORT_COLUMNS,
   PROJECT_STATUS_FILTERS,
   PROJECT_STATUS_FILTER_LABELS,
-  incentiveState,
+  incentiveStateLabel,
   isFeasibilityFilter,
   isIncentiveFilter,
   isPlanFilter,
@@ -20,7 +22,6 @@ import {
   listRowProgress,
   matchesCoordinator,
   matchesFeasibilityFilter,
-  matchesIncentiveFilter,
   matchesProjectStatus,
   matchesSaleIncentiveFilter,
   saleIncentiveState,
@@ -296,6 +297,7 @@ describe("filter guards", () => {
     expect(isFeasibilityFilter("soon")).toBe(false);
     expect(isFeasibilityFilter(undefined)).toBe(false);
     expect(isIncentiveFilter("paid")).toBe(true);
+    expect(isIncentiveFilter("partly_paid")).toBe(true);
     expect(isIncentiveFilter("all")).toBe(false);
     expect(isProjectStatusFilter("payment_pending")).toBe(true);
     expect(isProjectStatusFilter("")).toBe(false);
@@ -436,79 +438,75 @@ describe("matchesCoordinator", () => {
   });
 });
 
-describe("incentives", () => {
-  it("derives the state from amount and paid-on", () => {
-    expect(incentiveState({ coordinator_incentive: null, incentive_paid_on: null })).toBe(
-      "not_set",
-    );
-    expect(incentiveState({ coordinator_incentive: 0, incentive_paid_on: null })).toBe(
-      "pending",
-    );
-    expect(
-      incentiveState({ coordinator_incentive: 3000, incentive_paid_on: "2026-10-01" }),
-    ).toBe("paid");
-  });
-
-  it("filters by state", () => {
-    const pending = { coordinator_incentive: 3000, incentive_paid_on: null };
-    expect(matchesIncentiveFilter(pending, "pending")).toBe(true);
-    expect(matchesIncentiveFilter(pending, "paid")).toBe(false);
-    expect(
-      matchesIncentiveFilter({ coordinator_incentive: null, incentive_paid_on: null }, "pending"),
-    ).toBe(false);
-  });
-
-  it("never calls one person's incentive partly paid", () => {
-    for (const row of [
-      { coordinator_incentive: null, incentive_paid_on: null },
-      { coordinator_incentive: 0, incentive_paid_on: null },
-      { coordinator_incentive: 3000, incentive_paid_on: "2026-10-01" },
-    ]) {
-      expect(incentiveState(row)).not.toBe("partly_paid");
-    }
-  });
-
+describe("incentive states", () => {
   it("labels the partly paid state in blue between pending and paid", () => {
     expect(INCENTIVE_STATE.partly_paid).toEqual({
       label: "Partly paid",
       badgeClass: expect.stringContaining("blue"),
     });
-    expect(Object.keys(INCENTIVE_STATE)).toEqual(["not_set", "pending", "partly_paid", "paid"]);
+    expect(Object.keys(INCENTIVE_STATE)).toEqual(["unset", "pending", "partly_paid", "paid"]);
+  });
+
+  it("says 'Nothing owed' for an incentive agreed at zero, and the state's label otherwise", () => {
+    expect(incentiveStateLabel("paid", 0)).toBe("Nothing owed");
+    expect(incentiveStateLabel("paid", "0.00")).toBe("Nothing owed");
+    expect(incentiveStateLabel("paid", 6000)).toBe("Paid");
+    expect(incentiveStateLabel("paid", null)).toBe("Paid");
+    expect(incentiveStateLabel("pending", 0)).toBe("Pending");
+    expect(incentiveStateLabel("unset", null)).toBe("Not set");
+    expect(incentiveStateLabel("partly_paid", 6000)).toBe("Partly paid");
+  });
+
+  it("offers the three filters the dashboard and the list agree on", () => {
+    expect([...INCENTIVE_FILTERS]).toEqual(["pending", "partly_paid", "paid"]);
+    expect(Object.keys(INCENTIVE_FILTER_LABELS)).toEqual([...INCENTIVE_FILTERS]);
   });
 });
 
 describe("saleIncentiveState", () => {
-  const state = (incentive_count: number, incentive_unpaid_count: number) =>
-    saleIncentiveState({ incentive_count, incentive_unpaid_count });
+  const state = (
+    incentive_count: number,
+    incentive_unpaid_count: number,
+    incentive_paid: number,
+  ) => saleIncentiveState({ incentive_count, incentive_unpaid_count, incentive_paid });
 
   it("is not set when nobody has an incentive", () => {
-    expect(state(0, 0)).toBe("not_set");
+    expect(state(0, 0, 0)).toBe("unset");
   });
 
-  it("is pending while none of them has been paid", () => {
-    expect(state(1, 1)).toBe("pending");
-    expect(state(3, 3)).toBe("pending");
+  it("is pending while no money has been paid, however many people are owed", () => {
+    expect(state(1, 1, 0)).toBe("pending");
+    expect(state(3, 3, 0)).toBe("pending");
   });
 
-  it("is partly paid when some have been and some have not", () => {
-    expect(state(2, 1)).toBe("partly_paid");
-    expect(state(3, 1)).toBe("partly_paid");
-    expect(state(3, 2)).toBe("partly_paid");
+  it("is partly paid once any instalment is in and something is still to pay", () => {
+    // One person, part of their incentive paid: the case the old per-person rule missed.
+    expect(state(1, 1, 4000)).toBe("partly_paid");
+    // Everyone still owed, but both have had instalments.
+    expect(state(2, 2, 3000)).toBe("partly_paid");
+    // One of two paid in full.
+    expect(state(2, 1, 6000)).toBe("partly_paid");
+    expect(state(3, 2, 100)).toBe("partly_paid");
   });
 
-  it("is paid when every incentive that is set has been paid", () => {
-    expect(state(1, 0)).toBe("paid");
-    expect(state(3, 0)).toBe("paid");
+  it("is paid when nobody is owed anything", () => {
+    expect(state(1, 0, 6000)).toBe("paid");
+    expect(state(3, 0, 18000)).toBe("paid");
   });
 
-  it("coerces counts that arrive as strings or are missing", () => {
-    const row = { incentive_count: "2", incentive_unpaid_count: "1" } as unknown as {
-      incentive_count: number;
-      incentive_unpaid_count: number;
-    };
+  it("is paid for an incentive agreed at zero: there is nothing to pay", () => {
+    expect(state(1, 0, 0)).toBe("paid");
+  });
+
+  it("coerces counts and money that arrive as strings or are missing", () => {
+    const row = {
+      incentive_count: "2",
+      incentive_unpaid_count: "1",
+      incentive_paid: "6000.00",
+    } as unknown as Parameters<typeof saleIncentiveState>[0];
     expect(saleIncentiveState(row)).toBe("partly_paid");
-    const blank = {} as { incentive_count: number; incentive_unpaid_count: number };
-    expect(saleIncentiveState(blank)).toBe("not_set");
+    const blank = {} as Parameters<typeof saleIncentiveState>[0];
+    expect(saleIncentiveState(blank)).toBe("unset");
   });
 });
 
@@ -517,24 +515,37 @@ describe("matchesSaleIncentiveFilter", () => {
   const none: Row = {
     incentive_count: 0,
     incentive_unpaid_count: 0,
+    incentive_paid: 0,
     incentive_unpaid_coordinator_ids: [],
     incentive_paid_coordinator_ids: [],
   };
   const allUnpaid: Row = {
     incentive_count: 2,
     incentive_unpaid_count: 2,
+    incentive_paid: 0,
     incentive_unpaid_coordinator_ids: ["rahul", "priya"],
     incentive_paid_coordinator_ids: [],
   };
+  // Rahul is paid in full, Priya not at all.
   const partly: Row = {
     incentive_count: 2,
     incentive_unpaid_count: 1,
+    incentive_paid: 6000,
     incentive_unpaid_coordinator_ids: ["priya"],
     incentive_paid_coordinator_ids: ["rahul"],
+  };
+  // Both are owed the rest of what they agreed: instalments are in on each.
+  const bothPart: Row = {
+    incentive_count: 2,
+    incentive_unpaid_count: 2,
+    incentive_paid: 5000,
+    incentive_unpaid_coordinator_ids: ["rahul", "priya"],
+    incentive_paid_coordinator_ids: [],
   };
   const allPaid: Row = {
     incentive_count: 2,
     incentive_unpaid_count: 0,
+    incentive_paid: 9000,
     incentive_unpaid_coordinator_ids: [],
     incentive_paid_coordinator_ids: ["rahul", "priya"],
   };
@@ -543,13 +554,23 @@ describe("matchesSaleIncentiveFilter", () => {
     it("pending is any unpaid incentive — a partly paid sale still has one", () => {
       expect(matchesSaleIncentiveFilter(allUnpaid, "pending")).toBe(true);
       expect(matchesSaleIncentiveFilter(partly, "pending")).toBe(true);
+      expect(matchesSaleIncentiveFilter(bothPart, "pending")).toBe(true);
       expect(matchesSaleIncentiveFilter(allPaid, "pending")).toBe(false);
       expect(matchesSaleIncentiveFilter(none, "pending")).toBe(false);
+    });
+
+    it("partly paid needs money paid and something still to pay", () => {
+      expect(matchesSaleIncentiveFilter(partly, "partly_paid")).toBe(true);
+      expect(matchesSaleIncentiveFilter(bothPart, "partly_paid")).toBe(true);
+      expect(matchesSaleIncentiveFilter(allUnpaid, "partly_paid")).toBe(false);
+      expect(matchesSaleIncentiveFilter(allPaid, "partly_paid")).toBe(false);
+      expect(matchesSaleIncentiveFilter(none, "partly_paid")).toBe(false);
     });
 
     it("paid needs an incentive set and none unpaid", () => {
       expect(matchesSaleIncentiveFilter(allPaid, "paid")).toBe(true);
       expect(matchesSaleIncentiveFilter(partly, "paid")).toBe(false);
+      expect(matchesSaleIncentiveFilter(bothPart, "paid")).toBe(false);
       expect(matchesSaleIncentiveFilter(allUnpaid, "paid")).toBe(false);
       expect(matchesSaleIncentiveFilter(none, "paid")).toBe(false);
     });
@@ -574,8 +595,18 @@ describe("matchesSaleIncentiveFilter", () => {
       expect(matchesSaleIncentiveFilter(allPaid, "paid", "priya")).toBe(true);
     });
 
+    it("partly paid is: that person is still owed, and money has been paid on the sale", () => {
+      expect(matchesSaleIncentiveFilter(bothPart, "partly_paid", "rahul")).toBe(true);
+      expect(matchesSaleIncentiveFilter(bothPart, "partly_paid", "priya")).toBe(true);
+      // Priya is owed on the sale where Rahul was paid; Rahul is not owed.
+      expect(matchesSaleIncentiveFilter(partly, "partly_paid", "priya")).toBe(true);
+      expect(matchesSaleIncentiveFilter(partly, "partly_paid", "rahul")).toBe(false);
+      // Nothing has been paid yet.
+      expect(matchesSaleIncentiveFilter(allUnpaid, "partly_paid", "rahul")).toBe(false);
+    });
+
     it("matches nothing for someone with no incentive on the sale", () => {
-      for (const filter of ["pending", "paid"] as const) {
+      for (const filter of INCENTIVE_FILTERS) {
         expect(matchesSaleIncentiveFilter(partly, filter, "arun")).toBe(false);
         expect(matchesSaleIncentiveFilter(none, filter, "rahul")).toBe(false);
       }
@@ -583,9 +614,10 @@ describe("matchesSaleIncentiveFilter", () => {
   });
 
   it("agrees with saleIncentiveState for the whole-sale filters", () => {
-    for (const row of [none, allUnpaid, partly, allPaid]) {
+    for (const row of [none, allUnpaid, partly, bothPart, allPaid]) {
       const s = saleIncentiveState(row);
       expect(matchesSaleIncentiveFilter(row, "pending")).toBe(s === "pending" || s === "partly_paid");
+      expect(matchesSaleIncentiveFilter(row, "partly_paid")).toBe(s === "partly_paid");
       expect(matchesSaleIncentiveFilter(row, "paid")).toBe(s === "paid");
     }
   });

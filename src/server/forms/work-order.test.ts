@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { ADVANCE_WITHOUT_AMOUNT_ERROR } from "@/lib/domain/advance";
 import { CAPACITY_PROBLEM } from "@/lib/domain/capacity";
+import { PAYMENT_LIMITS } from "@/lib/domain/payment-limits";
 import {
   CONTRACT_TERMS_LOCKED_ERROR,
   PLAN_CHOICE_ERROR,
@@ -45,6 +47,9 @@ describe("parseWorkOrderForm", () => {
         plan_type: "solar",
         plant_capacity: "3kW",
         advance_amount: 20000,
+        advance_method: null,
+        advance_paid_on: null,
+        advance_reference: null,
         total_cost: 195000,
         order_date: "2026-09-01",
         consumer_number: "1156789012345",
@@ -264,6 +269,194 @@ describe("parseWorkOrderForm", () => {
       expect(
         errorOf(parseWorkOrderForm(form({ ...VALID, ...patch }), TODAY, { lockedTerms: stored })),
       ).toBe(CONTRACT_TERMS_LOCKED_ERROR);
+    });
+  });
+
+  describe("advance details", () => {
+    const DETAILS = {
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      advance_reference: "  UPI 4410021199 ",
+    };
+
+    it("reads how, when and the reference of the advance, trimmed", () => {
+      const res = parseWorkOrderForm(form({ ...VALID, ...DETAILS }), TODAY);
+      expect(res.ok && res.data).toMatchObject({
+        advance_amount: 20000,
+        advance_method: "upi",
+        advance_paid_on: "2025-02-04",
+        advance_reference: "UPI 4410021199",
+      });
+    });
+
+    it("keeps them all optional: blank is not recorded", () => {
+      const res = parseWorkOrderForm(
+        form({ ...VALID, advance_method: "", advance_paid_on: "", advance_reference: "  " }),
+        TODAY,
+      );
+      expect(res.ok && res.data).toMatchObject({
+        advance_method: null,
+        advance_paid_on: null,
+        advance_reference: null,
+      });
+    });
+
+    it("reads the select's 'not recorded' as no method", () => {
+      const res = parseWorkOrderForm(form({ ...VALID, advance_method: "none" }), TODAY);
+      expect(res.ok && res.data.advance_method).toBeNull();
+    });
+
+    it("accepts any one of them alone", () => {
+      const method = parseWorkOrderForm(form({ ...VALID, advance_method: "cheque" }), TODAY);
+      expect(method.ok && method.data).toMatchObject({
+        advance_method: "cheque",
+        advance_paid_on: null,
+        advance_reference: null,
+      });
+      const reference = parseWorkOrderForm(form({ ...VALID, advance_reference: "CHQ 3003" }), TODAY);
+      expect(reference.ok && reference.data.advance_reference).toBe("CHQ 3003");
+    });
+
+    it("refuses a method that is not a payment method", () => {
+      for (const advance_method of ["barter", "constructor", "NONE"]) {
+        expect(errorOf(parseWorkOrderForm(form({ ...VALID, advance_method }), TODAY))).toBe(
+          "Choose how the advance was paid, or leave it as not recorded.",
+        );
+      }
+    });
+
+    it("takes a day that has happened: today, or any day before, even before the order", () => {
+      for (const advance_paid_on of [TODAY, "2026-09-01", "2025-02-04", "2026-08-15"]) {
+        expect(parseWorkOrderForm(form({ ...VALID, advance_paid_on }), TODAY).ok).toBe(true);
+      }
+    });
+
+    it("refuses a date in the future", () => {
+      expect(errorOf(parseWorkOrderForm(form({ ...VALID, advance_paid_on: "2026-10-11" }), TODAY))).toBe(
+        "The advance date cannot be in the future.",
+      );
+    });
+
+    it.each(["04/02/2025", "2025-02-30", "2025-2-4", "yesterday"])(
+      "refuses the date %j as not a date",
+      (advance_paid_on) => {
+        expect(errorOf(parseWorkOrderForm(form({ ...VALID, advance_paid_on }), TODAY))).toBe(
+          "Enter a valid date for when the advance was received.",
+        );
+      },
+    );
+
+    it("holds the reference to its length", () => {
+      const limit = PAYMENT_LIMITS.advanceReferenceLength;
+      expect(
+        parseWorkOrderForm(form({ ...VALID, advance_reference: "x".repeat(limit) }), TODAY).ok,
+      ).toBe(true);
+      expect(
+        errorOf(parseWorkOrderForm(form({ ...VALID, advance_reference: "x".repeat(limit + 1) }), TODAY)),
+      ).toBe(`The advance reference must be ${limit} characters or fewer.`);
+    });
+
+    it.each(["", "0"])("refuses details of an advance that was never taken (advance %j)", (advance_amount) => {
+      const details: Record<string, string>[] = [
+        { advance_method: "upi" },
+        { advance_paid_on: "2025-02-04" },
+        { advance_reference: "UTR 1" },
+      ];
+      for (const patch of details) {
+        expect(
+          errorOf(parseWorkOrderForm(form({ ...VALID, advance_amount, ...patch }), TODAY)),
+        ).toBe(ADVANCE_WITHOUT_AMOUNT_ERROR);
+      }
+    });
+
+    it("allows no advance and no details", () => {
+      const res = parseWorkOrderForm(form({ ...VALID, advance_amount: "" }), TODAY);
+      expect(res.ok && res.data).toMatchObject({ advance_amount: 0, advance_method: null });
+    });
+
+    describe("with locked terms (a coordinator after approval)", () => {
+      const stored = {
+        total_cost: 195000,
+        advance_amount: 20000,
+        advance_method: "cheque" as const,
+        advance_paid_on: "2025-02-04",
+        advance_reference: "CHQ 3003",
+      };
+      const { total_cost: _t, advance_amount: _a, ...withoutMoney } = VALID;
+      void _t;
+      void _a;
+
+      it("writes the stored details back when the form leaves them out", () => {
+        // The database lock compares what it is sent: sending null here would
+        // look like the coordinator wiping the office's record.
+        const res = parseWorkOrderForm(form({ ...withoutMoney, notes: "Gate code" }), TODAY, {
+          lockedTerms: stored,
+        });
+        expect(res.ok && res.data).toMatchObject({
+          advance_method: "cheque",
+          advance_paid_on: "2025-02-04",
+          advance_reference: "CHQ 3003",
+          notes: "Gate code",
+        });
+      });
+
+      it("accepts posted details that match the stored ones", () => {
+        const res = parseWorkOrderForm(
+          form({
+            ...VALID,
+            advance_method: "cheque",
+            advance_paid_on: "2025-02-04",
+            advance_reference: " CHQ 3003 ",
+          }),
+          TODAY,
+          { lockedTerms: stored },
+        );
+        expect(res.ok && res.data).toMatchObject({ advance_method: "cheque", advance_reference: "CHQ 3003" });
+      });
+
+      it("reads a stored absence as not recorded, whatever the blank is called", () => {
+        const none = { total_cost: 195000, advance_amount: 20000 };
+        for (const advance_method of ["", "none"]) {
+          const res = parseWorkOrderForm(
+            form({ ...VALID, advance_method, advance_paid_on: "", advance_reference: "" }),
+            TODAY,
+            { lockedTerms: none },
+          );
+          expect(res.ok && res.data).toMatchObject({
+            advance_method: null,
+            advance_paid_on: null,
+            advance_reference: null,
+          });
+        }
+      });
+
+      it.each([
+        { advance_method: "cash" },
+        { advance_method: "none" },
+        { advance_paid_on: "2025-02-05" },
+        { advance_paid_on: "" },
+        { advance_reference: "CHQ 9999" },
+        { advance_reference: "" },
+      ])("refuses a change to the details: %j", (patch) => {
+        const posted = {
+          ...VALID,
+          advance_method: "cheque",
+          advance_paid_on: "2025-02-04",
+          advance_reference: "CHQ 3003",
+          ...patch,
+        };
+        expect(errorOf(parseWorkOrderForm(form(posted), TODAY, { lockedTerms: stored }))).toBe(
+          CONTRACT_TERMS_LOCKED_ERROR,
+        );
+      });
+
+      it("does not judge the stored details by the rules of today", () => {
+        // Details recorded before a rule existed stay as they are.
+        const res = parseWorkOrderForm(form(withoutMoney), TODAY, {
+          lockedTerms: { ...stored, advance_paid_on: "2026-12-31" },
+        });
+        expect(res.ok && res.data.advance_paid_on).toBe("2026-12-31");
+      });
     });
   });
 

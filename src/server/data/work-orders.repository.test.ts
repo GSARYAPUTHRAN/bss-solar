@@ -42,6 +42,10 @@ vi.mock("@/lib/supabase/server", () => ({
           count: 7,
           error: null,
         })),
+      insert: (payload: unknown) =>
+        builder(["insert", table, payload], () => ({ data: tableData, error: null })),
+      update: (payload: unknown) =>
+        builder(["update", table, payload], () => ({ data: tableData, error: null })),
     }),
     rpc: (fn: string, args: unknown) => builder(["rpc", fn, args], () => rpcResult),
   })),
@@ -170,12 +174,14 @@ describe("workOrdersRepository.page — order", () => {
     ["coordinator_name", "coordinator_name", "asc", "coordinator_name"],
     ["status", "status", "desc", "status"],
   ] as const)(
-    "sorts by %s, then the unique id so an import's tied rows page cleanly",
+    "sorts by %s, then newest first, then the unique id so an import's tied rows page cleanly",
     async (_label, sort, dir, column) => {
       // An import creates every work order in one transaction: dates, coordinators
       // and statuses tie, and paging over ties skips and repeats rows.
+      // Same sort value: the newest first, then the unique id.
       expect(await ordersFor(sort, dir)).toEqual([
         ["order", column, { ascending: dir === "asc" }],
+        ["order", "created_at", { ascending: false }],
         ["order", "id", { ascending: true }],
       ]);
     },
@@ -243,6 +249,27 @@ describe("workOrdersRepository.byId", () => {
     expect(columns).not.toContain("coordinator:profiles");
   });
 
+  it("reads how and when the advance was paid, with the advance", async () => {
+    tableData = {
+      ...RAW,
+      advance_amount: 50000,
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      advance_reference: "UPI 4410021199",
+    };
+    const wo = await workOrdersRepository.byId("wo-1");
+    const [, , columns] = recorded[0];
+    for (const column of ["advance_amount", "advance_method", "advance_paid_on", "advance_reference"]) {
+      expect(columns).toContain(column);
+    }
+    expect(wo).toMatchObject({
+      advance_amount: 50000,
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      advance_reference: "UPI 4410021199",
+    });
+  });
+
   it("maps the coordinators in sale order, first first, whatever order they arrive in", () => {
     const wo = mapWorkOrder(RAW);
     expect(wo.coordinators).toEqual([
@@ -303,6 +330,76 @@ describe("workOrdersRepository.byId", () => {
   it("is null when the order is not visible", async () => {
     tableData = null;
     expect(await workOrdersRepository.byId("nope")).toBeNull();
+  });
+});
+
+describe("workOrdersRepository — writing the advance's details", () => {
+  const INPUT = {
+    coordinator_id: RAHUL,
+    client_name: "Meera Nair",
+    client_phone: null,
+    address: null,
+    plan_type: "solar" as const,
+    plant_capacity: "5kW",
+    advance_amount: 50000,
+    advance_method: "upi" as const,
+    advance_paid_on: "2025-02-04",
+    advance_reference: "UPI 4410021199",
+    total_cost: 300000,
+    order_date: "2025-02-01",
+    consumer_number: null,
+    notes: null,
+    kseb_section: null,
+    financing_type: "self" as const,
+    loan_bank_name: null,
+  };
+
+  it("inserts how, when and the reference of the advance with the order", async () => {
+    tableData = { id: "wo-new" };
+    const result = await workOrdersRepository.create(INPUT);
+    expect(result).toEqual({ id: "wo-new", error: null });
+    const insert = recorded.find(([name]) => name === "insert");
+    expect(insert?.[2]).toMatchObject({
+      advance_amount: 50000,
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      advance_reference: "UPI 4410021199",
+    });
+  });
+
+  it("updates them with the rest, and can put them back to nothing", async () => {
+    tableData = [{ id: "wo-1" }];
+    const { coordinator_id: _first, ...patch } = INPUT;
+    void _first;
+    const cleared = { ...patch, advance_method: null, advance_paid_on: null, advance_reference: null };
+    const result = await workOrdersRepository.update("wo-1", cleared);
+    expect(result).toEqual({ error: null });
+    const update = recorded.find(([name]) => name === "update");
+    expect(update?.[2]).toMatchObject({
+      advance_method: null,
+      advance_paid_on: null,
+      advance_reference: null,
+    });
+  });
+});
+
+describe("workOrdersRepository.advanceDetails", () => {
+  it("reads just the three columns, for the one order", async () => {
+    tableData = { advance_method: "cheque", advance_paid_on: "2025-02-04", advance_reference: "CHQ 1" };
+    const details = await workOrdersRepository.advanceDetails("wo-1");
+    expect(recorded).toContainEqual([
+      "select",
+      "work_orders",
+      "advance_method, advance_paid_on, advance_reference",
+      undefined,
+    ]);
+    expect(recorded).toContainEqual(["eq", "id", "wo-1"]);
+    expect(details).toEqual(tableData);
+  });
+
+  it("is null when the order is not visible", async () => {
+    tableData = null;
+    expect(await workOrdersRepository.advanceDetails("nope")).toBeNull();
   });
 });
 

@@ -34,9 +34,8 @@ function Entry({ match }: { match: CoordinatorMatch }) {
         {blank && <span> (default coordinator)</span>}
         {unnamed && (
           <span className="block text-xs text-muted-foreground">
-            This account has no name, only its e-mail, and the Team page cannot rename it.
-            New accounts get a name through Team → Add member; for this one, ask whoever
-            manages the database to set it.
+            This account has no name, only its e-mail. Give it one with Edit on the Team
+            page, then check the file again.
           </span>
         )}
       </>

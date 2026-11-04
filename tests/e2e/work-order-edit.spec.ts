@@ -108,3 +108,72 @@ test("the plan is chosen while the order is pending and fixed once the project e
   await expectFlash(rahul, "Work order updated.");
   await expect(rahul.getByText("Inverter + 2 panels").first()).toBeVisible();
 });
+
+test("the advance's method, date and reference are recorded with the order and follow its lock", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const client = `E2E Advance ${Date.now()}`;
+  const listUrl = `/work-orders?q=${encodeURIComponent(client)}`;
+
+  // The coordinator logs a sale and says how the advance was paid.
+  const rahul = await signedInPage(browser, ACCOUNTS.rahul);
+  await rahul.goto("/work-orders/new");
+  await rahul.getByLabel(/client name/i).fill(client);
+  await rahul.getByLabel(/plant capacity/i).fill("5kW");
+  await rahul.getByLabel(/total cost/i).fill("300000");
+  await rahul.getByLabel(/advance collected/i).fill("50000");
+  await rahul.getByRole("combobox", { name: /advance method/i }).click();
+  await rahul.getByRole("option", { name: "Cheque" }).click();
+  await rahul.getByLabel(/advance received on/i).fill("2025-02-04");
+  await rahul.getByLabel(/advance reference/i).fill("CHQ 3003");
+  await rahul.getByRole("button", { name: /create work order/i }).click();
+  await expectFlash(rahul, "Work order created.");
+
+  await rahul.goto(listUrl);
+  await rahul.getByRole("row").filter({ hasText: client }).click();
+  await expect(rahul.getByText("Advance ₹50,000.00 · Cheque · 04 Feb 2025 · CHQ 3003")).toBeVisible();
+
+  // While the order is pending the coordinator may still correct them.
+  await rahul.getByRole("link", { name: /^edit$/i }).click();
+  await expect(rahul.getByRole("combobox", { name: /advance method/i })).toContainText("Cheque");
+  await expect(rahul.getByLabel(/advance received on/i)).toHaveValue("2025-02-04");
+  await rahul.getByLabel(/advance reference/i).fill("CHQ 4004");
+  await rahul.getByRole("button", { name: /save changes/i }).click();
+  await expectFlash(rahul, "Work order updated.");
+  await expect(rahul.getByText("Advance ₹50,000.00 · Cheque · 04 Feb 2025 · CHQ 4004")).toBeVisible();
+
+  // The office approves: from now on the details are the office's, like the advance.
+  const admin = await signedInPage(browser, ACCOUNTS.admin);
+  await admin.goto(listUrl);
+  await admin.getByRole("row").filter({ hasText: client }).click();
+  await admin.getByRole("button", { name: /approve & create project/i }).click();
+  await expectFlash(admin, /work order approved/i);
+
+  await rahul.reload();
+  await rahul.getByRole("link", { name: /^edit$/i }).click();
+  await expect(rahul.getByLabel(/advance method/i)).toHaveAttribute("readonly", "");
+  await expect(rahul.getByLabel(/advance method/i)).toHaveValue("Cheque");
+  await expect(rahul.getByLabel(/advance received on/i)).toHaveAttribute("readonly", "");
+  await expect(rahul.getByLabel(/advance reference/i)).toHaveAttribute("readonly", "");
+  await expect(rahul.getByLabel(/advance reference/i)).toHaveValue("CHQ 4004");
+
+  // Editing something else still saves, and leaves the office's record as it was.
+  await rahul.getByLabel(/^notes$/i).fill("Gate code 4411");
+  await rahul.getByRole("button", { name: /save changes/i }).click();
+  await expectFlash(rahul, "Work order updated.");
+  await expect(rahul.getByText(/Gate code 4411/)).toBeVisible();
+  await expect(rahul.getByText("Advance ₹50,000.00 · Cheque · 04 Feb 2025 · CHQ 4004")).toBeVisible();
+
+  // The office can still correct them.
+  await admin.reload();
+  await admin.getByRole("link", { name: /^edit$/i }).click();
+  await admin.getByRole("combobox", { name: /advance method/i }).click();
+  await admin.getByRole("option", { name: "Bank transfer" }).click();
+  await admin.getByLabel(/advance reference/i).fill("UTR 7770012345");
+  await admin.getByRole("button", { name: /save changes/i }).click();
+  await expectFlash(admin, "Work order updated.");
+  await expect(
+    admin.getByText("Advance ₹50,000.00 · Bank transfer · 04 Feb 2025 · UTR 7770012345"),
+  ).toBeVisible();
+});

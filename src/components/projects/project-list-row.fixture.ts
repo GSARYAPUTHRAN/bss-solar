@@ -50,6 +50,7 @@ export function projectListRow(overrides: Partial<ProjectListRow> = {}): Project
     cancelled_on: null,
     cancellation_remarks: null,
     incentive_total: null,
+    incentive_paid: 0,
     incentive_unpaid: 0,
     incentive_count: 0,
     incentive_unpaid_count: 0,
@@ -58,6 +59,10 @@ export function projectListRow(overrides: Partial<ProjectListRow> = {}): Project
     payments_total: 0,
     payment_count: 0,
     last_payment_on: null,
+    refunded_total: 0,
+    written_off_total: 0,
+    kseb_fees_collected: 0,
+    kseb_fees_by_office: 0,
     amount_received: 20000,
     balance_due: 175000,
     ...overrides,
@@ -77,8 +82,29 @@ export function sharedSale(overrides: Partial<ProjectListRow> = {}): ProjectList
 /** One incentive, set and not yet paid (the viewer's own, or the sale's only one). */
 export const PENDING_INCENTIVE: Partial<ProjectListRow> = {
   incentive_total: 5000,
+  incentive_paid: 0,
   incentive_unpaid: 5000,
   incentive_count: 1,
   incentive_unpaid_count: 1,
   incentive_unpaid_coordinator_ids: [RAHUL],
+};
+
+/** One incentive of ₹6,000, ₹4,000 of it paid in instalments: ₹2,000 still to pay. */
+export const PART_PAID_INCENTIVE: Partial<ProjectListRow> = {
+  incentive_total: 6000,
+  incentive_paid: 4000,
+  incentive_unpaid: 2000,
+  incentive_count: 1,
+  incentive_unpaid_count: 1,
+  incentive_unpaid_coordinator_ids: [RAHUL],
+};
+
+/** One incentive of ₹6,000, all of it paid. */
+export const PAID_INCENTIVE: Partial<ProjectListRow> = {
+  incentive_total: 6000,
+  incentive_paid: 6000,
+  incentive_unpaid: 0,
+  incentive_count: 1,
+  incentive_unpaid_count: 0,
+  incentive_paid_coordinator_ids: [RAHUL],
 };

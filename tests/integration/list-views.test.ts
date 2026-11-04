@@ -520,8 +520,9 @@ describe("the views, as the previous build reads them", () => {
           .map((n) => `"${n}"`)
           .join(", ");
         // The rows the old build's rules still describe: one coordinator,
-        // solar, not cancelled.
-        const comparable = `cardinality(n.coordinator_ids) = 1 and n.plan_type = 'solar' and n.cancellation is null`;
+        // solar, not cancelled, no refund or write-off in the ledger.
+        const comparable = `cardinality(n.coordinator_ids) = 1 and n.plan_type = 'solar' and n.cancellation is null
+          and n.refunded_total = 0 and n.written_off_total = 0`;
         const { rows } = await db.query<{ side: string; row: string }>(
           `with n as (select ${list}, id as _id from public.${view} n where ${comparable}),
                 o as (select ${list}, id as _id from ${oldView}

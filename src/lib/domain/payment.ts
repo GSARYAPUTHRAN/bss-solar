@@ -13,18 +13,21 @@ import { round2 } from "./rounding";
 /**
  * Collections against a work order.
  *
- * The booking advance is recorded on the work order; every later collection —
- * however many stages the customer pays in — is a row in the payments ledger.
+ * The booking advance is recorded on the work order; every later entry — however
+ * many stages the customer pays in — is a row in the payments ledger.
  *
- *   contract received = advance + Σ ledger entries with purpose "contract"
- *   balance due       = total cost − contract received
+ *   net received = advance + Σ contract entries − Σ refund entries
+ *   balance due  = total cost − net received − Σ write-off entries
  *
- * Ledger entries with purpose "kseb_fees" are KSEB charges collected through
- * BSS; they never count towards the contract.
+ * A refund is money going back to the customer; a write-off is a balance the
+ * office gives up (no money moves). Ledger entries with purpose "kseb_fees" are
+ * KSEB charges kept apart from the contract — paid by the customer through BSS,
+ * or by the office on their behalf (`paid_by_office`) — and never count towards
+ * the balance either way.
  *
  * The SQL views (`work_orders_list` / `projects_list`) compute the same figures
- * so lists can filter and sort on them; tests/integration/payments.test.ts pins
- * the two together.
+ * so lists can filter and sort on them; tests/integration/payments-ledger.test.ts
+ * pins the two together.
  */
 
 type Amount = number | string | null | undefined;
@@ -35,6 +38,10 @@ export interface PaymentSource {
   advance_amount?: Amount;
   /** Σ contract ledger entries (the list views expose this precomputed). */
   payments_total?: Amount;
+  /** Σ refund ledger entries. */
+  refunded_total?: Amount;
+  /** Σ write-off ledger entries. */
+  written_off_total?: Amount;
 }
 
 export interface PaymentSummary {
@@ -42,9 +49,15 @@ export interface PaymentSummary {
   advance: number;
   /** Σ contract ledger entries, excluding the advance. */
   ledger: number;
-  /** advance + ledger. */
+  /** Σ refunds: money returned to the customer. */
+  refunded: number;
+  /** Σ write-offs: balance the office gave up. */
+  writtenOff: number;
+  /** advance + ledger: everything the customer paid towards the contract, before refunds. */
+  collected: number;
+  /** collected − refunded: what BSS is holding for the contract. */
   received: number;
-  /** total − received. Negative when the customer has overpaid. */
+  /** total − received − writtenOff. Negative when the customer has overpaid. */
   balanceDue: number;
   /** Nothing left to collect (covers exact and over payment). */
   isSettled: boolean;
@@ -60,12 +73,18 @@ export function paymentSummary(source: PaymentSource): PaymentSummary {
   const totalCost = amount(source.total_cost);
   const advance = amount(source.advance_amount);
   const ledger = amount(source.payments_total);
-  const received = round2(advance + ledger);
-  const balanceDue = round2(totalCost - received);
+  const refunded = amount(source.refunded_total);
+  const writtenOff = amount(source.written_off_total);
+  const collected = round2(advance + ledger);
+  const received = round2(collected - refunded);
+  const balanceDue = round2(totalCost - received - writtenOff);
   return {
     totalCost,
     advance,
     ledger,
+    refunded,
+    writtenOff,
+    collected,
     received,
     balanceDue,
     isSettled: balanceDue <= 0,
@@ -90,14 +109,39 @@ export function isPaymentPending(
 
 /**
  * What can still be collected: the balance due, or nothing once the project is
- * cancelled or refunded (the ledger stays as history; refunds are recorded in
- * the project's remarks, never as negative payments).
+ * cancelled or refunded (the ledger stays as history, refund entries included).
  */
 export function collectibleBalance(
   summary: PaymentSummary,
   cancellation?: ProjectCancellation | null,
 ): number {
   return cancellation == null ? summary.balanceDue : 0;
+}
+
+/**
+ * The most the next contract payment can be before the contract is overpaid:
+ * the balance due, never below zero. A refund raises it again (the customer may
+ * pay what was returned); a write-off lowers it.
+ */
+export function maxContractPayment(source: PaymentSource): number {
+  return Math.max(0, paymentSummary(source).balanceDue);
+}
+
+/**
+ * The most that can be refunded: what BSS holds for the contract — advance plus
+ * contract payments, less refunds already made. A refund never exceeds what was
+ * collected, and KSEB fees are not refundable here.
+ */
+export function maxRefund(source: PaymentSource): number {
+  return Math.max(0, paymentSummary(source).received);
+}
+
+/**
+ * The most that can be written off: the balance still due, never below zero. A
+ * written-off sale is settled; there is no fixed money cap beyond that.
+ */
+export function maxWriteOff(source: PaymentSource): number {
+  return Math.max(0, paymentSummary(source).balanceDue);
 }
 
 /**
@@ -121,7 +165,8 @@ export const ADVANCE_OVER_TOTAL_ERROR = "The advance cannot be more than the tot
 export function collectedPct(source: PaymentSource): number {
   const { totalCost, received, isSettled } = paymentSummary(source);
   // Only a settled contract reads 100% — ₹500 outstanding on ₹2,00,000 must not
-  // round up to "100%" (that is exactly the commissioned-unpaid case).
+  // round up to "100%" (that is exactly the commissioned-unpaid case). A balance
+  // written off settles the contract, whatever was actually received.
   if (isSettled || totalCost <= 0) return 100;
   // Divide whole paise, not binary fractions of rupees: 57000 / 100000 * 100 is
   // 56.99999999999999, which would floor a whole point away.
@@ -138,14 +183,22 @@ export interface LedgerEntry {
   amount: Amount;
   paid_on: string;
   purpose?: PaymentPurpose | null;
+  /** `kseb_fees` only: the office paid KSEB, not the customer. */
+  paid_by_office?: boolean | null;
   created_at?: string | null;
 }
 
 export interface LedgerTotals {
   /** Σ contract entries. Feed this to `paymentSummary` as `payments_total`. */
   contract: number;
-  /** Σ KSEB-fee entries collected through BSS. */
+  /** Σ KSEB-fee entries the customer paid through BSS (`paid_by_office` false). */
   ksebFees: number;
+  /** Σ KSEB-fee entries the BSS office paid on the customer's behalf. */
+  ksebFeesByOffice: number;
+  /** Σ refund entries. Feed this to `paymentSummary` as `refunded_total`. */
+  refunded: number;
+  /** Σ write-off entries. Feed this to `paymentSummary` as `written_off_total`. */
+  writtenOff: number;
   /** Number of contract entries. */
   count: number;
   /** Latest contract `paid_on`, or null. */
@@ -156,18 +209,89 @@ export interface LedgerTotals {
 export function ledgerTotals(entries: readonly LedgerEntry[]): LedgerTotals {
   let contract = 0;
   let ksebFees = 0;
+  let ksebFeesByOffice = 0;
+  let refunded = 0;
+  let writtenOff = 0;
   let count = 0;
   let lastPaidOn: string | null = null;
   for (const e of entries) {
-    if ((e.purpose ?? "contract") === "contract") {
-      contract += amount(e.amount);
-      count += 1;
-      if (!lastPaidOn || e.paid_on > lastPaidOn) lastPaidOn = e.paid_on;
-    } else {
-      ksebFees += amount(e.amount);
+    switch (e.purpose ?? "contract") {
+      case "contract":
+        contract += amount(e.amount);
+        count += 1;
+        if (!lastPaidOn || e.paid_on > lastPaidOn) lastPaidOn = e.paid_on;
+        break;
+      case "kseb_fees":
+        if (e.paid_by_office) ksebFeesByOffice += amount(e.amount);
+        else ksebFees += amount(e.amount);
+        break;
+      case "refund":
+        refunded += amount(e.amount);
+        break;
+      case "write_off":
+        writtenOff += amount(e.amount);
+        break;
     }
   }
-  return { contract: round2(contract), ksebFees: round2(ksebFees), count, lastPaidOn };
+  return {
+    contract: round2(contract),
+    ksebFees: round2(ksebFees),
+    ksebFeesByOffice: round2(ksebFeesByOffice),
+    refunded: round2(refunded),
+    writtenOff: round2(writtenOff),
+    count,
+    lastPaidOn,
+  };
+}
+
+/** What the ledger nets to, advance excluded: Σ contract − Σ refunds. */
+export function ledgerNet(totals: Pick<LedgerTotals, "contract" | "refunded">): number {
+  return round2(totals.contract - totals.refunded);
+}
+
+/**
+ * The contract terms together with a ledger's totals — the shape `paymentSummary`
+ * and the `max…` caps take. Pass the entries that count (an edit leaves the
+ * entry being edited out).
+ */
+export function withLedger(
+  terms: Pick<PaymentSource, "total_cost" | "advance_amount">,
+  entries: readonly LedgerEntry[],
+): PaymentSource {
+  const totals = ledgerTotals(entries);
+  return {
+    total_cost: terms.total_cost,
+    advance_amount: terms.advance_amount,
+    payments_total: totals.contract,
+    refunded_total: totals.refunded,
+    written_off_total: totals.writtenOff,
+  };
+}
+
+/**
+ * How an entry moves money: collections add to what BSS holds, a refund takes
+ * it out, and a write-off is not money at all — it only closes a balance.
+ */
+export type LedgerEffect = "in" | "out" | "adjustment";
+
+export function ledgerEffect(purpose: PaymentPurpose | null | undefined): LedgerEffect {
+  switch (purpose ?? "contract") {
+    case "refund":
+      return "out";
+    case "write_off":
+      return "adjustment";
+    default:
+      return "in";
+  }
+}
+
+/**
+ * The amount as the history shows it: a refund is a negative line, everything
+ * else positive (a write-off is styled apart, not netted off the cash).
+ */
+export function signedAmount(entry: Pick<LedgerEntry, "amount" | "purpose">): number {
+  const n = amount(entry.amount);
+  return ledgerEffect(entry.purpose) === "out" ? -n : n;
 }
 
 /** Plain code-unit order — ISO dates sort correctly, independent of locale. */
@@ -191,10 +315,14 @@ function byInstant(a: string | null | undefined, b: string | null | undefined): 
  * Ledger in collection order with a 1-based stage number per purpose — the
  * advance is "stage 0", so the first ledger payment is stage 1, matching how the
  * office talks about instalments. Ties on `paid_on` keep entry order.
+ *
+ * Only collections are stages: contract entries ("Stage 2") and KSEB fees
+ * ("KSEB fee 1"), each numbered on their own. A refund or a write-off is not a
+ * stage of anything, so its `stage` is null.
  */
 export function withStages<T extends LedgerEntry>(
   entries: readonly T[],
-): (T & { stage: number })[] {
+): (T & { stage: number | null })[] {
   const ordered = [...entries].sort(
     (a, b) =>
       byCodeUnit(a.paid_on, b.paid_on) || byInstant(a.created_at, b.created_at),
@@ -202,10 +330,82 @@ export function withStages<T extends LedgerEntry>(
   const counters = new Map<PaymentPurpose, number>();
   return ordered.map((e) => {
     const purpose = e.purpose ?? "contract";
+    if (purpose === "refund" || purpose === "write_off") return { ...e, stage: null };
     const stage = (counters.get(purpose) ?? 0) + 1;
     counters.set(purpose, stage);
     return { ...e, stage };
   });
+}
+
+/**
+ * What is wrong with a ledger when it is replayed in the order it happened
+ * (the import checks a sheet row this way; each problem is one entry).
+ */
+export interface LedgerProblem {
+  /** Index of the entry in the array given to `ledgerProblems`. */
+  entry: number;
+  /** `refund_over_collected`: more than BSS held at that point. `write_off_over_balance`: more than was still due. */
+  kind: "refund_over_collected" | "write_off_over_balance";
+  /** The most the entry could have been at that point. */
+  limit: number;
+}
+
+/**
+ * Within a day, money comes in before it goes out before a balance is closed:
+ * a collection and the refund of it on the same date are valid in that order.
+ */
+const SAME_DAY_RANK: Record<PaymentPurpose, number> = {
+  contract: 0,
+  kseb_fees: 0,
+  refund: 1,
+  write_off: 2,
+};
+
+/**
+ * Replay a ledger by date (then collections, refunds, write-offs; then as
+ * listed) and report every refund larger than what was collected so far and
+ * every write-off larger than the balance then due. The contract terms are the
+ * work order's total cost and advance. An entry reported is not counted in what
+ * the entries after it are measured against. Contract overpayment is NOT
+ * reported here: it is judged on the final state, because a customer may
+ * overpay and be refunded the excess.
+ */
+export function ledgerProblems(
+  terms: Pick<PaymentSource, "total_cost" | "advance_amount">,
+  entries: readonly LedgerEntry[],
+): LedgerProblem[] {
+  const ordered = entries
+    .map((entry, index) => ({ entry, index }))
+    .sort(
+      (a, b) =>
+        byCodeUnit(a.entry.paid_on, b.entry.paid_on) ||
+        SAME_DAY_RANK[a.entry.purpose ?? "contract"] -
+          SAME_DAY_RANK[b.entry.purpose ?? "contract"] ||
+        byInstant(a.entry.created_at, b.entry.created_at) ||
+        a.index - b.index,
+    );
+
+  const problems: LedgerProblem[] = [];
+  // What has happened so far. An entry that went over its limit is reported and
+  // left out, so one slipped digit is one problem, not a cascade.
+  const applied: LedgerEntry[] = [];
+  for (const { entry, index } of ordered) {
+    const purpose = entry.purpose ?? "contract";
+    if (purpose === "refund" || purpose === "write_off") {
+      const before = withLedger(terms, applied);
+      const limit = purpose === "refund" ? maxRefund(before) : maxWriteOff(before);
+      if (amount(entry.amount) > limit) {
+        problems.push({
+          entry: index,
+          kind: purpose === "refund" ? "refund_over_collected" : "write_off_over_balance",
+          limit,
+        });
+        continue;
+      }
+    }
+    applied.push(entry);
+  }
+  return problems.sort((a, b) => a.entry - b.entry);
 }
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
@@ -220,6 +420,8 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
 export const PAYMENT_PURPOSE_LABELS: Record<PaymentPurpose, string> = {
   contract: "Contract",
   kseb_fees: "KSEB fees",
+  refund: "Refund",
+  write_off: "Write-off",
 };
 
 /** Financing labels derive from the FINANCING status registry. */

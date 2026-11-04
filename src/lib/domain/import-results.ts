@@ -4,7 +4,8 @@ import { CANCELLATION } from "./cancellation";
 import type { CoordinatorMatch } from "./coordinator-match";
 import { coordinatorsLabel } from "./coordinators";
 import { IMPORT_ERROR_COLUMN, type ImportPlan, type ImportRow } from "./import";
-import { ledgerTotals, paymentSummary } from "./payment";
+import { paymentSummary, withLedger } from "./payment";
+import { round2 } from "./rounding";
 import { completionLabel, stageLabel } from "./plan";
 
 /**
@@ -62,6 +63,8 @@ export interface ImportState {
   coordinatorMatches: CoordinatorMatch[];
   /** File-level notes: legal, but probably not what was meant. */
   warnings: string[];
+  /** File-level information: how the sheet was read (its dates), not a problem. */
+  notes: string[];
   /** Whether "skip rows whose consumer number exists" was on for the run. */
   skipExisting: boolean;
   error?: string;
@@ -82,6 +85,7 @@ export const IMPORT_INITIAL: ImportState = {
   retryCsv: null,
   coordinatorMatches: [],
   warnings: [],
+  notes: [],
   skipExisting: true,
 };
 
@@ -112,12 +116,7 @@ function describeRow(
   defaulted: boolean,
   checking: boolean,
 ): string {
-  const ledger = ledgerTotals(row.payments);
-  const { balanceDue } = paymentSummary({
-    total_cost: row.total_cost,
-    advance_amount: row.advance_amount,
-    payments_total: ledger.contract,
-  });
+  const { balanceDue, refunded, writtenOff } = paymentSummary(withLedger(row, row.payments));
   const stage = stageLabel(row.current_stage, row.plan_type);
   const parts: string[] = [];
 
@@ -127,17 +126,30 @@ function describeRow(
     // Nothing is collectable on a cancelled sale; the status says why instead.
     parts.push(completionLabel(row.plan_type));
   } else {
+    const settled = writtenOff > 0 ? "settled" : "paid in full";
     parts.push(
       balanceDue > 0
         ? `${completionLabel(row.plan_type)} · ${formatCurrency(balanceDue)} outstanding`
-        : `${completionLabel(row.plan_type)} · paid in full`,
+        : `${completionLabel(row.plan_type)} · ${settled}`,
     );
   }
   if (row.plan_type === "custom") parts.push(`Custom plan "${row.plant_capacity}"`);
   if (row.cancellation) parts.push(CANCELLATION[row.cancellation].label);
-  const n = row.payments.length;
+  // Refunds and write-offs are not payments received: say them on their own.
+  const n = row.payments.filter((p) => p.purpose !== "refund" && p.purpose !== "write_off").length;
   if (n) {
     parts.push(`${n} payment${n === 1 ? "" : "s"} ${checking ? "to record" : "recorded"}`);
+  }
+  if (refunded > 0) parts.push(`${formatCurrency(refunded)} refund${checking ? " to record" : " recorded"}`);
+  if (writtenOff > 0) parts.push(`${formatCurrency(writtenOff)} written off`);
+  if (row.incentives.length > 0) {
+    const agreed = round2(row.incentives.reduce((sum, i) => sum + i.amount, 0));
+    const paid = round2(
+      row.incentives.reduce((sum, i) => sum + i.payments.reduce((s, p) => s + p.amount, 0), 0),
+    );
+    parts.push(
+      `Incentive ${formatCurrency(agreed)} (${paid > 0 ? `${formatCurrency(paid)} paid` : "unpaid"})`,
+    );
   }
   parts.push(`${coordinatorsLabel(names)}${defaulted ? " (default coordinator)" : ""}`);
   return parts.join(" · ");
@@ -250,6 +262,7 @@ function stateOf(
     retryCsv: retryCsv(plan, results),
     coordinatorMatches: plan.coordinatorMatches,
     warnings: plan.warnings,
+    notes: plan.notes,
     skipExisting,
     error,
   };

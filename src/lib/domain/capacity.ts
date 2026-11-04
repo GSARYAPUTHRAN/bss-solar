@@ -63,6 +63,34 @@ export function capacityProblem(
   return match[2] || bareNumber ? null : CAPACITY_PROBLEM;
 }
 
+/** One term of a capacity sum: a number with its unit — "3kW", "500 Wp". */
+const CAPACITY_TERM = /^([0-9]+(?:\.[0-9]+)?)\s*(kwp|kw|k|wp|w)$/;
+
+/**
+ * A label that adds capacities up — "3kW+2kW" — read as their total: `5kW`.
+ * Every `+`-separated term must itself be a quantity with a unit (kW, kWp, k, W
+ * or Wp), so "3kW+inverter" and "3+2" are NOT sums: they keep the reading
+ * `parseCapacityKw` gives them (the first number). Null for anything else, and
+ * for a total that is not above zero.
+ */
+export function capacitySum(
+  label: string | null | undefined,
+): { kw: number; label: string } | null {
+  if (label === null || label === undefined) return null;
+  const terms = label.toLowerCase().replaceAll(",", "").split("+");
+  if (terms.length < 2) return null;
+
+  let kw = 0;
+  for (const term of terms) {
+    const match = CAPACITY_TERM.exec(term.trim());
+    if (!match) return null;
+    const unit = match[2];
+    kw += unit === "w" || unit === "wp" ? Number(match[1]) / 1000 : Number(match[1]);
+  }
+  const total = round2(kw);
+  return total > 0 ? { kw: total, label: `${total}kW` } : null;
+}
+
 /** "3 kW", "3.5 kW" — trailing zeros trimmed. */
 export function formatKw(kw: number | string | null | undefined): string {
   const n = Number(kw);

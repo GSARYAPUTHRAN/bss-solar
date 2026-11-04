@@ -28,6 +28,7 @@ import {
   WorkOrderStatusBadge,
 } from "@/components/status-badges";
 import { AddressLink, PhoneLink } from "@/components/tickets/contact-links";
+import { AdvanceLine } from "@/components/payments/advance-line";
 import { ContractSummary } from "@/components/payments/contract-summary";
 import { PaymentLedger } from "@/components/payments/payment-ledger";
 import { PAYMENTS_ANCHOR } from "@/components/payments/project-payments-section";
@@ -37,7 +38,7 @@ import { KsebFeesEstimate } from "@/components/work-orders/kseb-fees-estimate";
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/format";
 import { isSaleCoordinator, teamAuthority } from "@/lib/domain/coordinators";
-import { ledgerTotals } from "@/lib/domain/payment";
+import { amount, ledgerTotals, withLedger } from "@/lib/domain/payment";
 import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
 import { linkedProjectNote } from "@/lib/domain/work-order-list";
 
@@ -76,11 +77,7 @@ export default async function WorkOrderDetailPage({
   });
   const directory = authority === "none" ? [] : await profilesRepository.coordinatorDirectory();
   const totals = ledgerTotals(payments);
-  const paymentSource = {
-    total_cost: wo.total_cost,
-    advance_amount: wo.advance_amount,
-    payments_total: totals.contract,
-  };
+  const paymentSource = withLedger(wo, payments);
   const projectNote = project ? linkedProjectNote(project, wo.plan_type) : null;
 
   return (
@@ -201,7 +198,9 @@ export default async function WorkOrderDetailPage({
             isCompleted={project?.is_completed}
             cancellation={cancellation}
             ksebFeesCollected={totals.ksebFees}
+            ksebFeesByOffice={totals.ksebFeesByOffice}
           />
+          <AdvanceLine amount={amount(wo.advance_amount)} details={wo} />
           {payments.length > 0 ? (
             <PaymentLedger payments={payments} compact />
           ) : (

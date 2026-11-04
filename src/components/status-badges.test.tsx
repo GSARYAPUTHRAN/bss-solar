@@ -95,6 +95,33 @@ describe("PaymentBadge", () => {
     },
   );
 
+  it("says a balance the office wrote off is settled, not collected", () => {
+    // ₹1,000 short, written off: nothing is due, but the customer did not pay it all.
+    const WRITTEN_OFF = {
+      total_cost: 200000,
+      advance_amount: 50000,
+      payments_total: 149000,
+      written_off_total: 1000,
+    };
+    const { rerender } = render(<PaymentBadge source={WRITTEN_OFF} isCompleted />);
+    expect(screen.getByText("Settled — written off")).toBeInTheDocument();
+    expect(screen.queryByText("Paid in full")).toBeNull();
+    expect(screen.queryByText(/Payment pending/)).toBeNull();
+
+    // Collected in full: a write-off on top does not make it "written off".
+    rerender(<PaymentBadge source={{ ...SETTLED, written_off_total: 500 }} isCompleted />);
+    expect(screen.getByText("Paid in full")).toBeInTheDocument();
+  });
+
+  it("counts refunds against what was received", () => {
+    // Paid in full, then ₹10,000 sent back: ₹10,000 is due again.
+    const REFUNDED = { ...SETTLED, refunded_total: 10000 };
+    render(<PaymentBadge source={REFUNDED} isCompleted />);
+    expect(
+      screen.getByText(`Payment pending · ${formatCurrency(10000)}`),
+    ).toBeInTheDocument();
+  });
+
   it("says nothing is due on a cancelled project that was paid in full, too", () => {
     render(<PaymentBadge source={SETTLED} cancellation="refunded" />);
     expect(screen.getByText("Nothing due — refunded")).toBeInTheDocument();

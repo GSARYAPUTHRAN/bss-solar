@@ -10,6 +10,8 @@ type Call = [string, ...unknown[]];
 let recorded: Call[];
 let counts: Record<string, number>;
 let directory: unknown;
+/** What `account_directory()` answers: a reply, or a rejection for a dropped request. */
+let accountsReply: () => unknown;
 
 function builder(first: Call, result: () => unknown) {
   recorded.push(first);
@@ -42,7 +44,11 @@ vi.mock("@/lib/supabase/server", () => ({
         })),
     }),
     rpc: (fn: string) =>
-      builder(["rpc", fn], () => ({ data: fn === "coordinator_directory" ? directory : null, error: null })),
+      builder(["rpc", fn], () =>
+        fn === "account_directory"
+          ? accountsReply()
+          : { data: fn === "coordinator_directory" ? directory : null, error: null },
+      ),
   })),
 }));
 
@@ -54,6 +60,7 @@ beforeEach(() => {
   recorded = [];
   counts = {};
   directory = [];
+  accountsReply = () => ({ data: [], error: null });
 });
 
 describe("profilesRepository.ownedWorkCount", () => {
@@ -116,6 +123,53 @@ describe("profilesRepository.coordinatorDirectory", () => {
   it("is empty when nothing comes back (an engineer, or a failed read)", async () => {
     directory = null;
     expect(await profilesRepository.coordinatorDirectory()).toEqual([]);
+  });
+});
+
+describe("profilesRepository.accounts", () => {
+  it("lists every account with its login e-mail, for the Team page and the duplicate checks", async () => {
+    accountsReply = () => ({
+      data: [
+        { id: "r", full_name: "Ravee Kumar", email: "ravi@bsssolar.invalid", role: "coordinator", extra: "ignored" },
+        { id: "a", full_name: "BSS Admin", email: "admin@bsssolar.test", role: "admin" },
+      ],
+      error: null,
+    });
+    expect(await profilesRepository.accounts()).toEqual({
+      accounts: [
+        { id: "r", fullName: "Ravee Kumar", email: "ravi@bsssolar.invalid", role: "coordinator" },
+        { id: "a", fullName: "BSS Admin", email: "admin@bsssolar.test", role: "admin" },
+      ],
+      error: null,
+    });
+    expect(recorded[0]).toEqual(["rpc", "account_directory"]);
+  });
+
+  it("keeps an account with no e-mail on record, as null", async () => {
+    accountsReply = () => ({
+      data: [{ id: "x", full_name: "No Login", email: null, role: "coordinator" }],
+      error: null,
+    });
+    expect((await profilesRepository.accounts()).accounts[0].email).toBeNull();
+  });
+
+  it("reports a refused read instead of passing it off as an empty team", async () => {
+    accountsReply = () => ({
+      data: null,
+      error: { message: "Only office staff can read the account directory" },
+    });
+    expect(await profilesRepository.accounts()).toEqual({
+      accounts: [],
+      error: "Only office staff can read the account directory",
+    });
+  });
+
+  it("reports a request that never completed", async () => {
+    accountsReply = () => Promise.reject(new TypeError("fetch failed"));
+    expect(await profilesRepository.accounts()).toEqual({
+      accounts: [],
+      error: "The request did not complete",
+    });
   });
 });
 

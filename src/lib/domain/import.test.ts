@@ -1,15 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { toCsv } from "@/lib/csv";
+import { formatCurrency } from "@/lib/format";
 import type { UserRole } from "@/lib/types";
 import { CoordinatorDirectory, type DirectoryAccount } from "./coordinator-match";
 import {
   IMPORT_COLUMN_GROUPS,
   IMPORT_HEADERS,
   IMPORT_HEADER_ALIASES,
+  INCENTIVE_FIELDS,
   MAX_IMPORT_ROWS,
   NOT_RECORDED_LABEL,
+  PAYMENT_FIELDS,
   REQUIRED_IMPORT_HEADERS,
+  incentiveColumn,
   parseImportRow,
+  paymentColumn,
   planImport,
   readImportRow,
   validateImportHeaders,
@@ -55,15 +60,20 @@ const DIRECTORY = new CoordinatorDirectory([
   ENGINEER,
 ]);
 
-const ctx = (paymentSlots: number[] = [], defaultCoordinator: DirectoryAccount | null = null) => ({
+const ctx = (
+  paymentSlots: number[] = [],
+  defaultCoordinator: DirectoryAccount | null = null,
+  incentiveSlots: number[] = [],
+) => ({
   today: TODAY,
   paymentSlots,
+  incentiveSlots,
   directory: DIRECTORY,
   defaultCoordinator,
 });
 
 const BASE = {
-  client_name: "Anand Kumar",
+  client_name: "Anil Varghese",
   plant_capacity: "3kW",
   total_cost: "195000",
   coordinator: "Rahul Menon",
@@ -123,6 +133,7 @@ describe("validateImportHeaders", () => {
       data: {
         headers: ["client_name", "plant_capacity", "total_cost"],
         paymentSlots: [],
+        incentiveSlots: [],
         canonical: {
           client_name: "client_name",
           plant_capacity: "plant_capacity",
@@ -266,13 +277,16 @@ describe("parseImportRow — required columns and defaults", () => {
   it("normalises a minimal row with sensible defaults", () => {
     expect(parsed(BASE)).toEqual({
       row_no: 2,
-      client_name: "Anand Kumar",
+      client_name: "Anil Varghese",
       client_phone: null,
       address: null,
       plan_type: "solar",
       plant_capacity: "3kW",
       total_cost: 195000,
       advance_amount: 0,
+      advance_method: null,
+      advance_paid_on: null,
+      advance_reference: null,
       order_date: TODAY,
       coordinator_ids: [RAHUL.id],
       financing_type: "self",
@@ -347,8 +361,8 @@ describe("parseImportRow — required columns and defaults", () => {
       client_phone: " +91 98470 11111 ",
       address: "Vytilla, Kochi",
       advance_amount: "20,000",
-      order_date: "2026-06-15",
-      consumer_number: "1156789012345",
+      order_date: "2026-06-16",
+      consumer_number: "1156789000111",
       kseb_section: "Vytilla",
       notes: "Scaffolding needed",
     });
@@ -356,8 +370,8 @@ describe("parseImportRow — required columns and defaults", () => {
       client_phone: "+91 98470 11111",
       address: "Vytilla, Kochi",
       advance_amount: 20000,
-      order_date: "2026-06-15",
-      consumer_number: "1156789012345",
+      order_date: "2026-06-16",
+      consumer_number: "1156789000111",
       kseb_section: "Vytilla",
       notes: "Scaffolding needed",
     });
@@ -365,7 +379,11 @@ describe("parseImportRow — required columns and defaults", () => {
 
   it("rejects an order date in the future or malformed", () => {
     expect(problems({ ...BASE, order_date: "2026-10-23" })).toMatch(/order_date .* future/);
-    expect(problems({ ...BASE, order_date: "15/01/2026" })).toMatch(/did you mean 2026-01-15/);
+    // Day first: 15/01/2026 is a date (see "dates are day first"); month-first is not.
+    expect(problems({ ...BASE, order_date: "01/15/2026" })).toMatch(
+      /order_date "01\/15\/2026" is not a real date.*did you mean 2026-01-15\?/,
+    );
+    expect(problems({ ...BASE, order_date: "soon" })).toMatch(/order_date "soon" is not a date/);
   });
 
   it("refuses a consumer number Excel turned into scientific notation", () => {
@@ -874,73 +892,6 @@ describe("parseImportRow — cancelled and refunded", () => {
   });
 });
 
-describe("parseImportRow — incentive", () => {
-  it("gives a single named coordinator the incentive and its paid date", () => {
-    const row = parsed({ ...BASE, coordinator_incentive: "5000", incentive_paid_on: "2026-09-01" });
-    expect(row.incentives).toEqual([
-      { coordinator_id: RAHUL.id, amount: 5000, paid_on: "2026-09-01" },
-    ]);
-  });
-
-  it("allows an unpaid incentive and an incentive of zero", () => {
-    expect(parsed({ ...BASE, coordinator_incentive: "7000" }).incentives).toEqual([
-      { coordinator_id: RAHUL.id, amount: 7000, paid_on: null },
-    ]);
-    expect(parsed({ ...BASE, coordinator_incentive: "0" }).incentives[0].amount).toBe(0);
-  });
-
-  it("rejects a paid date without an incentive, a negative incentive, a future paid date", () => {
-    expect(problems({ ...BASE, incentive_paid_on: "2026-09-01" })).toMatch(
-      /incentive_paid_on needs a coordinator_incentive/,
-    );
-    expect(problems({ ...BASE, coordinator_incentive: "-100" })).toMatch(
-      /coordinator_incentive cannot be negative/,
-    );
-    expect(
-      problems({ ...BASE, coordinator_incentive: "100", incentive_paid_on: "2026-11-30" }),
-    ).toMatch(/incentive_paid_on 2026-11-30 is in the future/);
-  });
-
-  it("does not double-report a malformed incentive as missing", () => {
-    const error = problems({
-      ...BASE,
-      coordinator_incentive: "abc",
-      incentive_paid_on: "2026-09-01",
-    });
-    expect(error).toMatch(/coordinator_incentive must be an amount/);
-    expect(error).not.toMatch(/needs a coordinator_incentive/);
-  });
-
-  it("is never split between the coordinators of a shared sale", () => {
-    expect(
-      problems({ ...BASE, coordinator: "Abhijith+Ravi", coordinator_incentive: "5000" }),
-    ).toBe(
-      "coordinator_incentive cannot be split automatically for a shared sale (Abhijith Nair, Ravi Kumar) — leave it blank and set each coordinator's incentive on the project page",
-    );
-    expect(
-      problems({
-        ...BASE,
-        coordinator: "Abhijith+Ravi",
-        coordinator_incentive: "5000",
-        incentive_paid_on: "2026-09-01",
-      }),
-    ).toContain("incentive_paid_on cannot be split automatically for a shared sale");
-    // Nothing to refuse when the shared sale carries none.
-    expect(parsed({ ...BASE, coordinator: "Abhijith+Ravi" }).incentives).toEqual([]);
-  });
-
-  it("is refused on a row that fell back to the default coordinator", () => {
-    const res = readImportRow(
-      { ...BASE, coordinator: "", coordinator_incentive: "5000", incentive_paid_on: "2026-09-01" },
-      2,
-      ctx([], PRIYA),
-    );
-    expect(!res.parsed.ok && res.parsed.error).toBe(
-      "coordinator_incentive needs the coordinator cell filled — name the coordinator this incentive belongs to; incentive_paid_on needs the coordinator cell filled — name the coordinator this incentive belongs to",
-    );
-  });
-});
-
 describe("parseImportRow — payments", () => {
   const slots = [1, 2, 3, 4, 5];
   const pay = (n: number, cells: Partial<Record<string, string>>) =>
@@ -964,7 +915,7 @@ describe("parseImportRow — payments", () => {
       method: string,
       purpose: string,
       reference: string | null = null,
-    ) => ({ amount, paid_on, method, purpose, reference, notes: null });
+    ) => ({ amount, paid_on, method, purpose, paid_by_office: false, reference, notes: null });
     expect(row.payments).toEqual([
       entry(40000, "2026-06-30", "upi", "contract", "UPI 4411"),
       entry(4540, "2026-07-10", "cash", "kseb_fees"),
@@ -1769,5 +1720,1795 @@ describe("a sheet with every quirk of the real one", () => {
       coordinator_ids: [MANOHAR.id],
       notes: "Cancelled",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Release 2026-11: day-first dates, advance details, incentive instalments,
+// refunds and write-offs, template examples, capacity sums, the file notes.
+// Every client below is invented; the sheet shapes are the clerk's.
+// ---------------------------------------------------------------------------
+
+/** A group of cells: group("payment", 2, { amount: "5" }) → { payment_2_amount: "5" }. */
+const group = (prefix: "payment" | "incentive", n: number, cells: Record<string, string>) =>
+  Object.fromEntries(Object.entries(cells).map(([field, value]) => [`${prefix}_${n}_${field}`, value]));
+
+/** Read a row of a file that has these payment and incentive groups. */
+function readWith(
+  record: Record<string, string>,
+  slots: { payments?: number[]; incentives?: number[]; defaultCoordinator?: DirectoryAccount | null } = {},
+) {
+  return readImportRow(
+    record,
+    2,
+    ctx(slots.payments ?? [], slots.defaultCoordinator ?? null, slots.incentives ?? []),
+  );
+}
+
+/** The row, or throw: for rows that must be valid. */
+function rowWith(record: Record<string, string>, slots: Parameters<typeof readWith>[1] = {}): ImportRow {
+  const reading = readWith(record, slots);
+  if (!reading.parsed.ok) throw new Error(`expected a valid row, got: ${reading.parsed.error}`);
+  return reading.parsed.data;
+}
+
+/** Why the row is refused, or throw: for rows that must be refused. */
+function refusedWith(record: Record<string, string>, slots: Parameters<typeof readWith>[1] = {}): string {
+  const reading = readWith(record, slots);
+  if (reading.parsed.ok) throw new Error("expected the row to be refused");
+  return reading.parsed.error;
+}
+
+describe("column catalogue — advance details and the incentive and payment groups", () => {
+  it("puts the advance's method, date and reference right after its amount", () => {
+    const at = IMPORT_HEADERS.indexOf("advance_amount");
+    expect(IMPORT_HEADERS.slice(at, at + 4)).toEqual([
+      "advance_amount",
+      "advance_method",
+      "advance_date",
+      "advance_reference",
+    ]);
+  });
+
+  it("has the columns of a payment group, paid_by_office included, and an incentive group", () => {
+    expect(PAYMENT_FIELDS).toEqual(["amount", "date", "method", "purpose", "reference", "paid_by_office"]);
+    expect(INCENTIVE_FIELDS).toEqual(["coordinator", "amount", "date"]);
+    expect(paymentColumn(3, "paid_by_office")).toBe("payment_3_paid_by_office");
+    expect(incentiveColumn(2, "date")).toBe("incentive_2_date");
+  });
+
+  it("documents the advance columns with the work order", () => {
+    const workOrder = IMPORT_COLUMN_GROUPS.find((g) => g.title === "Work order");
+    expect(workOrder?.columns).toEqual(
+      expect.arrayContaining(["advance_method", "advance_date", "advance_reference"]),
+    );
+  });
+});
+
+describe("validateImportHeaders — incentive groups", () => {
+  const REQUIRED = [...REQUIRED_IMPORT_HEADERS];
+
+  it("finds the groups, in order, gaps allowed — and ignores the one-coordinator shorthand", () => {
+    const res = validateImportHeaders([
+      ...REQUIRED,
+      "incentive_3_amount",
+      "incentive_1_coordinator",
+      "incentive_1_amount",
+      "incentive_1_date",
+      "coordinator_incentive",
+      "incentive_paid_on",
+    ]);
+    expect(res).toMatchObject({ ok: true, data: { incentiveSlots: [1, 3], paymentSlots: [] } });
+  });
+
+  it("takes a group of its amount alone: the coordinator and the date are optional", () => {
+    expect(validateImportHeaders([...REQUIRED, "incentive_1_amount"])).toMatchObject({
+      ok: true,
+      data: { incentiveSlots: [1] },
+    });
+  });
+
+  it("asks for the amount column of a group that has none", () => {
+    expect(validateImportHeaders([...REQUIRED, "incentive_1_date", "incentive_2_amount"])).toEqual({
+      ok: false,
+      error: 'The header row needs fixing. Incentive 1 needs an "incentive_1_amount" column.',
+    });
+  });
+
+  it("suggests the group column a typo was after", () => {
+    const res = validateImportHeaders([...REQUIRED, "incentive_1_amout"]);
+    expect(!res.ok && res.error).toBe(
+      'The header row needs fixing. Unknown columns: "incentive_1_amout" (did you mean "incentive_1_amount"?).',
+    );
+  });
+
+  it("does not take incentive_0 or a field it does not have for a group", () => {
+    for (const bad of ["incentive_0_amount", "incentive_1_note", "incentive_amount"]) {
+      const res = validateImportHeaders([...REQUIRED, bad]);
+      expect(!res.ok && res.error).toContain(`"${bad}"`);
+    }
+  });
+
+  it("accepts paid_by_office in a payment group, which still needs its amount and date", () => {
+    expect(
+      validateImportHeaders([...REQUIRED, "payment_1_amount", "payment_1_date", "payment_1_paid_by_office"]),
+    ).toMatchObject({ ok: true, data: { paymentSlots: [1] } });
+    const res = validateImportHeaders([...REQUIRED, "payment_1_paid_by_office"]);
+    expect(!res.ok && res.error).toMatch(/Payment 1 needs "payment_1_amount", "payment_1_date" columns/);
+  });
+});
+
+describe("parseImportRow — dates are day first", () => {
+  const DONE = {
+    ...BASE,
+    is_completed: "yes",
+    order_date: "13/02/2025",
+    commissioned_on: "20-03-2025",
+    feasibility_date: "01.03.2025",
+  };
+
+  it("reads every date column of the sheet day first", () => {
+    const row = rowWith({
+      ...DONE,
+      advance_amount: "10000",
+      advance_date: "13/02/25",
+      ...group("payment", 1, { amount: "5000", date: "14/02/2025" }),
+    }, { payments: [1] });
+    expect(row).toMatchObject({
+      order_date: "2025-02-13",
+      commissioned_on: "2025-03-20",
+      feasibility_date: "2025-03-01",
+      advance_paid_on: "2025-02-13",
+    });
+    expect(row.payments[0].paid_on).toBe("2025-02-14");
+  });
+
+  it("reads the cancellation date day first too", () => {
+    const row = rowWith({
+      ...BASE,
+      order_date: "13/01/2025",
+      cancellation: "cancelled",
+      cancelled_on: "20/02/2025",
+    });
+    expect(row).toMatchObject({ cancelled_on: "2025-02-20", cancellation: "cancelled" });
+  });
+
+  it("reads 04-02-25 as 4 February, the way the clerk's Excel shows it — never 2 April", () => {
+    expect(rowWith({ ...BASE, order_date: "04-02-25" }).order_date).toBe("2025-02-04");
+    expect(rowWith({ ...BASE, order_date: "04/02/2025" }).order_date).toBe("2025-02-04");
+  });
+
+  it("still takes ISO", () => {
+    expect(rowWith({ ...BASE, order_date: "2025-02-13" }).order_date).toBe("2025-02-13");
+  });
+
+  it("says which cell has a date that does not exist, and what it is", () => {
+    expect(refusedWith({ ...BASE, order_date: "31/04/2025" })).toBe(
+      'order_date "31/04/2025" is not a real date — dates are written day first, like 13/02/2025',
+    );
+    expect(refusedWith({ ...BASE, order_date: "02/13/2025" })).toContain("did you mean 2025-02-13?");
+    expect(refusedWith({ ...BASE, commissioned_on: "tomorrow" })).toMatch(
+      /commissioned_on "tomorrow" is not a date/,
+    );
+  });
+
+  it("holds a day-first date to today, naming both spellings", () => {
+    expect(refusedWith({ ...BASE, order_date: "23/10/2026" })).toBe(
+      "order_date 23/10/2026 (2026-10-23) is in the future",
+    );
+    expect(rowWith({ ...BASE, order_date: "22/10/2026" }).order_date).toBe("2026-10-22");
+  });
+
+  it("reports the cell, not the row, for each date that is wrong", () => {
+    const error = refusedWith({
+      ...BASE,
+      order_date: "32/01/2025",
+      ...group("payment", 1, { amount: "1000", date: "x" }),
+    }, { payments: [1] });
+    expect(error).toContain('order_date "32/01/2025" is not a real date');
+    expect(error).toContain('payment_1_date "x" is not a date');
+  });
+
+  it("reports the day-first dates it read, for the file's note — all of them, whatever the row", () => {
+    const reading = readWith({
+      ...BASE,
+      order_date: "13/02/2025",
+      commissioned_on: "2025-03-20",
+      is_completed: "yes",
+      ...group("payment", 1, { amount: "1000", date: "04-02-25" }),
+    }, { payments: [1] });
+    expect(reading.dayFirst).toEqual([
+      { iso: "2025-02-13", written: "13/02/2025", dayFirst: true },
+      { iso: "2025-02-04", written: "04-02-25", dayFirst: true },
+    ]);
+    expect(readWith({ ...BASE, order_date: "2025-02-13" }).dayFirst).toEqual([]);
+  });
+
+  it("keeps the order date it read, for the month check — null when blank or unreadable", () => {
+    expect(readWith({ ...BASE, order_date: "13/02/2025" }).orderDate).toBe("2025-02-13");
+    expect(readWith(BASE).orderDate).toBeNull();
+    expect(readWith({ ...BASE, order_date: "31/04/2025" }).orderDate).toBeNull();
+  });
+});
+
+describe("parseImportRow — the advance's method, date and reference", () => {
+  const ADVANCE = {
+    ...BASE,
+    advance_amount: "50000",
+    advance_method: "UPI",
+    advance_date: "04/02/2025",
+    advance_reference: " UPI 440011 ",
+  };
+
+  it("carries them to the row, the method as its key and the date as ISO", () => {
+    expect(rowWith(ADVANCE)).toMatchObject({
+      advance_amount: 50000,
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      advance_reference: "UPI 440011",
+    });
+  });
+
+  it("leaves them not recorded when blank — never guessed from the order date or 'other'", () => {
+    expect(rowWith({ ...BASE, advance_amount: "50000" })).toMatchObject({
+      advance_method: null,
+      advance_paid_on: null,
+      advance_reference: null,
+    });
+  });
+
+  it("takes any one of them on its own", () => {
+    expect(rowWith({ ...BASE, advance_amount: "5000", advance_method: "cash" })).toMatchObject({
+      advance_method: "cash",
+      advance_paid_on: null,
+    });
+    expect(rowWith({ ...BASE, advance_amount: "5000", advance_date: "2025-02-04" }).advance_paid_on).toBe(
+      "2025-02-04",
+    );
+  });
+
+  it("refuses details of an advance that is blank or zero, naming the columns", () => {
+    expect(refusedWith({ ...BASE, advance_method: "upi" })).toBe(
+      "advance_method is filled but advance_amount is blank or zero — enter the advance, or clear it",
+    );
+    expect(refusedWith({ ...ADVANCE, advance_amount: "0" })).toBe(
+      "advance_method, advance_date, advance_reference are filled but advance_amount is blank or zero — enter the advance, or clear them",
+    );
+  });
+
+  it("does not also call a malformed advance amount blank", () => {
+    const error = refusedWith({ ...ADVANCE, advance_amount: "abc" });
+    expect(error).toMatch(/advance_amount must be an amount/);
+    expect(error).not.toMatch(/blank or zero/);
+  });
+
+  it("names the column of a method it does not know, and suggests one", () => {
+    expect(refusedWith({ ...ADVANCE, advance_method: "chque" })).toBe(
+      'advance_method "chque" is not recognised — did you mean "cheque"?',
+    );
+  });
+
+  it("refuses an advance date in the future, and one that is not a date", () => {
+    expect(refusedWith({ ...ADVANCE, advance_date: "2026-11-01" })).toBe(
+      "advance_date 2026-11-01 is in the future",
+    );
+    expect(refusedWith({ ...ADVANCE, advance_date: "later" })).toMatch(/advance_date "later" is not a date/);
+  });
+
+  it("holds the reference to its limit", () => {
+    expect(refusedWith({ ...ADVANCE, advance_reference: "x".repeat(101) })).toBe(
+      "advance_reference is too long (101 characters; the most is 100)",
+    );
+    expect(rowWith({ ...ADVANCE, advance_reference: "x".repeat(100) }).advance_reference).toHaveLength(100);
+  });
+});
+
+describe("parseImportRow — a capacity written as a sum", () => {
+  it("stores the total and says how it was read", () => {
+    const reading = readWith({ ...BASE, plant_capacity: "3kW+2kW" });
+    expect(reading.parsed.ok && reading.parsed.data.plant_capacity).toBe("5kW");
+    expect(reading.warnings).toContain('plant_capacity "3kW+2kW" read as 5 kW');
+  });
+
+  it("adds watts and kilowatts, and keeps the fractions", () => {
+    expect(rowWith({ ...BASE, plant_capacity: "3kW + 500W" }).plant_capacity).toBe("3.5kW");
+    expect(rowWith({ ...BASE, plant_capacity: "2000W+3KWp" }).plant_capacity).toBe("5kW");
+  });
+
+  it("leaves 3kW+inverter as it is: its first number is the capacity", () => {
+    const reading = readWith({ ...BASE, plant_capacity: "3kW+inverter" });
+    expect(reading.parsed.ok && reading.parsed.data.plant_capacity).toBe("3kW+inverter");
+    expect(reading.warnings.filter((w) => w.includes("read as"))).toEqual([]);
+  });
+
+  it("leaves a plain capacity without a note", () => {
+    expect(readWith({ ...BASE, plant_capacity: "5 kWp" }).warnings).toEqual([
+      `order_date is blank — today (${TODAY}) will be used`,
+    ]);
+  });
+
+  it("does not touch what a custom plan says it sold", () => {
+    expect(
+      rowWith({ ...BASE, plan_type: "custom", plant_capacity: "3kW+2kW inverter" }).plant_capacity,
+    ).toBe("3kW+2kW inverter");
+    expect(
+      rowWith({ ...BASE, plan_type: "custom", plant_capacity: "3kW+2kW" }).plant_capacity,
+    ).toBe("3kW+2kW");
+  });
+
+  it("totals a cancelled row's capacity too", () => {
+    const row = rowWith({
+      ...BASE,
+      plant_capacity: "1kW+2kW",
+      order_date: "2025-01-13",
+      cancellation: "cancelled",
+    });
+    expect(row.plant_capacity).toBe("3kW");
+  });
+
+  it("is worded in the sheet's terms by the results line, not by the row", () => {
+    const reading = readWith({ ...BASE, plant_capacity: "3kW+2kW" });
+    expect(reading.warnings[0]).toBe('plant_capacity "3kW+2kW" read as 5 kW');
+  });
+});
+
+describe("parseImportRow — the one-coordinator incentive shorthand", () => {
+  const PAID = "2026-09-01";
+
+  it("gives a single named coordinator the incentive as one paid instalment", () => {
+    const row = rowWith({ ...BASE, coordinator_incentive: "5000", incentive_paid_on: PAID });
+    expect(row.incentives).toEqual([
+      { coordinator_id: RAHUL.id, amount: 5000, payments: [{ amount: 5000, paid_on: PAID, note: null }] },
+    ]);
+  });
+
+  it("reads the date day first", () => {
+    const row = rowWith({ ...BASE, coordinator_incentive: "5000", incentive_paid_on: "01/09/2026" });
+    expect(row.incentives[0].payments[0].paid_on).toBe("2026-09-01");
+  });
+
+  it("allows an unpaid incentive (no instalment) and an incentive of zero", () => {
+    expect(rowWith({ ...BASE, coordinator_incentive: "7000" }).incentives).toEqual([
+      { coordinator_id: RAHUL.id, amount: 7000, payments: [] },
+    ]);
+    expect(rowWith({ ...BASE, coordinator_incentive: "0" }).incentives).toEqual([
+      { coordinator_id: RAHUL.id, amount: 0, payments: [] },
+    ]);
+  });
+
+  it("reads a sum as the instalments of one incentive, one date for each", () => {
+    const row = rowWith({
+      ...BASE,
+      coordinator_incentive: "20000+2360+2360",
+      incentive_paid_on: "15/05/2025+16/05/2025+21/05/2025",
+    });
+    expect(row.incentives).toEqual([
+      {
+        coordinator_id: RAHUL.id,
+        amount: 24720,
+        payments: [
+          { amount: 20000, paid_on: "2025-05-15", note: null },
+          { amount: 2360, paid_on: "2025-05-16", note: null },
+          { amount: 2360, paid_on: "2025-05-21", note: null },
+        ],
+      },
+    ]);
+  });
+
+  it("takes spaces around the +, and a mix of date shapes", () => {
+    const row = rowWith({
+      ...BASE,
+      coordinator_incentive: "₹12,000 + Rs. 5000",
+      incentive_paid_on: "2025-05-15 + 16-05-2025",
+    });
+    expect(row.incentives[0]).toMatchObject({
+      amount: 17000,
+      payments: [{ paid_on: "2025-05-15" }, { paid_on: "2025-05-16" }],
+    });
+  });
+
+  it("makes a sum with no dates an unpaid incentive of the total", () => {
+    expect(rowWith({ ...BASE, coordinator_incentive: "12000+5000" }).incentives).toEqual([
+      { coordinator_id: RAHUL.id, amount: 17000, payments: [] },
+    ]);
+  });
+
+  it("refuses several amounts with a single date: one date per amount", () => {
+    expect(
+      refusedWith({ ...BASE, coordinator_incentive: "12000+5000", incentive_paid_on: PAID }),
+    ).toBe(
+      "incentive_paid_on has 1 date for 2 amounts in coordinator_incentive — one date per amount, joined by + in the same order (or leave it blank for an incentive not yet paid)",
+    );
+  });
+
+  it("refuses more dates than amounts, and fewer", () => {
+    expect(
+      refusedWith({ ...BASE, coordinator_incentive: "5000", incentive_paid_on: "2025-05-15+2025-05-16" }),
+    ).toMatch(/incentive_paid_on has 2 dates for 1 amount in coordinator_incentive — one date per amount/);
+    expect(
+      refusedWith({
+        ...BASE,
+        coordinator_incentive: "1000+2000+3000",
+        incentive_paid_on: "2025-05-15+2025-05-16",
+      }),
+    ).toMatch(/has 2 dates for 3 amounts/);
+  });
+
+  it("names a date that is missing between the +", () => {
+    expect(
+      refusedWith({ ...BASE, coordinator_incentive: "1000+2000", incentive_paid_on: "2025-05-15+" }),
+    ).toBe(
+      'incentive_paid_on "2025-05-15+" has an empty date — write one date per amount, joined by +',
+    );
+  });
+
+  it("reports a date that is wrong by itself, without a count complaint on top", () => {
+    const error = refusedWith({
+      ...BASE,
+      coordinator_incentive: "1000+2000",
+      incentive_paid_on: "2025-05-15+31/04/2025",
+    });
+    expect(error).toMatch(/incentive_paid_on "31\/04\/2025" is not a real date/);
+    expect(error).not.toMatch(/one date per amount/);
+  });
+
+  it("refuses to date a payment of zero", () => {
+    expect(
+      refusedWith({ ...BASE, coordinator_incentive: "0+5000", incentive_paid_on: "2025-05-15+2025-05-16" }),
+    ).toBe(
+      "incentive_paid_on dates a payment of zero — every part of coordinator_incentive that has a date must be more than zero",
+    );
+    expect(
+      refusedWith({ ...BASE, coordinator_incentive: "0", incentive_paid_on: PAID }),
+    ).toMatch(/dates a payment of zero/);
+  });
+
+  it("rejects a paid date without an incentive, a negative incentive, a future paid date", () => {
+    expect(refusedWith({ ...BASE, incentive_paid_on: PAID })).toMatch(
+      /incentive_paid_on needs a coordinator_incentive/,
+    );
+    expect(refusedWith({ ...BASE, coordinator_incentive: "-100" })).toMatch(
+      /coordinator_incentive cannot be negative/,
+    );
+    expect(
+      refusedWith({ ...BASE, coordinator_incentive: "100", incentive_paid_on: "2026-11-30" }),
+    ).toMatch(/incentive_paid_on 2026-11-30 is in the future/);
+  });
+
+  it("does not double-report a malformed incentive as missing", () => {
+    const error = refusedWith({ ...BASE, coordinator_incentive: "abc", incentive_paid_on: PAID });
+    expect(error).toMatch(/coordinator_incentive must be an amount/);
+    expect(error).not.toMatch(/needs a coordinator_incentive/);
+  });
+
+  it("is never split between the coordinators of a shared sale, and points at the incentive_N columns", () => {
+    expect(refusedWith({ ...BASE, coordinator: "Abhijith+Ravi", coordinator_incentive: "5000" })).toBe(
+      "coordinator_incentive cannot be split automatically for a shared sale (Abhijith Nair, Ravi Kumar) — use the incentive_N_coordinator, incentive_N_amount and incentive_N_date columns to say who gets what",
+    );
+    expect(
+      refusedWith({
+        ...BASE,
+        coordinator: "Abhijith+Ravi",
+        coordinator_incentive: "5000",
+        incentive_paid_on: PAID,
+      }),
+    ).toContain("incentive_paid_on cannot be split automatically for a shared sale");
+    // Nothing to refuse when the shared sale carries none.
+    expect(rowWith({ ...BASE, coordinator: "Abhijith+Ravi" }).incentives).toEqual([]);
+  });
+
+  it("is refused on a row that fell back to the default coordinator", () => {
+    const error = refusedWith(
+      { ...BASE, coordinator: "", coordinator_incentive: "5000", incentive_paid_on: PAID },
+      { defaultCoordinator: PRIYA },
+    );
+    expect(error).toBe(
+      "coordinator_incentive needs the coordinator cell filled — name the coordinator this incentive belongs to; incentive_paid_on needs the coordinator cell filled — name the coordinator this incentive belongs to",
+    );
+  });
+});
+
+describe("parseImportRow — incentive_N groups", () => {
+  const slots = { incentives: [1, 2, 3] };
+  const SHARED = { ...BASE, coordinator: "Ravi + Abhijith" };
+
+  it("gives each coordinator of a shared sale their own incentive", () => {
+    const row = rowWith(
+      {
+        ...SHARED,
+        ...group("incentive", 1, { coordinator: "Ravi", amount: "20000", date: "2025-05-15" }),
+        ...group("incentive", 2, { coordinator: "Abhijith", amount: "15000", date: "2025-05-16" }),
+      },
+      slots,
+    );
+    expect(row.incentives).toEqual([
+      {
+        coordinator_id: RAVI.id,
+        amount: 20000,
+        payments: [{ amount: 20000, paid_on: "2025-05-15", note: null }],
+      },
+      {
+        coordinator_id: ABHIJITH.id,
+        amount: 15000,
+        payments: [{ amount: 15000, paid_on: "2025-05-16", note: null }],
+      },
+    ]);
+  });
+
+  it("takes a group with a date as paid and one without as the unpaid part of the agreed total", () => {
+    const row = rowWith(
+      {
+        ...SHARED,
+        ...group("incentive", 1, { coordinator: "Ravi", amount: "12000", date: "20/03/2025" }),
+        ...group("incentive", 2, { coordinator: "Ravi", amount: "3000" }),
+      },
+      slots,
+    );
+    expect(row.incentives).toEqual([
+      {
+        coordinator_id: RAVI.id,
+        amount: 15000,
+        payments: [{ amount: 12000, paid_on: "2025-03-20", note: null }],
+      },
+    ]);
+  });
+
+  it("adds a coordinator's groups wherever they are, in the order the coordinators first appear", () => {
+    const row = rowWith(
+      {
+        ...SHARED,
+        ...group("incentive", 1, { coordinator: "Abhijith", amount: "1000", date: "2025-05-01" }),
+        ...group("incentive", 2, { coordinator: "Ravi", amount: "2000", date: "2025-05-02" }),
+        ...group("incentive", 3, { coordinator: "abhijith", amount: "500", date: "2025-05-03" }),
+      },
+      slots,
+    );
+    expect(row.incentives.map((i) => [i.coordinator_id, i.amount, i.payments.length])).toEqual([
+      [ABHIJITH.id, 1500, 2],
+      [RAVI.id, 2000, 1],
+    ]);
+    expect(row.incentives[0].payments.map((p) => p.paid_on)).toEqual(["2025-05-01", "2025-05-03"]);
+  });
+
+  it("adds in paise, so three parts of 0.1 are exactly 0.3", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        ...group("incentive", 1, { amount: "0.1" }),
+        ...group("incentive", 2, { amount: "0.1" }),
+        ...group("incentive", 3, { amount: "0.1" }),
+      },
+      slots,
+    );
+    expect(row.incentives[0].amount).toBe(0.3);
+  });
+
+  it("gives a single-coordinator sale's blank incentive coordinator to its coordinator", () => {
+    const row = rowWith({ ...BASE, ...group("incentive", 1, { amount: "5000", date: "2025-05-01" }) }, slots);
+    expect(row.incentives).toEqual([
+      {
+        coordinator_id: RAHUL.id,
+        amount: 5000,
+        payments: [{ amount: 5000, paid_on: "2025-05-01", note: null }],
+      },
+    ]);
+  });
+
+  it("resolves the incentive coordinator like the coordinator column: a first name, a full name, an e-mail", () => {
+    const row = rowWith(
+      {
+        ...SHARED,
+        ...group("incentive", 1, { coordinator: "ravi", amount: "1" }),
+        ...group("incentive", 2, { coordinator: "Abhijith Nair", amount: "2" }),
+      },
+      slots,
+    );
+    expect(row.incentives.map((i) => i.coordinator_id)).toEqual([RAVI.id, ABHIJITH.id]);
+    expect(
+      rowWith(
+        { ...SHARED, ...group("incentive", 1, { coordinator: "ravi@bsssolar.test", amount: "1" }) },
+        slots,
+      ).incentives[0].coordinator_id,
+    ).toBe(RAVI.id);
+  });
+
+  it("requires the coordinator on a shared sale", () => {
+    expect(refusedWith({ ...SHARED, ...group("incentive", 1, { amount: "5000" }) }, slots)).toBe(
+      "incentive_1_coordinator is required on a shared sale (Ravi Kumar, Abhijith Nair) — name who this incentive is for",
+    );
+  });
+
+  it("refuses a coordinator who is not on the sale, and says who is", () => {
+    expect(
+      refusedWith(
+        { ...SHARED, ...group("incentive", 1, { coordinator: "Manohar", amount: "5000" }) },
+        slots,
+      ),
+    ).toBe(
+      'incentive_1_coordinator "Manohar" is not a coordinator on this sale (Ravi Kumar, Abhijith Nair) — name one of them',
+    );
+  });
+
+  it("refuses a cell that names two people: each person has their own group", () => {
+    expect(
+      refusedWith(
+        { ...SHARED, ...group("incentive", 1, { coordinator: "Ravi & Abhijith", amount: "5000" }) },
+        slots,
+      ),
+    ).toBe(
+      'incentive_1_coordinator "Ravi & Abhijith" names 2 people — an incentive belongs to one coordinator; give each their own incentive_N group',
+    );
+  });
+
+  it("refuses a name that is no account, with the suggestion, and lists it in the references", () => {
+    const reading = readWith(
+      { ...SHARED, ...group("incentive", 1, { coordinator: "Abhijit", amount: "5000" }) },
+      slots,
+    );
+    expect(!reading.parsed.ok && reading.parsed.error).toBe(
+      'incentive_1_coordinator "Abhijit" is not a coordinator or office account — did you mean Abhijith Nair (abhijith@bsssolar.test)?',
+    );
+    expect(reading.references.map((r) => [r.written, r.account?.fullName ?? null])).toEqual([
+      ["Ravi", "Ravi Kumar"],
+      ["Abhijith", "Abhijith Nair"],
+      ["Abhijit", null],
+    ]);
+  });
+
+  it("requires an amount once any cell of the group is filled, and more than zero", () => {
+    expect(
+      refusedWith({ ...BASE, ...group("incentive", 1, { date: "2025-05-01" }) }, slots),
+    ).toBe("incentive_1_amount is required — other incentive 1 cells are filled");
+    expect(refusedWith({ ...BASE, ...group("incentive", 1, { amount: "0" }) }, slots)).toBe(
+      "incentive_1_amount must be more than zero",
+    );
+  });
+
+  it("skips a group that is blank, wherever it is", () => {
+    const row = rowWith(
+      { ...BASE, ...group("incentive", 2, { amount: "1000", date: "2025-05-01" }) },
+      slots,
+    );
+    expect(row.incentives).toHaveLength(1);
+    expect(rowWith({ ...BASE, ...group("incentive", 1, { amount: " " }) }, slots).incentives).toEqual([]);
+  });
+
+  it("refuses a date in the future or not a date, naming the cell", () => {
+    expect(
+      refusedWith({ ...BASE, ...group("incentive", 1, { amount: "1", date: "23/10/2026" }) }, slots),
+    ).toBe("incentive_1_date 23/10/2026 (2026-10-23) is in the future");
+    expect(
+      refusedWith({ ...BASE, ...group("incentive", 2, { amount: "1", date: "soon" }) }, slots),
+    ).toMatch(/incentive_2_date "soon" is not a date/);
+  });
+
+  it("refuses a blank incentive coordinator on a row that took the default coordinator", () => {
+    expect(
+      refusedWith(
+        { ...BASE, coordinator: "", ...group("incentive", 1, { amount: "5000" }) },
+        { ...slots, defaultCoordinator: PRIYA },
+      ),
+    ).toBe(
+      "incentive_1_coordinator needs the coordinator cell filled — name the coordinator this incentive belongs to",
+    );
+  });
+
+  it("takes the default coordinator named outright", () => {
+    const row = rowWith(
+      { ...BASE, coordinator: "", ...group("incentive", 1, { coordinator: "Priya", amount: "5000" }) },
+      { ...slots, defaultCoordinator: PRIYA },
+    );
+    expect(row.incentives[0].coordinator_id).toBe(PRIYA.id);
+  });
+
+  it("does not add noise when the coordinator cell itself is refused", () => {
+    const error = refusedWith(
+      { ...BASE, coordinator: "Gireesh", ...group("incentive", 1, { amount: "5000" }) },
+      slots,
+    );
+    expect(error).toMatch(/^coordinator "Gireesh" is not a coordinator or office account/);
+    expect(error).not.toMatch(/incentive_1/);
+  });
+
+  it("is refused in a row that also uses the one-coordinator shorthand", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          coordinator_incentive: "5000",
+          incentive_paid_on: "2025-05-01",
+          ...group("incentive", 1, { amount: "5000" }),
+          ...group("incentive", 3, { amount: "100" }),
+        },
+        slots,
+      ),
+    ).toBe(
+      "coordinator_incentive and incentive_paid_on and incentive_1_*, incentive_3_* are both filled — use either the shorthand or the incentive_N_* columns, not both",
+    );
+  });
+
+  it("lets a file hold both kinds of column when each row uses one", () => {
+    expect(rowWith({ ...BASE, coordinator_incentive: "5000" }, slots).incentives).toHaveLength(1);
+    expect(rowWith({ ...BASE, ...group("incentive", 1, { amount: "5000" }) }, slots).incentives).toHaveLength(1);
+  });
+});
+
+describe("parseImportRow — paid_by_office, refunds and write-offs", () => {
+  const slots = { payments: [1, 2, 3, 4] };
+  const COLLECTED = {
+    ...BASE,
+    advance_amount: "50000",
+    ...group("payment", 1, { amount: "100000", date: "2025-01-10" }),
+  };
+
+  it("says whether the office or the customer paid a KSEB fee, the customer by default", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        ...group("payment", 1, { amount: "4540", date: "2025-01-10", purpose: "kseb_fees" }),
+        ...group("payment", 2, {
+          amount: "1180",
+          date: "2025-01-11",
+          purpose: "kseb_fees",
+          paid_by_office: "yes",
+        }),
+        ...group("payment", 3, {
+          amount: "100",
+          date: "2025-01-12",
+          purpose: "kseb_fees",
+          paid_by_office: "no",
+        }),
+      },
+      slots,
+    );
+    expect(row.payments.map((p) => p.paid_by_office)).toEqual([false, true, false]);
+  });
+
+  it("refuses paid_by_office yes on anything but a KSEB fee, but not a no", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          ...group("payment", 1, { amount: "100", date: "2025-01-10", paid_by_office: "yes" }),
+        },
+        slots,
+      ),
+    ).toBe(
+      "payment_1_paid_by_office is only for a payment_1_purpose of kseb_fees — the office pays KSEB, not the contract",
+    );
+    expect(
+      rowWith(
+        { ...BASE, ...group("payment", 1, { amount: "100", date: "2025-01-10", paid_by_office: "no" }) },
+        slots,
+      ).payments[0].paid_by_office,
+    ).toBe(false);
+  });
+
+  it("does not also say paid_by_office is misplaced when the purpose could not be read", () => {
+    const error = refusedWith(
+      {
+        ...BASE,
+        ...group("payment", 1, {
+          amount: "100",
+          date: "2025-01-10",
+          purpose: "subsidy",
+          paid_by_office: "yes",
+        }),
+      },
+      slots,
+    );
+    expect(error).toMatch(/payment_1_purpose "subsidy" is not recognised/);
+    expect(error).not.toMatch(/paid_by_office is only/);
+  });
+
+  it("refuses a paid_by_office that is not yes or no", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          ...group("payment", 1, {
+            amount: "100",
+            date: "2025-01-10",
+            purpose: "kseb_fees",
+            paid_by_office: "maybe",
+          }),
+        },
+        slots,
+      ),
+    ).toBe('payment_1_paid_by_office must be yes or no (got "maybe")');
+  });
+
+  it("records a refund as money going back, with its method and reference", () => {
+    const row = rowWith(
+      {
+        ...COLLECTED,
+        ...group("payment", 2, {
+          amount: "10000",
+          date: "2025-02-01",
+          method: "NEFT",
+          purpose: "Refund",
+          reference: "NEFT 123",
+        }),
+      },
+      slots,
+    );
+    expect(row.payments[1]).toEqual({
+      amount: 10000,
+      paid_on: "2025-02-01",
+      method: "bank_transfer",
+      purpose: "refund",
+      paid_by_office: false,
+      reference: "NEFT 123",
+      notes: null,
+    });
+  });
+
+  it("allows a refund of everything that was collected, the advance included", () => {
+    expect(
+      rowWith(
+        { ...COLLECTED, ...group("payment", 2, { amount: "150000", date: "2025-02-01", purpose: "refund" }) },
+        slots,
+      ).payments,
+    ).toHaveLength(2);
+  });
+
+  it("refuses a refund of more than was collected, naming the limit", () => {
+    expect(
+      refusedWith(
+        { ...COLLECTED, ...group("payment", 2, { amount: "150001", date: "2025-02-01", purpose: "refund" }) },
+        slots,
+      ),
+    ).toBe(
+      `payment_2_amount ${formatCurrency(150001)} is more than the ${formatCurrency(150000)} BSS held on 2025-02-01 (advance plus contract payments, less earlier refunds) — a refund cannot exceed what was collected`,
+    );
+  });
+
+  it("judges a refund by when it happened, not by its place in the sheet", () => {
+    // payment_1 is the refund, dated before the 100,000 came in: only the 50,000 advance is held.
+    const sheet = {
+      ...BASE,
+      advance_amount: "50000",
+      ...group("payment", 1, { amount: "60000", date: "2025-01-05", purpose: "refund" }),
+      ...group("payment", 2, { amount: "100000", date: "2025-01-10" }),
+    };
+    expect(refusedWith(sheet, slots)).toMatch(/payment_1_amount .* is more than the .*50,000/);
+    expect(
+      rowWith({ ...sheet, ...group("payment", 1, { amount: "40000", date: "2025-01-05", purpose: "refund" }) }, slots)
+        .payments,
+    ).toHaveLength(2);
+  });
+
+  it("does not let two refunds take the same money", () => {
+    const error = refusedWith(
+      {
+        ...COLLECTED,
+        ...group("payment", 2, { amount: "100000", date: "2025-02-01", purpose: "refund" }),
+        ...group("payment", 3, { amount: "60000", date: "2025-02-02", purpose: "refund" }),
+      },
+      slots,
+    );
+    expect(error).toMatch(/^payment_3_amount .* is more than the .*50,000/);
+  });
+
+  it("lets a customer who overpaid be refunded the excess: the contract is judged at the end", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        advance_amount: "20000",
+        ...group("payment", 1, { amount: "190000", date: "2025-01-10" }),
+        ...group("payment", 2, { amount: "15000", date: "2025-01-20", purpose: "refund" }),
+      },
+      slots,
+    );
+    expect(row.payments).toHaveLength(2);
+  });
+
+  it("lets a refunded customer pay again", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        advance_amount: "195000",
+        ...group("payment", 1, { amount: "95000", date: "2025-01-20", purpose: "refund" }),
+        ...group("payment", 2, { amount: "95000", date: "2025-01-25" }),
+      },
+      slots,
+    );
+    expect(row.payments).toHaveLength(2);
+  });
+
+  it("records a write-off with its reason as the note — the reference cell is the reason", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        advance_amount: "100000",
+        ...group("payment", 1, { amount: "94200", date: "2025-01-10" }),
+        ...group("payment", 2, {
+          amount: "800",
+          date: "2025-01-11",
+          purpose: "write_off",
+          reference: "  Short at handover, waived  ",
+        }),
+      },
+      slots,
+    );
+    expect(row.payments[1]).toEqual({
+      amount: 800,
+      paid_on: "2025-01-11",
+      method: "other",
+      purpose: "write_off",
+      paid_by_office: false,
+      reference: null,
+      notes: "Short at handover, waived",
+    });
+  });
+
+  it("takes the row's notes as the reason when the write-off has no reference", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        notes: "Customer short by 800",
+        advance_amount: "100000",
+        ...group("payment", 1, { amount: "94200", date: "2025-01-10" }),
+        ...group("payment", 2, { amount: "800", date: "2025-01-11", purpose: "write off" }),
+      },
+      slots,
+    );
+    expect(row.payments[1]).toMatchObject({ purpose: "write_off", reference: null, notes: "Customer short by 800" });
+  });
+
+  it("refuses a write-off with no reason anywhere", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          advance_amount: "100000",
+          ...group("payment", 1, { amount: "94200", date: "2025-01-10" }),
+          ...group("payment", 2, { amount: "800", date: "2025-01-11", purpose: "write_off" }),
+        },
+        slots,
+      ),
+    ).toBe(
+      "payment_2_reference is required for a write_off — say why the balance is being written off (or fill the row's notes)",
+    );
+  });
+
+  it("holds a write-off's reason to the length of a note", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          advance_amount: "100000",
+          ...group("payment", 1, { amount: "94200", date: "2025-01-10" }),
+          ...group("payment", 2, {
+            amount: "800",
+            date: "2025-01-11",
+            purpose: "write_off",
+            reference: "x".repeat(501),
+          }),
+        },
+        slots,
+      ),
+    ).toBe("payment_2_reference is too long for a write-off reason (501 characters; the most is 500)");
+  });
+
+  it("allows a write-off of exactly the balance, and refuses more", () => {
+    const sheet = {
+      ...BASE,
+      advance_amount: "100000",
+      ...group("payment", 1, { amount: "94200", date: "2025-01-10" }),
+    };
+    const off = (amount: string) =>
+      group("payment", 2, { amount, date: "2025-01-11", purpose: "write_off", reference: "waived" });
+    expect(rowWith({ ...sheet, ...off("800") }, slots).payments).toHaveLength(2);
+    expect(refusedWith({ ...sheet, ...off("800.01") }, slots)).toBe(
+      `payment_2_amount ${formatCurrency(800.01)} is more than the ${formatCurrency(800)} still due on 2025-01-11 — a write-off cannot exceed the balance`,
+    );
+  });
+
+  it("does not let a balance be written off twice", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          advance_amount: "100000",
+          ...group("payment", 1, { amount: "94200", date: "2025-01-10" }),
+          ...group("payment", 2, { amount: "800", date: "2025-01-11", purpose: "write_off", reference: "a" }),
+          ...group("payment", 3, { amount: "1", date: "2025-01-12", purpose: "write_off", reference: "b" }),
+        },
+        slots,
+      ),
+    ).toMatch(/^payment_3_amount .* is more than the .*0\.00 still due on 2025-01-12/);
+  });
+
+  it("knows nothing is due when the total cost is not recorded", () => {
+    expect(
+      refusedWith(
+        {
+          ...BASE,
+          total_cost: "",
+          order_date: "2025-01-10",
+          cancellation: "cancelled",
+          ...group("payment", 1, { amount: "10000", date: "2025-01-10" }),
+          ...group("payment", 2, { amount: "800", date: "2025-01-11", purpose: "write_off", reference: "x" }),
+        },
+        slots,
+      ),
+    ).toBe("payment_2_purpose write_off needs a total_cost — the balance is not known");
+  });
+
+  it("still refunds a cancelled sale whose price was lost", () => {
+    const row = rowWith(
+      {
+        ...BASE,
+        total_cost: "",
+        order_date: "2025-01-10",
+        cancellation: "refunded",
+        ...group("payment", 1, { amount: "10000", date: "2025-01-10" }),
+        ...group("payment", 2, { amount: "10000", date: "2025-02-20", purpose: "refund" }),
+      },
+      slots,
+    );
+    expect(row).toMatchObject({ total_cost: 0, cancellation: "refunded" });
+    expect(row.payments.map((p) => p.purpose)).toEqual(["contract", "refund"]);
+  });
+
+  it("does not count KSEB fees, whoever paid them, towards the contract", () => {
+    expect(
+      rowWith(
+        {
+          ...BASE,
+          advance_amount: "195000",
+          ...group("payment", 1, { amount: "9999", date: "2025-01-10", purpose: "kseb_fees" }),
+          ...group("payment", 2, {
+            amount: "9999",
+            date: "2025-01-10",
+            purpose: "kseb_fees",
+            paid_by_office: "yes",
+          }),
+        },
+        slots,
+      ).payments,
+    ).toHaveLength(2);
+  });
+
+  it("tells an overpayment what to do: record a refund, or a write-off", () => {
+    const error = refusedWith(
+      { ...BASE, advance_amount: "20000", ...group("payment", 1, { amount: "1800000", date: "2025-01-10" }) },
+      slots,
+    );
+    expect(error).toBe(
+      `advance_amount plus contract payments come to ${formatCurrency(1820000)}, more than total_cost ${formatCurrency(195000)} — check for a typo. If money was returned, record it as a refund (payment_N_purpose = refund); if a few rupees are simply not coming, record a write-off (payment_N_purpose = write_off, with the reason in payment_N_reference or notes)`,
+    );
+  });
+
+  it("refuses a write-off while the sale is still overpaid, and the overpayment with it", () => {
+    const error = refusedWith(
+      {
+        ...BASE,
+        advance_amount: "20000",
+        ...group("payment", 1, { amount: "200000", date: "2025-01-10" }),
+        ...group("payment", 2, { amount: "1000", date: "2025-01-20", purpose: "refund" }),
+        ...group("payment", 3, { amount: "1000", date: "2025-01-21", purpose: "write_off" }),
+      },
+      slots,
+    );
+    // 20,000 + 200,000 − 1,000 is still 24,000 over the sale: a write-off has nothing to close.
+    expect(error).toMatch(/payment_3_amount .* still due on 2025-01-21/);
+    expect(error).toMatch(/\(less refunds, plus write-offs\) come to .*, more than total_cost/);
+  });
+
+  it("allows exactly the contract once refunds and write-offs are counted", () => {
+    expect(
+      rowWith(
+        {
+          ...BASE,
+          advance_amount: "20000",
+          ...group("payment", 1, { amount: "175000", date: "2025-01-10" }),
+          ...group("payment", 2, { amount: "10000", date: "2025-01-20", purpose: "refund" }),
+          ...group("payment", 3, { amount: "10000", date: "2025-01-21" }),
+        },
+        slots,
+      ).payments,
+    ).toHaveLength(3);
+  });
+});
+
+describe("parseImportRow — the template's example rows", () => {
+  const EXAMPLE = "this is one of the template's example rows — delete it";
+
+  // The cells that identified each example in the template before this release,
+  // so a sheet filled in from that copy is still caught.
+  const OLD_COPIES: [string, Record<string, string>][] = [
+    [
+      "Anand Kumar",
+      { client_name: "Anand Kumar", plant_capacity: "3kW", total_cost: "195000", consumer_number: "1156789012345" },
+    ],
+    [
+      "Meera Nair",
+      { client_name: "Meera Nair", plant_capacity: "5kW", total_cost: "310000", consumer_number: "1145678054321" },
+    ],
+    [
+      "Sreeja Pillai",
+      { client_name: "Sreeja Pillai", plant_capacity: "2kW", total_cost: "130000" },
+    ],
+    [
+      "Joseph Mathew",
+      {
+        client_name: "Joseph Mathew",
+        plant_capacity: "3kW+inverter",
+        total_cost: "235000+23500",
+        consumer_number: "1167890123456",
+      },
+    ],
+    [
+      "Rakesh Varma",
+      {
+        client_name: "Rakesh Varma",
+        plan_type: "custom",
+        plant_capacity: "Inverter + panel",
+        total_cost: "23500",
+        order_date: "2026-04-20",
+      },
+    ],
+    [
+      "Suma Devi",
+      { client_name: "Suma Devi", plant_capacity: "3kW", total_cost: "235000", order_date: "2026-01-13" },
+    ],
+  ];
+
+  it.each(OLD_COPIES)("refuses %s as it was in the template, and says to delete it", (_name, cells) => {
+    expect(refusedWith({ coordinator: "Rahul Menon", ...cells })).toBe(EXAMPLE);
+  });
+
+  it("reports only that, however much else is wrong with the row", () => {
+    const reading = readWith({
+      client_name: "Anand Kumar",
+      plant_capacity: "banana",
+      total_cost: "195000",
+      consumer_number: "1156789012345",
+      coordinator: "Nobody At All",
+      order_date: "not a date",
+    });
+    expect(!reading.parsed.ok && reading.parsed.error).toBe(EXAMPLE);
+    // …and the example's coordinator is not one of the file's matches.
+    expect(reading.references).toEqual([]);
+    expect(reading.blankCoordinator).toBe(false);
+  });
+
+  it("knows the example by its client name, case and spacing aside", () => {
+    expect(refusedWith({ ...OLD_COPIES[0][1], client_name: "  anand   KUMAR ", coordinator: "Rahul" })).toBe(
+      EXAMPLE,
+    );
+  });
+
+  it("knows the example by its consumer number alone, whatever else was changed", () => {
+    expect(
+      refusedWith({
+        client_name: "Anand Kumar",
+        plant_capacity: "9kW",
+        total_cost: "999999",
+        consumer_number: "1156 7890 12345",
+        coordinator: "Rahul",
+        order_date: "2025-01-01",
+      }),
+    ).toBe(EXAMPLE);
+  });
+
+  it("knows the example by its total cost and order date when it has no consumer number", () => {
+    expect(
+      refusedWith({
+        client_name: "Suma Devi",
+        plant_capacity: "3kW",
+        total_cost: "235000",
+        order_date: "13/01/2026",
+        coordinator: "Rahul",
+      }),
+    ).toBe(EXAMPLE);
+  });
+
+  it("does not take a real customer of the same name for the example", () => {
+    // A different consumer number, cost or date: someone else.
+    const others: Record<string, string>[] = [
+      { consumer_number: "1156789099999", total_cost: "250000" },
+      { total_cost: "195000", order_date: "2025-03-10" },
+      { total_cost: "200000" },
+    ];
+    for (const over of others) {
+      expect(
+        rowWith({ client_name: "Anand Kumar", plant_capacity: "3kW", coordinator: "Rahul", ...over })
+          .client_name,
+      ).toBe("Anand Kumar");
+    }
+  });
+
+  it("does not take another customer with the example's number and date for it", () => {
+    expect(
+      rowWith({
+        client_name: "Someone Else",
+        plant_capacity: "3kW",
+        total_cost: "195000",
+        consumer_number: "1156789012345",
+        order_date: "2026-06-15",
+        coordinator: "Rahul",
+      }).client_name,
+    ).toBe("Someone Else");
+  });
+
+  it("does not take the example's cost and date alone for it when the name differs", () => {
+    expect(
+      rowWith({
+        client_name: "Rakesh Varma Junior",
+        plan_type: "custom",
+        plant_capacity: "Inverter + panel",
+        total_cost: "23500",
+        order_date: "2026-04-20",
+        coordinator: "Rahul",
+      }).client_name,
+    ).toBe("Rakesh Varma Junior");
+  });
+
+  it("does not match a date it could not read", () => {
+    const error = refusedWith({
+      client_name: "Suma Devi",
+      plant_capacity: "3kW",
+      total_cost: "235000",
+      order_date: "01/13/2026",
+      coordinator: "Rahul",
+    });
+    expect(error).toMatch(/^order_date "01\/13\/2026" is not a real date/);
+  });
+});
+
+describe("planImport — incentive columns and the notes", () => {
+  const COLUMNS = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "order_date",
+    "coordinator",
+    "incentive_1_coordinator",
+    "incentive_1_amount",
+    "incentive_1_date",
+    "incentive_2_coordinator",
+    "incentive_2_amount",
+    "incentive_2_date",
+  ].join(",");
+
+  it("reads the groups the header has, for a shared sale, and keeps the incentive people in the matches", () => {
+    const planned = plan(
+      [
+        COLUMNS,
+        "Kumar One,3kW,195000,13/02/2025,Ravi+Abhijith,Ravi,20000,15/05/2025,Abhijith,15000,",
+      ].join("\n"),
+    );
+    const row = planned.rows[0].parsed;
+    expect(row.ok && row.data.incentives).toEqual([
+      {
+        coordinator_id: RAVI.id,
+        amount: 20000,
+        payments: [{ amount: 20000, paid_on: "2025-05-15", note: null }],
+      },
+      { coordinator_id: ABHIJITH.id, amount: 15000, payments: [] },
+    ]);
+  });
+
+  it("lists an unknown name from an incentive column among the matches, problems first", () => {
+    const planned = plan(
+      [COLUMNS, "Kumar Two,3kW,195000,13/02/2025,Ravi+Abhijith,Gireesh,20000,15/05/2025,,,"].join("\n"),
+    );
+    expect(planned.rows[0].parsed).toMatchObject({ ok: false });
+    expect(planned.coordinatorMatches.map((m) => [m.written, m.account?.fullName ?? null])).toEqual([
+      ["Gireesh", null],
+      ["Ravi", "Ravi Kumar"],
+      ["Abhijith", "Abhijith Nair"],
+    ]);
+    expect(planned.coordinatorMatches[0].rows).toEqual([2]);
+  });
+
+  it("gives no notes for a sheet of ISO dates", () => {
+    expect(plan([COLUMNS, "Kumar Three,3kW,195000,2025-02-13,Ravi,,5000,2025-05-15,,,"].join("\n")).notes).toEqual(
+      [],
+    );
+  });
+
+  it("notes how many date cells were read day first, in how many rows, with an example", () => {
+    const planned = plan(
+      [
+        COLUMNS,
+        "Kumar Four,3kW,195000,13/02/2025,Ravi,,5000,15/05/2025,,,",
+        "Kumar Five,3kW,195000,2025-02-14,Ravi,,5000,2025-05-15,,,",
+        "Kumar Six,3kW,195000,04-02-25,Ravi,,,,,,",
+      ].join("\n"),
+    );
+    expect(planned.notes).toEqual([
+      '3 date cells were written day first (in 2 rows) and read that way — "13/02/2025" is 13 Feb 2025. Dates are never read month first.',
+    ]);
+  });
+
+  it("says 'cell' and 'row' for one", () => {
+    const planned = plan([COLUMNS, "Kumar Seven,3kW,195000,13/02/2025,Ravi,,,,,,"].join("\n"));
+    expect(planned.notes).toEqual([
+      '1 date cell was written day first (in 1 row) and read that way — "13/02/2025" is 13 Feb 2025. Dates are never read month first.',
+    ]);
+  });
+
+  it("counts the day-first dates of a row that failed too — it will be fixed and checked again", () => {
+    const planned = plan([COLUMNS, "Kumar Eight,,195000,13/02/2025,Ravi,,,,,,"].join("\n"));
+    expect(planned.rows[0].parsed.ok).toBe(false);
+    expect(planned.notes).toHaveLength(1);
+  });
+
+  it("does not count the dates of a template example that is to be deleted", () => {
+    const planned = plan(
+      [
+        "client_name,plant_capacity,total_cost,order_date,coordinator,consumer_number",
+        "Anand Kumar,3kW,195000,15/06/2026,Rahul,1156789012345",
+      ].join("\n"),
+    );
+    expect(planned.notes).toEqual([]);
+  });
+});
+
+describe("planImport — the month spread", () => {
+  const HEADER_DATES = "client_name,plant_capacity,total_cost,order_date,coordinator";
+  const sheet = (...dates: string[]) =>
+    [HEADER_DATES, ...dates.map((d, i) => `Customer ${i + 1},3kW,195000,${d},Rahul`)].join("\n");
+
+  it("lists the rows outside the month most of the sheet is in", () => {
+    const planned = plan(sheet("2025-02-03", "2025-02-05", "2025-02-07", "2025-02-09", "2025-04-02"));
+    expect(planned.warnings).toContain(
+      "4 of 5 order dates are in February 2025, but row 6 is in April 2025 — may be a day/month mix-up. Check that date.",
+    );
+  });
+
+  it("names every other month and every row, in the sheet's lines", () => {
+    const planned = plan(
+      sheet("2025-02-03", "2025-02-05", "2025-02-07", "2025-02-09", "2025-02-11", "2025-03-02", "2025-04-03", "2025-03-09"),
+    );
+    expect(planned.warnings).toContain(
+      "5 of 8 order dates are in February 2025, but rows 7, 8 and 9 are in March 2025 and April 2025 — may be a day/month mix-up. Check those dates.",
+    );
+  });
+
+  it("is quiet when 60% is not reached, and 60% exactly is enough", () => {
+    expect(
+      plan(sheet("2025-02-03", "2025-02-05", "2025-02-07", "2025-03-02", "2025-03-04")).warnings.filter((w) =>
+        w.includes("mix-up"),
+      ),
+    ).toEqual([
+      "3 of 5 order dates are in February 2025, but rows 5 and 6 are in March 2025 — may be a day/month mix-up. Check those dates.",
+    ]);
+    expect(
+      plan(sheet("2025-02-03", "2025-02-05", "2025-03-02", "2025-03-04", "2025-04-04")).warnings.filter((w) =>
+        w.includes("mix-up"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("is quiet when every row is in one month", () => {
+    expect(
+      plan(sheet("2025-02-03", "2025-02-05", "2025-02-28")).warnings.filter((w) => w.includes("mix-up")),
+    ).toEqual([]);
+  });
+
+  it("is quiet for one row, or two of two months", () => {
+    expect(plan(sheet("2025-02-03")).warnings.filter((w) => w.includes("mix-up"))).toEqual([]);
+    expect(
+      plan(sheet("2025-02-03", "2025-03-03")).warnings.filter((w) => w.includes("mix-up")),
+    ).toEqual([]);
+  });
+
+  it("separates the same month of different years", () => {
+    const planned = plan(sheet("2025-02-03", "2025-02-05", "2025-02-07", "2024-02-09"));
+    expect(planned.warnings).toContain(
+      "3 of 4 order dates are in February 2025, but row 5 is in February 2024 — may be a day/month mix-up. Check that date.",
+    );
+  });
+
+  it("reads the dates day first, as the sheet is read", () => {
+    // 04/02/2025 is 4 February — the clerk's Excel shows a swapped 2 April as 04-02-25 in some cells.
+    const planned = plan(sheet("04/02/2025", "05/02/2025", "06/02/2025", "07/04/2025"));
+    expect(planned.warnings).toContain(
+      "3 of 4 order dates are in February 2025, but row 5 is in April 2025 — may be a day/month mix-up. Check that date.",
+    );
+  });
+
+  it("ignores blank order dates, which are not a month", () => {
+    const planned = plan(sheet("2025-02-03", "2025-02-05", "", "", "", "2025-04-02", "2025-02-06"));
+    expect(planned.warnings.filter((w) => w.includes("mix-up"))).toEqual([
+      "3 of 4 order dates are in February 2025, but row 7 is in April 2025 — may be a day/month mix-up. Check that date.",
+    ]);
+  });
+
+  it("counts rows that fail for something else, whose date is readable", () => {
+    const csv = [
+      HEADER_DATES,
+      "A,3kW,195000,2025-02-03,Rahul",
+      "B,3kW,195000,2025-02-05,Rahul",
+      "C,3kW,195000,2025-02-07,Nobody At All",
+      "D,3kW,195000,2025-04-09,Nobody At All",
+    ].join("\n");
+    expect(plan(csv).warnings.filter((w) => w.includes("mix-up"))).toEqual([
+      "3 of 4 order dates are in February 2025, but row 5 is in April 2025 — may be a day/month mix-up. Check that date.",
+    ]);
+  });
+
+  it("takes the earlier month when two are equally common and both are most of the sheet", () => {
+    // 3 + 3 of 6 is 50%: neither is a majority, so nothing is said.
+    expect(
+      plan(sheet("2025-02-03", "2025-02-05", "2025-02-07", "2025-03-03", "2025-03-05", "2025-03-07")).warnings.filter(
+        (w) => w.includes("mix-up"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("leaves the template's examples out of it: they are deleted, whatever their dates", () => {
+    const csv = [
+      "client_name,plant_capacity,total_cost,order_date,coordinator,consumer_number",
+      "A,3kW,195000,2025-02-03,Rahul,",
+      "B,3kW,195000,2025-02-05,Rahul,",
+      "C,3kW,195000,2025-02-07,Rahul,",
+      "Anand Kumar,3kW,195000,2026-06-15,Rahul,1156789012345",
+    ].join("\n");
+    const planned = plan(csv);
+    expect(planned.warnings.filter((w) => w.includes("mix-up"))).toEqual([]);
+    expect(planned.rows[3].parsed).toEqual({
+      ok: false,
+      error: "this is one of the template's example rows — delete it",
+    });
+  });
+
+  it("lists past three other months by count", () => {
+    const planned = plan(
+      sheet(
+        ...Array.from({ length: 12 }, () => "2025-02-03"),
+        "2025-03-01",
+        "2025-04-01",
+        "2025-05-01",
+        "2025-06-01",
+      ),
+    );
+    expect(planned.warnings).toContain(
+      "12 of 16 order dates are in February 2025, but rows 14, 15, 16 and 17 are in March 2025, April 2025, May 2025 and 1 more — may be a day/month mix-up. Check those dates.",
+    );
+  });
+});
+
+describe("planImport — row notes on a refunded sale and on dates", () => {
+  const COLUMNS = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "advance_amount",
+    "advance_date",
+    "order_date",
+    "coordinator",
+    "cancellation",
+    "payment_1_amount",
+    "payment_1_date",
+    "payment_1_purpose",
+    "payment_2_amount",
+    "payment_2_date",
+    "payment_2_purpose",
+    "payment_3_amount",
+    "payment_3_date",
+    "payment_3_purpose",
+  ];
+  const SALE = {
+    plant_capacity: "3kW",
+    total_cost: "195000",
+    order_date: "2026-06-15",
+    coordinator: "Rahul",
+  };
+  const csv = (...sales: Record<string, string>[]) =>
+    [
+      COLUMNS.join(","),
+      ...sales.map((sale) => COLUMNS.map((c) => sale[c] ?? "").join(",")),
+    ].join("\n");
+  const warningsOf = (...sales: Record<string, string>[]) =>
+    plan(csv(...sales.map((sale) => ({ ...SALE, ...sale })))).rows.map((r) => r.warnings);
+
+  it("says so when a sale marked refunded still holds the customer's money", () => {
+    expect(
+      warningsOf({ client_name: "Asha Nair", advance_amount: "30000", cancellation: "refunded" }),
+    ).toEqual([
+      [
+        expect.stringMatching(
+          /^marked refunded, but ₹30,000 \(advance plus payments, less refunds\) is still held in the ledger — if it was handed back, add a refund line/,
+        ),
+      ],
+    ]);
+  });
+
+  it("counts the payments and subtracts the refunds already recorded", () => {
+    const [partly, fully, none] = warningsOf(
+      // ₹30,000 + ₹40,000 held, ₹50,000 handed back: ₹20,000 still held.
+      {
+        client_name: "Asha Nair",
+        advance_amount: "30000",
+        cancellation: "refunded",
+        payment_1_amount: "40000",
+        payment_1_date: "2026-06-20",
+        payment_2_amount: "50000",
+        payment_2_date: "2026-07-01",
+        payment_2_purpose: "refund",
+      },
+      {
+        client_name: "Bina Das",
+        advance_amount: "30000",
+        cancellation: "refunded",
+        payment_1_amount: "30000",
+        payment_1_date: "2026-07-01",
+        payment_1_purpose: "refund",
+      },
+      { client_name: "Cini Roy", cancellation: "refunded" },
+    );
+    expect(partly).toEqual([expect.stringContaining("₹20,000 (advance plus payments, less refunds)")]);
+    expect(fully).toEqual([]);
+    expect(none).toEqual([]);
+  });
+
+  it("leaves a cancelled sale and a live one alone", () => {
+    expect(
+      warningsOf(
+        { client_name: "Dev Kumar", advance_amount: "30000", cancellation: "cancelled" },
+        { client_name: "Esha Pillai", advance_amount: "30000" },
+      ),
+    ).toEqual([[], []]);
+  });
+
+  it("flags a payment, or an advance, dated before the order", () => {
+    const [payment, advance] = warningsOf(
+      { client_name: "Farid Khan", payment_1_amount: "50000", payment_1_date: "2026-01-08" },
+      { client_name: "Gita Menon", advance_amount: "30000", advance_date: "2026-05-01" },
+    );
+    expect(payment).toEqual([
+      "payment_1_date 08 Jan 2026 — before order_date 15 Jun 2026; check the day and month",
+    ]);
+    expect(advance).toEqual([
+      "advance_date 01 May 2026 — before order_date 15 Jun 2026; check the day and month",
+    ]);
+  });
+
+  it("flags contract payments whose dates run backwards, once", () => {
+    const [row] = warningsOf({
+      client_name: "Hari Das",
+      order_date: "2026-03-01",
+      payment_1_amount: "50000",
+      payment_1_date: "2026-03-26",
+      payment_2_amount: "40000",
+      payment_2_date: "2026-03-08",
+      payment_3_amount: "30000",
+      payment_3_date: "2026-03-05",
+    });
+    expect(row).toEqual([
+      "payment_2_date 08 Mar 2026 is earlier than payment_1_date 26 Mar 2026 — payments run backwards; check the day and month",
+    ]);
+  });
+
+  it("does not call a refund that follows its payment backwards, nor an ordered sheet suspicious", () => {
+    expect(
+      warningsOf({
+        client_name: "Indu Nair",
+        advance_amount: "30000",
+        advance_date: "2026-06-15",
+        payment_1_amount: "50000",
+        payment_1_date: "2026-06-20",
+        payment_2_amount: "10000",
+        payment_2_date: "2026-06-18",
+        payment_2_purpose: "refund",
+      }),
+    ).toEqual([[]]);
+  });
+
+  it("flags a year typed wrongly, without also calling it 'before the order'", () => {
+    const [row] = warningsOf({
+      client_name: "Jose Mathew",
+      payment_1_amount: "50000",
+      payment_1_date: "1026-06-20",
+    });
+    expect(row).toEqual([
+      "payment_1_date 20 Jun 1026 — before 2015, which is most likely a mistyped year",
+    ]);
+  });
+
+  it("names at most three dates and counts the rest", () => {
+    const [row] = warningsOf({
+      client_name: "Kavya Rao",
+      advance_amount: "10000",
+      advance_date: "2026-01-01",
+      payment_1_amount: "5000",
+      payment_1_date: "2026-01-02",
+      payment_2_amount: "5000",
+      payment_2_date: "2026-01-03",
+      payment_3_amount: "5000",
+      payment_3_date: "2026-01-04",
+    });
+    expect(row).toEqual([
+      "advance_date 01 Jan 2026; payment_1_date 02 Jan 2026; payment_2_date 03 Jan 2026 and 1 more — before order_date 15 Jun 2026; check the day and month",
+    ]);
+  });
+
+  it("says nothing about dates when the order date was left blank", () => {
+    const [row] = warningsOf({
+      client_name: "Lal Joseph",
+      order_date: "",
+      payment_1_amount: "50000",
+      payment_1_date: "2026-01-08",
+    });
+    expect(row).toEqual([`order_date is blank — today (${TODAY}) will be used`]);
+  });
+});
+
+describe("planImport — a monthly sheet as the clerk types it (invented customers)", () => {
+  const COLUMNS = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "advance_amount",
+    "advance_method",
+    "advance_date",
+    "order_date",
+    "coordinator",
+    "consumer_number",
+    "coordinator_incentive",
+    "incentive_paid_on",
+    "current_stage",
+    "payment_1_amount",
+    "payment_1_date",
+    "payment_1_purpose",
+    "payment_1_reference",
+    "payment_2_amount",
+    "payment_2_date",
+    "payment_2_purpose",
+    "payment_2_reference",
+    "incentive_1_coordinator",
+    "incentive_1_amount",
+    "incentive_1_date",
+    "incentive_2_coordinator",
+    "incentive_2_amount",
+    "incentive_2_date",
+  ];
+  const record = (cells: Record<string, string>) =>
+    COLUMNS.map((c) => (cells[c] ?? "").replaceAll(",", ";")).join(",");
+
+  const sheet = [
+    COLUMNS.join(","),
+    // Sale one: the advance by UPI, two payments, the incentive paid in three instalments.
+    record({
+      client_name: "Mohan Das",
+      plant_capacity: "3kW+2kW",
+      total_cost: "250000",
+      advance_amount: "50000",
+      advance_method: "UPI",
+      advance_date: "04-02-25",
+      order_date: "04/02/2025",
+      coordinator: "Ravi",
+      current_stage: "plant_complete",
+      coordinator_incentive: "20000+2360+2360",
+      incentive_paid_on: "15/05/2025+16/05/2025+21/05/2025",
+      payment_1_amount: "100000",
+      payment_1_date: "20/03/2025",
+      payment_2_amount: "100000",
+      payment_2_date: "22/04/2025",
+    }),
+    // Sale two: shared, different incentives per person, a KSEB fee the office paid.
+    record({
+      client_name: "Latha Varma",
+      plant_capacity: "5kW",
+      total_cost: "355000",
+      order_date: "13/02/2025",
+      coordinator: "Ravi + Abhijith",
+      current_stage: "plant_complete",
+      incentive_1_coordinator: "Ravi",
+      incentive_1_amount: "20000",
+      incentive_1_date: "15/05/2025",
+      incentive_2_coordinator: "Abhijith",
+      incentive_2_amount: "15000",
+      payment_1_amount: "354200",
+      payment_1_date: "14/03/2025",
+      payment_2_amount: "800",
+      payment_2_date: "14/03/2025",
+      payment_2_purpose: "write_off",
+      payment_2_reference: "Short by Rs 800, waived",
+    }),
+    // Sale three: refunded ten thousand on a live project.
+    record({
+      client_name: "Geetha Pillai",
+      plant_capacity: "3kW",
+      total_cost: "235000",
+      order_date: "15/02/2025",
+      coordinator: "Manohar",
+      payment_1_amount: "50000",
+      payment_1_date: "15/02/2025",
+      payment_2_amount: "10000",
+      payment_2_date: "28/02/2025",
+      payment_2_purpose: "refund",
+      payment_2_reference: "NEFT back to customer",
+    }),
+    // Sale four: a coordinator with no account yet.
+    record({
+      client_name: "Hari Nair",
+      plant_capacity: "3kW",
+      total_cost: "235000",
+      order_date: "17/02/2025",
+      coordinator: "Gireesh",
+    }),
+  ].join("\n");
+
+  const planned = plan(sheet);
+  const row = (n: number) => {
+    const found = planned.rows.find((r) => r.rowNo === n);
+    if (!found?.parsed.ok) throw new Error(`row ${n}: ${found?.parsed.ok === false ? found.parsed.error : "missing"}`);
+    return found.parsed.data;
+  };
+
+  it("makes three of the four rows ready — only the account-less coordinator is refused", () => {
+    expect(planned.rows.map((r) => r.parsed.ok)).toEqual([true, true, true, false]);
+    expect(!planned.rows[3].parsed.ok && planned.rows[3].parsed.error).toMatch(
+      /^coordinator "Gireesh" is not a coordinator or office account/,
+    );
+  });
+
+  it("reads the advance and its details, and the capacity written as a sum", () => {
+    expect(row(2)).toMatchObject({
+      advance_amount: 50000,
+      advance_method: "upi",
+      advance_paid_on: "2025-02-04",
+      order_date: "2025-02-04",
+      plant_capacity: "5kW",
+    });
+  });
+
+  it("splits the one-coordinator incentive into its three dated instalments", () => {
+    expect(row(2).incentives).toEqual([
+      {
+        coordinator_id: RAVI.id,
+        amount: 24720,
+        payments: [
+          { amount: 20000, paid_on: "2025-05-15", note: null },
+          { amount: 2360, paid_on: "2025-05-16", note: null },
+          { amount: 2360, paid_on: "2025-05-21", note: null },
+        ],
+      },
+    ]);
+  });
+
+  it("gives each person of the shared sale their own, one paid and one not yet", () => {
+    expect(row(3).incentives).toEqual([
+      {
+        coordinator_id: RAVI.id,
+        amount: 20000,
+        payments: [{ amount: 20000, paid_on: "2025-05-15", note: null }],
+      },
+      { coordinator_id: ABHIJITH.id, amount: 15000, payments: [] },
+    ]);
+  });
+
+  it("settles the sale that was ₹800 short with a write-off carrying its reason", () => {
+    expect(row(3).payments[1]).toMatchObject({
+      purpose: "write_off",
+      amount: 800,
+      notes: "Short by Rs 800; waived",
+      reference: null,
+    });
+  });
+
+  it("keeps the refund a line of the ledger", () => {
+    expect(row(4).payments.map((p) => [p.purpose, p.amount])).toEqual([
+      ["contract", 50000],
+      ["refund", 10000],
+    ]);
+  });
+
+  it("says what it did to the dates, and finds nothing odd about the months", () => {
+    expect(planned.notes).toEqual([
+      expect.stringMatching(/^\d+ date cells were written day first \(in 4 rows\)/),
+    ]);
+    expect(planned.warnings.filter((w) => w.includes("mix-up"))).toEqual([]);
+  });
+
+  it("lists Gireesh among the matches, first, with the row that needs him", () => {
+    expect(planned.coordinatorMatches[0]).toMatchObject({ written: "Gireesh", account: null, rows: [5] });
   });
 });

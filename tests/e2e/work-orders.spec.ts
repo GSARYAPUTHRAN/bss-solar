@@ -112,3 +112,32 @@ test("a custom plan is described rather than priced, and a solar capacity needs 
   await expect(page.getByText("Custom plan — no KSEB registration or feasibility.")).toBeVisible();
   await expect(page.getByText(/KSEB charges \(paid by the customer\)/i)).toHaveCount(0);
 });
+
+test("how the advance was paid needs an advance to describe", async ({ page }) => {
+  await signIn(page, ACCOUNTS.rahul);
+  await page.goto("/work-orders/new");
+
+  const client = `E2E No Advance ${Date.now()}`;
+  await page.getByLabel(/client name/i).fill(client);
+  await page.getByLabel(/plant capacity/i).fill("5kW");
+  await page.getByLabel(/total cost/i).fill("300000");
+  await page.getByRole("combobox", { name: /advance method/i }).click();
+  await page.getByRole("option", { name: "UPI" }).click();
+
+  // The browser says so on the advance field, and the form is not sent (so what
+  // was typed is still there).
+  const advance = page.getByLabel(/advance collected/i);
+  await expect(page.getByText(/there is no advance amount/i)).toBeVisible();
+  expect(await advance.evaluate((el: HTMLInputElement) => el.validationMessage)).toMatch(
+    /there is no advance amount/i,
+  );
+  await page.getByRole("button", { name: /create work order/i }).click();
+  await expect(page).toHaveURL(/\/work-orders\/new$/);
+  await expect(page.getByLabel(/client name/i)).toHaveValue(client);
+
+  // Entering the advance lets it through.
+  await advance.fill("25000");
+  await expect(page.getByText(/there is no advance amount/i)).toHaveCount(0);
+  await page.getByRole("button", { name: /create work order/i }).click();
+  await expectFlash(page, "Work order created.");
+});

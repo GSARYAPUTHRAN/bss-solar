@@ -87,11 +87,23 @@ async function expectedMetrics(coordinatorId?: string): Promise<Metrics> {
   const incentives = must(
     await svc
       .from("coordinator_incentives")
-      .select("work_order_id, coordinator_id, amount, paid_on")
-      .not("amount", "is", null)
-      .is("paid_on", null),
+      .select("work_order_id, coordinator_id, amount")
+      .not("amount", "is", null),
     "incentives",
   );
+  // What is still to pay is the agreed amount less the instalments paid.
+  const instalments = must(
+    await svc
+      .from("coordinator_incentive_payments")
+      .select("work_order_id, coordinator_id, amount"),
+    "instalments",
+  );
+  const paidOn = (i: { work_order_id: string; coordinator_id: string }) =>
+    instalments
+      .filter(
+        (p) => p.work_order_id === i.work_order_id && p.coordinator_id === i.coordinator_id,
+      )
+      .reduce((total, p) => total + Number(p.amount), 0);
   const withProject = new Set(
     must(await svc.from("projects").select("work_order_id"), "projects").map(
       (p) => p.work_order_id,
@@ -132,7 +144,7 @@ async function expectedMetrics(coordinatorId?: string): Promise<Metrics> {
             inScope(i.work_order_id) &&
             (!coordinatorId || i.coordinator_id === coordinatorId),
         )
-        .map((i) => Number(i.amount)),
+        .map((i) => Number(i.amount) - paidOn(i)),
     ),
     cancelled_projects: projects.filter((p) => p.cancellation === "cancelled").length,
     refunded_projects: projects.filter((p) => p.cancellation === "refunded").length,
@@ -252,6 +264,13 @@ describe("the previous build's KPIs", () => {
       // Reduce the database to what the old build could have made…
       await db.query(
         "update public.projects set cancellation = null, cancelled_on = null where cancellation is not null",
+      );
+      // …an incentive was paid in full or not at all, never in part…
+      await db.query(
+        `delete from public.coordinator_incentive_payments
+          where (work_order_id, coordinator_id) in (
+            select work_order_id, coordinator_id
+              from public.coordinator_incentives where paid_on is null)`,
       );
       await db.query("delete from public.work_orders where plan_type = 'custom'");
       await db.query("delete from public.work_order_coordinators where sort_order > 1");

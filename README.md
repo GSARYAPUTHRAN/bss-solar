@@ -66,22 +66,28 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
   milestones are frozen until it is reinstated (with an optional new feasibility date).
   The dashboard has a *Cancelled / Refunded* tile, and the lists filter on both.
 - **Project Tracker** — Kanban board (default view) plus a filterable list. Approving a work order creates an active project that auto-seeds the 9 KSEB/ANERT milestones with per-milestone status and notes.
-- **Payments ledger** — after the booking advance, the office records **any number of
-  instalments** against a project, each with its date, method (cash, UPI, bank transfer,
-  cheque, loan disbursement…), purpose (contract or customer-paid KSEB fees) and reference.
-  Received / balance / collected % are derived in Postgres, so a **commissioned plant with
-  money still outstanding** is a first-class, queryable state: a dashboard KPI, a
-  `Commissioned · payment pending` filter, and a badge wherever the project is shown.
+- **Payments ledger** — the booking advance (with its own method, date and reference), then
+  **any number of dated entries** against a project, each with its method (cash, UPI, bank
+  transfer, cheque, loan disbursement…) and reference. An entry is one of: a **contract
+  payment**; a **KSEB fee** the customer paid, or one **BSS paid for the customer** (a
+  separate line, ticked *paid by office*, that never counts towards the contract balance); a
+  **refund** (money out — it is deducted from what was received, and can never exceed it);
+  or a **write-off** of a negligible balance (admin only, with a required reason; it closes
+  the balance without counting as money received). Received / balance / collected % are
+  derived in Postgres, so a **commissioned plant with money still outstanding** is a
+  first-class, queryable state: a dashboard KPI, a `Commissioned · payment pending`
+  filter, and a badge wherever the project is shown.
 - **KSEB feasibility & fees** — the feasibility date is captured (automatically when the
   *KSEB Feasibility Clearance* milestone completes). It is valid for **30 days**; every
   further 30-day period until commissioning costs BSS another **₹1,000**, shown per project
   and on the dashboard, with alerts when a week is left, again on the last day, and when a
   new period starts. The customer-paid
   fees are itemised too: feasibility **₹1,000** + registration **₹1,000 per kW + 18% GST**.
-- **Coordinator incentives** — the office sets an incentive **per coordinator** on a project
-  and marks it paid; coordinators see only their own (per project and as a summary), the
-  dashboard shows what is still pending (everyone's for the office, their own for a
-  coordinator).
+- **Coordinator incentives** — the office agrees an incentive **per coordinator** on a
+  project (each can get a different amount) and records it **in instalments**, each with its
+  date and an optional note; what is left is *pending*. Coordinators see only their own
+  (per project and as a summary), the dashboard shows what is still pending (everyone's for
+  the office, their own for a coordinator), and a coordinator is notified of each instalment.
 - **Service Tickets** — routine 6-month or ad-hoc tickets capturing the full BSS service sheet
   (system, battery, SPV details, post-service SPV string / MPPT readings, resolution, financials).
   Every ticket is **assigned to a service engineer**, who works it from a phone-first worklist
@@ -96,11 +102,21 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
   the app is added to the Home Screen (Safari → Share → *Add to Home Screen*, iOS 16.4+).
 - **PDF Export** — one click generates a PDF matching the official BSS Solar service form layout.
 - **Team Management** — admins can add staff accounts (coordinators, service engineers,
-  admins), assign roles, and search/filter the team list.
+  admins), assign roles, search/filter the team list, and **edit** a member's name, phone,
+  e-mail and password (to fix a misspelt name, or to replace a placeholder e-mail with a real
+  one). An admin cannot change another admin's or the Super Admin's e-mail or password — the
+  login is an account takeover — only the Super Admin can; names must stay unique because
+  the bulk import finds coordinators by name.
 - **Onboarding import** — admins bulk-load existing projects from a CSV (paste or upload);
   each row creates an approved work order + project at the given stage, including financing,
-  feasibility date, incentive and **any number of dated payments** (`payment_1_*`,
-  `payment_2_*`, … — the template shows four). The `coordinator` cell takes one or
+  feasibility date, advance details (`advance_method`, `advance_date`, `advance_reference`),
+  incentives and **any number of dated payments** (`payment_1_*`, `payment_2_*`, … — the
+  template shows four; each can be a contract payment, a KSEB fee with `paid_by_office`, a
+  `refund` or a `write_off`, whose reason goes in `payment_N_reference`). A sale's incentive
+  is `coordinator_incentive` + `incentive_paid_on` for a single coordinator, or explicit
+  `incentive_N_coordinator` / `_amount` / `_date` groups — one per instalment, a blank date
+  being the still-unpaid part — so each coordinator of a shared sale can have their own
+  amount. Dates are read **day-first** (`4/2/25` is 4 February). The `coordinator` cell takes one or
   several people — names or e-mails (`Ravi + Abhijith`) — matched against the team's
   accounts: an exact name, or a first name that is unique; a close-but-wrong spelling is
   only ever *suggested*, never guessed, and a blank cell fails unless a default coordinator
@@ -244,7 +260,7 @@ src/
     notifications/             # Inbox
     payments/                  # Payments ledger server actions
     onboarding/                # CSV bulk import
-    team/                      # Team list + add member
+    team/                      # Team list + add / edit member
   app/api/cron/daily           # Scheduled feasibility alerts (Bearer CRON_SECRET)
   app/manifest.ts              # Installable web app manifest
   app/login                    # Staff sign-in (accounts created by admin)
@@ -258,12 +274,12 @@ public/brand/                  # Official logo assets from bsssolar.com
 | Work Orders | Everything + delete | Create/read/update, approve, change who shares a sale | Create + read/**edit** the sales they are on (details, not amounts or status after approval); add partners to their own *pending* order | — |
 | Projects | Everything + delete | Read/update all, approve, cancel / refund / reinstate | Read the sales they are on (a cancelled or refunded one stays visible, read-only) | — |
 | Project Milestones | Update | Update | Read their sales' | — |
-| Payments ledger | Record/edit + delete | Record/edit | Read their sales' | — |
+| Payments ledger | Record/edit + delete, write off a balance | Record/edit, write off a balance | Read their sales' | — |
 | Feasibility | Set | Set | Read their sales' | — |
-| Incentives | Set + delete with the sale | Set (amount, paid date) | Read **their own** only, never a partner's | — |
+| Incentives | Set + delete with the sale | Set (agreed amount, record / edit instalments) | Read **their own** only, never a partner's | — |
 | Service Tickets | Full CRUD | Full CRUD | Read tickets on their sales' projects | Read + set *in progress* / *completed* on **their own** only |
 | Notifications | Own inbox | Own inbox | Own inbox | Own inbox |
-| Team / Profiles | Add + roles + delete | Add + roles | Read own profile, and the name, role and phone of whoever shares a sale with them | Read own profile only |
+| Team / Profiles | Add + roles + delete + edit anyone | Add + roles + edit (not another admin's or the Super Admin's login) | Read own profile, and the name, role and phone of whoever shares a sale with them | Read own profile only |
 
 ### The Super Admin seat
 

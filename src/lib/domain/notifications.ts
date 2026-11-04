@@ -5,6 +5,7 @@ import { addDays, diffDays } from "./dates";
 import { feasibilityStatus, FEASIBILITY_WARNING_DAYS, KSEB_FEES } from "./kseb";
 import { isActiveTicket } from "./ticket-workflow";
 import type {
+  PaymentPurpose,
   PlanType,
   ProjectCancellation,
   ProjectStage,
@@ -21,7 +22,8 @@ import type {
  *   - "office" means every admin and the SuperAdmin;
  *   - a sale is shared by one or more coordinators: events about the sale name
  *     them all (`coordinatorIds`) and each hears it once; a person's incentive
- *     is theirs alone (`incentive.updated` keeps a single `coordinatorId`);
+ *     is theirs alone (`incentive.updated` and `incentive.paid` keep a single
+ *     `coordinatorId`);
  *   - links are in-app paths (the DB rejects anything else).
  */
 
@@ -48,6 +50,7 @@ export const NOTIFICATION_TYPES = {
   "project.reinstated": { label: "Project reinstated", push: true, category: "project" },
   "payment.recorded": { label: "Payment recorded", push: true, category: "payment" },
   "incentive.updated": { label: "Incentive updated", push: true, category: "payment" },
+  "incentive.paid": { label: "Incentive instalment paid", push: true, category: "payment" },
   "ticket.assigned": { label: "Service ticket assigned", push: true, category: "service" },
   "ticket.unassigned": { label: "Service ticket reassigned", push: true, category: "service" },
   "ticket.status_changed": { label: "Service ticket updated", push: true, category: "service" },
@@ -173,6 +176,10 @@ export type NotificationEvent = Actor &
         projectId: string | null;
         clientName: string;
         amount: number;
+        /** What the entry is: money in, a KSEB fee, money back, or a balance given up. */
+        purpose: PaymentPurpose;
+        /** A KSEB fee only: the office paid KSEB on the customer's behalf (default: the customer paid). */
+        paidByOffice?: boolean;
         /** What is still collectable — from `collectibleBalance` (0 once cancelled). */
         balanceDue: number;
         /** The project's state; null while live or before there is a project. */
@@ -185,6 +192,17 @@ export type NotificationEvent = Actor &
         clientName: string;
         amount: number | null;
         paidOn: string | null;
+      }
+    | {
+        type: "incentive.paid";
+        /** The one person it was paid to. */
+        coordinatorId: string;
+        projectId: string;
+        clientName: string;
+        /** This instalment. */
+        amount: number;
+        /** What is still to pay on their incentive after it (0 = fully paid). */
+        pending: number;
       }
     | {
         type: "ticket.assigned";
@@ -273,6 +291,7 @@ export function audienceFor(event: NotificationEvent): Audience {
     case "work_order.coordinator_removed":
       return { office: false, users: [...event.removedIds] };
     case "incentive.updated":
+    case "incentive.paid":
       return { office: false, users: [event.coordinatorId] };
     case "ticket.assigned":
     case "ticket.unassigned":
@@ -340,6 +359,40 @@ function remarkSnippet(remarks: string | null): string | null {
   return chars.length > REMARKS_SNIPPET_MAX
     ? `${chars.slice(0, REMARKS_SNIPPET_MAX).join("").trimEnd()}…`
     : text;
+}
+
+type PaymentRecordedEvent = Extract<NotificationEvent, { type: "payment.recorded" }>;
+
+/** Contract money in, a KSEB fee (whoever paid it), a refund and a write-off each read differently. */
+function paymentTitle(event: PaymentRecordedEvent): string {
+  const amount = formatCurrency(event.amount);
+  switch (event.purpose) {
+    case "contract":
+      return `Payment received: ${amount}`;
+    case "kseb_fees":
+      return event.paidByOffice
+        ? `KSEB fee paid by the office: ${amount}`
+        : `KSEB fee received: ${amount}`;
+    case "refund":
+      return `Refund recorded: ${amount}`;
+    case "write_off":
+      return `Balance written off: ${amount}`;
+  }
+}
+
+function paymentBody(event: PaymentRecordedEvent): string {
+  // A KSEB fee never touches the contract balance, so it says nothing about it.
+  if (event.purpose === "kseb_fees") {
+    return event.paidByOffice
+      ? `${event.clientName} — paid to KSEB on the customer's behalf`
+      : `${event.clientName} — collected for KSEB, not part of the contract`;
+  }
+  // Nothing more is collectable once a project is cancelled or refunded.
+  if (event.cancellation) return `${event.clientName} — project ${event.cancellation}`;
+  if (event.balanceDue > 0) {
+    return `${event.clientName} — ${formatCurrency(event.balanceDue)} still due`;
+  }
+  return `${event.clientName} — ${event.purpose === "write_off" ? "settled" : "paid in full"}`;
 }
 
 export function describe(event: NotificationEvent): NotificationMessage {
@@ -431,13 +484,8 @@ export function describe(event: NotificationEvent): NotificationMessage {
       );
     case "payment.recorded":
       return plain(
-        `Payment received: ${formatCurrency(event.amount)}`,
-        event.cancellation
-          ? // Nothing more is collectable once a project is cancelled or refunded.
-            `${event.clientName} — project ${event.cancellation}`
-          : event.balanceDue > 0
-            ? `${event.clientName} — ${formatCurrency(event.balanceDue)} still due`
-            : `${event.clientName} — paid in full`,
+        paymentTitle(event),
+        paymentBody(event),
         event.projectId ? `/projects/${event.projectId}` : `/work-orders/${event.workOrderId}`,
       );
     case "incentive.updated":
@@ -448,6 +496,14 @@ export function describe(event: NotificationEvent): NotificationMessage {
             ? `Incentive paid: ${formatCurrency(event.amount)}`
             : `Incentive set: ${formatCurrency(event.amount)}`,
         event.clientName,
+        `/projects/${event.projectId}`,
+      );
+    case "incentive.paid":
+      return plain(
+        `${formatCurrency(event.amount)} incentive instalment paid`,
+        event.pending > 0
+          ? `${event.clientName} · ${formatCurrency(event.pending)} still to pay`
+          : `${event.clientName} · fully paid`,
         `/projects/${event.projectId}`,
       );
     case "ticket.assigned":

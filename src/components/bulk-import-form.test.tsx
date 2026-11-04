@@ -339,6 +339,64 @@ describe("BulkImportForm — a check's results", () => {
     expect(screen.getByText(/^Ready · At Site Feasibility Survey · Rahul Menon$/)).toBeVisible();
   });
 
+  it("says how the dates were read, apart from the warnings, when the sheet wrote them day first", async () => {
+    await checked(
+      [
+        "client_name,plant_capacity,total_cost,order_date,coordinator",
+        "Ravi Pillai,3kW,195000,13/02/2025,Rahul",
+        "Latha Nair,3kW,195000,2025-02-14,Rahul",
+      ].join("\n"),
+    );
+    const notes = screen.getByRole("region", { name: /how the file was read/i });
+    expect(
+      within(notes).getByText(
+        /^1 date cell was written day first \(in 1 row\) and read that way — "13\/02\/2025" is 13 Feb 2025\. Dates are never read month first\.$/,
+      ),
+    ).toBeVisible();
+    // It is information, not a warning: it is not in the amber list.
+    const warnings = screen.getByRole("region", { name: /worth a look/i });
+    expect(within(warnings).queryByText(/day first/)).not.toBeInTheDocument();
+  });
+
+  it("shows no such panel for a sheet whose dates are all ISO", async () => {
+    await checked();
+    expect(screen.queryByRole("region", { name: /how the file was read/i })).not.toBeInTheDocument();
+  });
+
+  it("warns when the order dates are not all in the month most of them are, naming the rows", async () => {
+    const dates = ["2025-02-03", "2025-02-05", "2025-02-07", "2025-02-09", "2025-04-02"];
+    await checked(
+      [
+        "client_name,plant_capacity,total_cost,order_date,coordinator",
+        ...dates.map((d, i) => `Customer ${i + 1},3kW,195000,${d},Rahul`),
+      ].join("\n"),
+    );
+    const warnings = screen.getByRole("region", { name: /worth a look/i });
+    expect(
+      within(warnings).getByText(
+        "4 of 5 order dates are in February 2025, but row 6 is in April 2025 — may be a day/month mix-up. Check that date.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("shows a template example left in the file as failed, saying to delete it", async () => {
+    await checked(
+      [
+        "client_name,plant_capacity,total_cost,order_date,coordinator,consumer_number",
+        "Anand Kumar,3kW,195000,2026-06-15,Nobody At All,1156789012345",
+        "Real Customer,3kW,195000,2025-01-10,Rahul,",
+      ].join("\n"),
+    );
+    expect(screen.getByText("this is one of the template's example rows — delete it")).toBeVisible();
+    expect(screen.getByRole("button", { name: /^1 failed$/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^1 ready$/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /download failed rows/i })).toBeVisible();
+    // The example's coordinator is not a match to fix: the row is deleted, not repaired.
+    const panel = screen.getByRole("region", { name: /coordinator matches/i });
+    expect(panel).not.toHaveTextContent(/Nobody At All/);
+    expect(panel).toHaveTextContent(/Rahul/);
+  });
+
   it("offers only the failed rows to download", async () => {
     await checked();
     expect(screen.getByRole("button", { name: /download failed rows/i })).toBeVisible();

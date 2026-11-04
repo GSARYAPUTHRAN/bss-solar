@@ -29,10 +29,13 @@ export type PaymentMethod =
   | "other";
 
 /**
- * What a ledger entry pays for. Only `contract` counts towards the contract
- * receivable; `kseb_fees` records KSEB charges collected through BSS.
+ * What a ledger entry is. `contract` is money in towards the contract
+ * receivable; `kseb_fees` is a KSEB charge kept apart from it (paid by the
+ * customer through BSS, or by the office on their behalf); `refund` is money
+ * back to the customer; `write_off` is a balance the office gives up — no money
+ * moves, and a reason is always recorded.
  */
-export type PaymentPurpose = "contract" | "kseb_fees";
+export type PaymentPurpose = "contract" | "kseb_fees" | "refund" | "write_off";
 
 export type ProjectStage =
   | "site_feasibility_survey"
@@ -63,10 +66,28 @@ export interface Profile {
   created_at: string;
 }
 
-/** One person's office-set incentive on one sale (`coordinator_incentives`). */
+/** One dated instalment paid against a coordinator's incentive (`coordinator_incentive_payments`). */
+export interface IncentivePayment {
+  id: string;
+  amount: number;
+  paid_on: string;
+  note: string | null;
+  recorded_by: string | null;
+}
+
+/**
+ * One person's office-set incentive on one sale (`coordinator_incentives`): the
+ * agreed `amount`, and the instalments paid against it.
+ */
 export interface CoordinatorIncentive {
+  /** The agreed incentive; null until the office sets it. */
   amount: number | null;
+  /** Derived by the database: the date the instalments reached `amount`, else null. */
   paid_on: string | null;
+  /** The instalments, oldest first. */
+  payments: IncentivePayment[];
+  /** Σ `payments`. */
+  paid: number;
 }
 
 /**
@@ -118,6 +139,12 @@ export interface WorkOrder extends WorkOrderDetails {
   plant_capacity_kw: number | null;
   /** Collected at booking — the first money in, before the ledger. */
   advance_amount: number | null;
+  /** How the advance was paid; null when not recorded. Locked with the advance. */
+  advance_method: PaymentMethod | null;
+  /** The day the advance was received; null when not recorded. */
+  advance_paid_on: string | null;
+  /** Cheque number, UTR or UPI reference of the advance. */
+  advance_reference: string | null;
   total_cost: number;
   order_date: string;
   status: WorkOrderStatus;
@@ -163,7 +190,7 @@ export interface Project extends ProjectCancellationFields {
   milestones?: ProjectMilestone[];
 }
 
-/** One collection in the payments ledger. */
+/** One entry in the payments ledger. */
 export interface Payment {
   id: string;
   work_order_id: string;
@@ -171,7 +198,10 @@ export interface Payment {
   paid_on: string;
   method: PaymentMethod;
   purpose: PaymentPurpose;
+  /** `kseb_fees` only: true when the BSS office paid KSEB on the customer's behalf. */
+  paid_by_office: boolean;
   reference: string | null;
+  /** The reason, for a `write_off` (required there). */
   notes: string | null;
   recorded_by: string | null;
   created_at: string;
@@ -180,15 +210,23 @@ export interface Payment {
   recorder?: Pick<Profile, "id" | "full_name"> | null;
 }
 
-/** Ledger aggregates exposed by the list views (contract purpose only). */
+/** Ledger aggregates exposed by the list views. */
 export interface LedgerAggregates {
-  /** Σ contract payments in the ledger (excludes the booking advance). */
+  /** Σ contract payments in the ledger (excludes the booking advance and refunds). */
   payments_total: number | null;
   payment_count: number | null;
   last_payment_on: string | null;
-  /** advance + payments_total. */
+  /** Σ refunds: money returned to the customer. */
+  refunded_total: number | null;
+  /** Σ write-offs: balance the office gave up. */
+  written_off_total: number | null;
+  /** Σ KSEB fees the customer paid through BSS (not part of the contract). */
+  kseb_fees_collected: number | null;
+  /** Σ KSEB fees the BSS office paid on the customer's behalf. */
+  kseb_fees_by_office: number | null;
+  /** Net received: advance + payments_total − refunded_total. */
   amount_received: number | null;
-  /** total_cost − amount_received (negative when overpaid). */
+  /** total_cost − amount_received − written_off_total (negative when overpaid). */
   balance_due: number | null;
 }
 
@@ -315,10 +353,13 @@ export interface ProjectListRow extends LedgerAggregates {
    * coordinator: their own). Null when none is set.
    */
   incentive_total: number | null;
-  /** The part of `incentive_total` not yet paid. */
+  /** Σ the instalments paid against those incentives. */
+  incentive_paid: number;
+  /** The part of `incentive_total` not yet paid (agreed − paid, per person). */
   incentive_unpaid: number;
   /** How many people have an incentive set (visible to the caller). */
   incentive_count: number;
+  /** People whose instalments have not yet reached their agreed amount. */
   incentive_unpaid_count: number;
   incentive_unpaid_coordinator_ids: string[];
   incentive_paid_coordinator_ids: string[];

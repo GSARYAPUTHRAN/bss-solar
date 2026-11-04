@@ -26,7 +26,7 @@ async function ledgerByWorkOrder(): Promise<Map<string, LedgerEntry[]>> {
   const rows = must(
     await svc
       .from("payments")
-      .select("work_order_id, amount, paid_on, purpose, created_at"),
+      .select("work_order_id, amount, paid_on, purpose, paid_by_office, created_at"),
     "payments",
   );
   const byWorkOrder = new Map<string, LedgerEntry[]>();
@@ -107,7 +107,7 @@ describe("derived payment columns", () => {
       await svc
         .from("work_orders_list")
         .select(
-          "id, total_cost, advance_amount, payments_total, payment_count, last_payment_on, amount_received, balance_due",
+          "id, total_cost, advance_amount, payments_total, payment_count, last_payment_on, amount_received, balance_due, refunded_total, written_off_total, kseb_fees_collected, kseb_fees_by_office",
         ),
       "work_orders_list",
     );
@@ -115,10 +115,19 @@ describe("derived payment columns", () => {
 
     for (const row of rows) {
       const totals = ledgerTotals(ledger.get(row.id!) ?? []);
-      const app = paymentSummary({ ...row, payments_total: totals.contract });
+      const app = paymentSummary({
+        ...row,
+        payments_total: totals.contract,
+        refunded_total: totals.refunded,
+        written_off_total: totals.writtenOff,
+      });
       expect(Number(row.payments_total)).toBe(totals.contract);
       expect(row.payment_count).toBe(totals.count);
       expect(row.last_payment_on).toBe(totals.lastPaidOn);
+      expect(Number(row.refunded_total)).toBe(totals.refunded);
+      expect(Number(row.written_off_total)).toBe(totals.writtenOff);
+      expect(Number(row.kseb_fees_collected)).toBe(totals.ksebFees);
+      expect(Number(row.kseb_fees_by_office)).toBe(totals.ksebFeesByOffice);
       expect(Number(row.amount_received)).toBe(app.received);
       expect(Number(row.balance_due)).toBe(app.balanceDue);
     }
@@ -130,7 +139,7 @@ describe("derived payment columns", () => {
       await svc
         .from("projects_list")
         .select(
-          "id, work_order_id, is_completed, cancellation, total_cost, advance_amount, payments_total, payment_count, last_payment_on, amount_received, balance_due, payment_pending",
+          "id, work_order_id, is_completed, cancellation, total_cost, advance_amount, payments_total, payment_count, last_payment_on, amount_received, balance_due, payment_pending, refunded_total, written_off_total, kseb_fees_collected, kseb_fees_by_office",
         ),
       "projects_list",
     );
@@ -138,11 +147,20 @@ describe("derived payment columns", () => {
 
     for (const row of rows) {
       const totals = ledgerTotals(ledger.get(row.work_order_id!) ?? []);
-      const source = { ...row, payments_total: totals.contract };
+      const source = {
+        ...row,
+        payments_total: totals.contract,
+        refunded_total: totals.refunded,
+        written_off_total: totals.writtenOff,
+      };
       const app = paymentSummary(source);
       expect(Number(row.payments_total)).toBe(totals.contract);
       expect(row.payment_count).toBe(totals.count);
       expect(row.last_payment_on).toBe(totals.lastPaidOn);
+      expect(Number(row.refunded_total)).toBe(totals.refunded);
+      expect(Number(row.written_off_total)).toBe(totals.writtenOff);
+      expect(Number(row.kseb_fees_collected)).toBe(totals.ksebFees);
+      expect(Number(row.kseb_fees_by_office)).toBe(totals.ksebFeesByOffice);
       expect(Number(row.amount_received)).toBe(app.received);
       expect(Number(row.balance_due)).toBe(app.balanceDue);
       expect(row.payment_pending).toBe(isPaymentPending(row, source));

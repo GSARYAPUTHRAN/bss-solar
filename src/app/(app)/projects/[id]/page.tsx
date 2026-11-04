@@ -20,6 +20,7 @@ import { ProjectPaymentsSection } from "@/components/payments/project-payments-s
 import { CoordinatorIncentivesSection } from "@/components/projects/coordinator-incentives-section";
 import { KsebFeasibilitySection } from "@/components/projects/kseb-feasibility-section";
 import { MilestoneTimeline } from "@/components/projects/milestone-timeline";
+import { OwnIncentiveSection } from "@/components/projects/own-incentive-section";
 import { ProjectClientDetails } from "@/components/projects/project-client-details";
 import { ProjectSettingsForm } from "@/components/projects/project-settings-form";
 import {
@@ -33,10 +34,15 @@ import {
 import { ProjectTicketsSection } from "@/components/projects/project-tickets-section";
 import { isSaleCoordinator } from "@/lib/domain/coordinators";
 import { feasibilityStatus } from "@/lib/domain/kseb";
-import { ledgerTotals, paymentSummary, type PaymentSource } from "@/lib/domain/payment";
 import {
-  incentiveTotals,
+  ledgerTotals,
+  paymentSummary,
+  withLedger,
+  type PaymentSource,
+} from "@/lib/domain/payment";
+import {
   reinstateClockImpact,
+  saleIncentives,
   unpaidIncentives,
 } from "@/lib/domain/project-settings";
 import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
@@ -79,11 +85,11 @@ export default async function ProjectDetailPage({
   // Read live off the work order and the ledger — nothing is denormalised, so
   // edits elsewhere show here on the next render.
   const totals = ledgerTotals(ledger);
-  const paymentSource: PaymentSource = {
-    total_cost: wo?.total_cost,
-    advance_amount: wo?.advance_amount,
-    payments_total: totals.contract,
-  };
+  // Net of refunds and write-offs, like the ledger section and the lists.
+  const paymentSource: PaymentSource = withLedger(
+    { total_cost: wo?.total_cost, advance_amount: wo?.advance_amount },
+    ledger,
+  );
   const payment = paymentSummary(paymentSource);
   const feasibility = feasibilityStatus({
     feasibilityDate: project.feasibility_date,
@@ -98,17 +104,18 @@ export default async function ProjectDetailPage({
 
   // The incentive the viewer may see: the whole sale's to the office, their own
   // to a coordinator (the repository only loads what RLS allows anyway).
-  const sale = incentiveTotals(project.coordinators);
-  const own = project.coordinators.find((c) => c.id === profile.id)?.incentive;
+  const sale = saleIncentives(project.coordinators);
+  const own = project.coordinators.find((c) => c.id === profile.id)?.incentive ?? null;
   const incentive: SummaryIncentive | undefined = isOffice
     ? {
         view: "sale",
-        total: sale.total,
+        total: sale.count > 0 ? sale.total : null,
+        paid: sale.paid,
         count: sale.count,
         unpaidCount: sale.unpaidCount,
       }
     : isMember
-      ? { view: "own", amount: own?.amount ?? null, paidOn: own?.paid_on ?? null }
+      ? { view: "own", amount: own?.amount ?? null, paid: own?.paid ?? 0 }
       : undefined;
 
   const clockImpact =
@@ -229,6 +236,9 @@ export default async function ProjectDetailPage({
           />
         </div>
       )}
+
+      {/* A coordinator reads their own incentive and its payments; only the office edits. */}
+      {!isOffice && isMember && <OwnIncentiveSection incentive={own} />}
 
       <div className="grid gap-4 md:grid-cols-3">
         <KsebFeasibilitySection

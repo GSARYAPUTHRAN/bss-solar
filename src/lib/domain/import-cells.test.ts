@@ -8,11 +8,14 @@ import {
   PLAN_VOCABULARY,
   booleanCell,
   cancellationCell,
+  advanceMethodCell,
   dateCell,
+  dateCellRead,
   emailCell,
   financingCell,
   identifierCell,
   moneyCell,
+  moneyPartsCell,
   normalizeStage,
   paymentMethodCell,
   paymentPurposeCell,
@@ -150,11 +153,68 @@ describe("dateCell", () => {
     );
   });
 
-  it("offers the ISO form of a day-first date without guessing it in", () => {
-    expect(dateCell("15/03/2026", "order_date")).toEqual(
-      failing(/YYYY-MM-DD.*did you mean 2026-03-15\?/),
+  it("reads a day-first date as the day it is, in every accepted shape", () => {
+    for (const raw of ["15/03/2026", "15-03-2026", "15.03.2026", "15/3/2026", "15/03/26", " 15/03/2026 "]) {
+      expect(dateCell(raw, "order_date")).toEqual(okWith("2026-03-15"));
+    }
+  });
+
+  it("never reads a date month first", () => {
+    expect(dateCell("04-02-25", "order_date")).toEqual(okWith("2025-02-04"));
+    expect(dateCell("03/04/2026", "order_date")).toEqual(okWith("2026-04-03"));
+  });
+
+  it("names the cell and the date when a day-first date is not a real one", () => {
+    expect(dateCell("31/04/2026", "payment_2_date")).toEqual({
+      ok: false,
+      error:
+        'payment_2_date "31/04/2026" is not a real date — dates are written day first, like 13/02/2025',
+    });
+  });
+
+  it("offers the swapped reading as a question, never takes it", () => {
+    expect(dateCell("02/13/2026", "order_date")).toEqual({
+      ok: false,
+      error:
+        'order_date "02/13/2026" is not a real date — dates are written day first, like 13/02/2025 — did you mean 2026-02-13?',
+    });
+  });
+
+  it("says what a date should look like when the cell is not one", () => {
+    expect(dateCell("2026-3-5", "order_date")).toEqual({
+      ok: false,
+      error: 'order_date "2026-3-5" is not a date — write it day first, like 13/02/2025, or as 2025-02-13',
+    });
+    expect(dateCell("soon", "order_date")).toEqual(failing(/^order_date "soon" is not a date/));
+    expect(dateCell("15/03/2026+16/03/2026", "incentive_paid_on")).toEqual(
+      failing(/^incentive_paid_on "15\/03\/2026\+16\/03\/2026" is not a date/),
     );
-    expect(dateCell("2026-3-5", "order_date")).toEqual(failing(/YYYY-MM-DD/));
+  });
+
+  it("holds a day-first date to today as well, and shows both spellings", () => {
+    expect(dateCell("11/10/2026", "feasibility_date", { notAfter: today })).toEqual({
+      ok: false,
+      error: "feasibility_date 11/10/2026 (2026-10-11) is in the future",
+    });
+    expect(dateCell("10/10/2026", "feasibility_date", { notAfter: today })).toEqual(
+      okWith("2026-10-10"),
+    );
+  });
+});
+
+describe("dateCellRead", () => {
+  it("says whether the date was read day first, and what was typed", () => {
+    expect(dateCellRead("2026-03-15", "order_date")).toEqual(
+      okWith({ iso: "2026-03-15", written: "2026-03-15", dayFirst: false }),
+    );
+    expect(dateCellRead(" 04-02-25 ", "order_date")).toEqual(
+      okWith({ iso: "2025-02-04", written: "04-02-25", dayFirst: true }),
+    );
+    expect(dateCellRead("", "order_date")).toEqual(okWith(null));
+  });
+
+  it("refuses what dateCell refuses", () => {
+    expect(dateCellRead("31/04/2026", "order_date").ok).toBe(false);
   });
 });
 
@@ -220,6 +280,45 @@ describe("financingCell", () => {
   });
 });
 
+describe("moneyPartsCell", () => {
+  it("is null when blank", () => {
+    expect(moneyPartsCell("", "coordinator_incentive")).toEqual(okWith(null));
+    expect(moneyPartsCell(undefined, "coordinator_incentive")).toEqual(okWith(null));
+  });
+
+  it("keeps each part of a sum apart, in the order written", () => {
+    expect(moneyPartsCell("20000+2360+2360", "coordinator_incentive")).toEqual(
+      okWith([20000, 2360, 2360]),
+    );
+    expect(moneyPartsCell("₹1,000 + Rs. 500.50", "coordinator_incentive")).toEqual(
+      okWith([1000, 500.5]),
+    );
+  });
+
+  it("is a list of one for a plain amount, and keeps zero", () => {
+    expect(moneyPartsCell("5000", "coordinator_incentive")).toEqual(okWith([5000]));
+    expect(moneyPartsCell("0", "coordinator_incentive")).toEqual(okWith([0]));
+  });
+
+  it("refuses what moneyCell refuses, with the same words", () => {
+    for (const raw of ["abc", "100+", "100+-5", "-5", "10.505", "1e5", "99999999999", "9999999999+1"]) {
+      expect(moneyPartsCell(raw, "coordinator_incentive")).toEqual(
+        moneyCell(raw, "coordinator_incentive"),
+      );
+    }
+  });
+
+  it("agrees with moneyCell on the total", () => {
+    for (const raw of ["235000+23500", "0.1+0.2", "19.99+0.01", "189985.84+0.16"]) {
+      const parts = moneyPartsCell(raw, "x");
+      const total = moneyCell(raw, "x");
+      if (!parts.ok || !total.ok) throw new Error("expected both to read");
+      const sum = (parts.data ?? []).reduce((s, p) => s + Math.round(p * 100), 0) / 100;
+      expect(sum).toBe(total.data);
+    }
+  });
+});
+
 describe("paymentMethodCell", () => {
   it("defaults blank to other", () => {
     expect(paymentMethodCell("", "payment_1_method")).toEqual(okWith("other"));
@@ -246,12 +345,65 @@ describe("paymentPurposeCell", () => {
   it("defaults blank to contract", () => {
     expect(paymentPurposeCell("", "payment_1_purpose")).toEqual(okWith("contract"));
   });
-  it.each(["kseb_fees", "KSEB fees", "kseb"])("reads %s as kseb_fees", (raw) => {
+  it.each(["kseb_fees", "KSEB fees", "kseb", "KSEB fee"])("reads %s as kseb_fees", (raw) => {
     expect(paymentPurposeCell(raw, "payment_1_purpose")).toEqual(okWith("kseb_fees"));
+  });
+  it.each(["refund", "Refund", "REFUND", "refunded"])("reads %s as refund", (raw) => {
+    expect(paymentPurposeCell(raw, "payment_1_purpose")).toEqual(okWith("refund"));
+  });
+  it.each(["write_off", "Write-off", "write off", "Write_Off", "writeoff", "written off"])(
+    "reads %s as write_off",
+    (raw) => {
+      expect(paymentPurposeCell(raw, "payment_1_purpose")).toEqual(okWith("write_off"));
+    },
+  );
+  it("suggests the nearest purpose for a typo", () => {
+    expect(paymentPurposeCell("writ_off", "payment_1_purpose")).toEqual(
+      failing(/payment_1_purpose "writ_off" is not recognised — did you mean "write_off"\?/),
+    );
+    expect(paymentPurposeCell("refnd", "payment_1_purpose")).toEqual(
+      failing(/did you mean "refund"\?/),
+    );
+  });
+  it("documents every purpose, with its everyday spellings, for the page", () => {
+    expect(PAYMENT_PURPOSE_VOCABULARY.spellings.write_off).toEqual([
+      "write_off",
+      "Write-off",
+      "writeoff",
+      "written off",
+    ]);
+    expect(Object.keys(PAYMENT_PURPOSE_VOCABULARY.spellings)).toEqual([
+      "contract",
+      "kseb_fees",
+      "refund",
+      "write_off",
+    ]);
   });
   it("rejects anything else", () => {
     expect(paymentPurposeCell("subsidy", "payment_1_purpose")).toEqual(
       failing(/payment_1_purpose "subsidy" is not recognised/),
+    );
+  });
+});
+
+describe("advanceMethodCell", () => {
+  it("is null when blank — an advance's method is never guessed", () => {
+    expect(advanceMethodCell("", "advance_method")).toEqual(okWith(null));
+    expect(advanceMethodCell("  ", "advance_method")).toEqual(okWith(null));
+    expect(advanceMethodCell(undefined, "advance_method")).toEqual(okWith(null));
+  });
+  it.each([
+    ["UPI", "upi"],
+    ["GPay", "upi"],
+    ["Bank transfer", "bank_transfer"],
+    ["cash", "cash"],
+    ["Cheque", "cheque"],
+  ])("reads %s as %s", (raw, method) => {
+    expect(advanceMethodCell(raw, "advance_method")).toEqual(okWith(method));
+  });
+  it("names the column and suggests the nearest method for a typo", () => {
+    expect(advanceMethodCell("chque", "advance_method")).toEqual(
+      failing(/advance_method "chque" is not recognised — did you mean "cheque"\?/),
     );
   });
 });

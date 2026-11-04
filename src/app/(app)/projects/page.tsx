@@ -7,7 +7,7 @@ import { ProjectsTable } from "@/components/projects-table";
 import { ProjectsTabs } from "@/components/projects-tabs";
 import {
   CoordinatorIncentiveSummary,
-  OfficeIncentiveTile,
+  OfficeIncentiveSummary,
 } from "@/components/projects/incentive-summary";
 import { PROJECT_LIST_FILTER_KEYS } from "@/lib/domain/project-list";
 import { isOfficeRole } from "@/lib/domain/role";
@@ -51,7 +51,7 @@ export default async function ProjectsPage({
 
       {incentives &&
         (isOffice ? (
-          <OfficeIncentiveTile
+          <OfficeIncentiveSummary
             summary={incentives}
             coordinatorId={incentiveScope}
             coordinatorName={coordinators.find((c) => c.id === incentiveScope)?.full_name}

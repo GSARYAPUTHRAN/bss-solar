@@ -14,6 +14,7 @@ import {
   CoordinatorsField,
   type DirectoryPerson,
 } from "@/components/work-orders/coordinators-field";
+import { AdvanceDetailsFields } from "@/components/work-orders/advance-details-fields";
 import { ContractTermsFields } from "@/components/work-orders/contract-terms-fields";
 import { FinancingFields } from "@/components/work-orders/financing-fields";
 import { PlanFields } from "@/components/work-orders/plan-fields";
@@ -39,7 +40,8 @@ const OFFICE_TEAM_HINT =
  * The plan (solar plant or custom plan) is chosen here while the order has no
  * project; after that it is fixed and only shown.
  *
- * Only the booking advance is captured here — every later collection is an
+ * Only the booking advance is captured here — what was collected and, optionally,
+ * how and when (those follow the advance's lock); every later collection is an
  * entry in the payments ledger on the project. Rules the browser can check
  * mirror the server's (a solar capacity needs a unit, the advance cannot exceed
  * the total), so it blocks those submits instead of a round trip that comes
@@ -183,6 +185,14 @@ export function WorkOrderForm({
       <ContractTermsFields
         defaultAdvance={wo ? wo.advance_amount : 0}
         defaultTotal={wo?.total_cost}
+        locked={contractTermsLocked}
+      />
+
+      <AdvanceDetailsFields
+        defaultMethod={wo?.advance_method}
+        defaultPaidOn={wo?.advance_paid_on}
+        defaultReference={wo?.advance_reference}
+        today={todayISO()}
         locked={contractTermsLocked}
       />
 

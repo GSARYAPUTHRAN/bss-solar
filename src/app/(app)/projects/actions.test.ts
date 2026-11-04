@@ -23,6 +23,9 @@ vi.mock("@/server/data/projects.repository", () => ({
     captureFeasibilityDate: vi.fn(),
     setFeasibilityDate: vi.fn(),
     setCoordinatorIncentive: vi.fn(),
+    recordIncentivePayment: vi.fn(),
+    updateIncentivePayment: vi.fn(),
+    deleteIncentivePayment: vi.fn(),
     setCancellation: vi.fn(),
     reinstate: vi.fn(),
     remove: vi.fn(),
@@ -43,10 +46,13 @@ import { notify } from "@/server/notifications";
 import { projectsRepository, workOrdersRepository } from "@/server/data";
 import {
   advanceProject,
+  deleteIncentivePayment,
   deleteProject,
+  recordIncentivePayment,
   reinstateProject,
   setProjectCancellation,
   updateCoordinatorIncentive,
+  updateIncentivePayment,
   updateMilestone,
   updateProjectSettings,
 } from "./actions";
@@ -75,16 +81,52 @@ function brief(over: Partial<ProjectBrief> = {}): ProjectBrief {
         id: "c1",
         full_name: "Ravi Kumar",
         sort_order: 1,
-        incentive: { amount: 2000, paid_on: null },
+        incentive: { amount: 2000, paid_on: null, payments: [], paid: 0 },
       },
       {
         id: "c2",
         full_name: "Abhijith Nair",
         sort_order: 2,
-        incentive: { amount: null, paid_on: null },
+        incentive: { amount: null, paid_on: null, payments: [], paid: 0 },
       },
     ],
     ...over,
+  };
+}
+
+/** An instalment as the brief carries it. */
+const instalment = (id: string, amount: number, paid_on: string) => ({
+  id,
+  amount,
+  paid_on,
+  note: null,
+  recorded_by: "admin-1",
+});
+
+/**
+ * The same sale with Ravi's incentive agreed at ₹6,000 and ₹4,000 of it paid in
+ * two instalments (₹2,000 on 1 Sep and on 15 Sep): ₹2,000 still to pay.
+ */
+function briefWithInstalments(over: Partial<ProjectBrief> = {}): ProjectBrief {
+  const base = brief(over);
+  return {
+    ...base,
+    coordinators: base.coordinators.map((c) =>
+      c.id === "c1"
+        ? {
+            ...c,
+            incentive: {
+              amount: 6000,
+              paid_on: null,
+              payments: [
+                instalment("pay-1", 2000, "2026-09-01"),
+                instalment("pay-2", 2000, "2026-09-15"),
+              ],
+              paid: 4000,
+            },
+          }
+        : c,
+    ),
   };
 }
 
@@ -111,6 +153,9 @@ beforeEach(() => {
   projects.captureFeasibilityDate.mockResolvedValue({ error: null });
   projects.setFeasibilityDate.mockResolvedValue({ error: null });
   projects.setCoordinatorIncentive.mockResolvedValue({ error: null });
+  projects.recordIncentivePayment.mockResolvedValue({ error: null });
+  projects.updateIncentivePayment.mockResolvedValue({ error: null });
+  projects.deleteIncentivePayment.mockResolvedValue({ error: null });
   projects.setCancellation.mockResolvedValue({ error: null });
   projects.reinstate.mockResolvedValue({ error: null });
   projects.remove.mockResolvedValue({ error: null });
@@ -422,7 +467,7 @@ describe("updateProjectSettings", () => {
 });
 
 describe("updateCoordinatorIncentive", () => {
-  const body = { project_id: "p1", coordinator_id: "c2", amount: "3500", paid_on: "" };
+  const body = { project_id: "p1", coordinator_id: "c2", amount: "3500" };
 
   it("is office-only", async () => {
     vi.mocked(requireAdmin).mockRejectedValue(new Error("REDIRECT:/work-orders"));
@@ -432,14 +477,11 @@ describe("updateCoordinatorIncentive", () => {
     expect(projects.setCoordinatorIncentive).not.toHaveBeenCalled();
   });
 
-  it("writes that person's own row on the work order and tells only them", async () => {
+  it("writes that person's agreed amount alone — no paid date, which the database derives — and tells only them", async () => {
     const res = await updateCoordinatorIncentive(null, form(body));
 
     expect(res).toEqual({ ok: true, data: { message: "Incentive saved for Abhijith Nair." } });
-    expect(projects.setCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c2", {
-      amount: 3500,
-      paid_on: null,
-    });
+    expect(projects.setCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c2", { amount: 3500 });
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledWith({
       type: "incentive.updated",
@@ -451,6 +493,11 @@ describe("updateCoordinatorIncentive", () => {
       paidOn: null,
     });
     expect(revalidatePath).toHaveBeenCalledWith("/projects/p1");
+  });
+
+  it("ignores a paid date posted along with it: the form no longer has one", async () => {
+    await updateCoordinatorIncentive(null, form({ ...body, paid_on: "2026-10-09" }));
+    expect(projects.setCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c2", { amount: 3500 });
   });
 
   it("refuses someone who is not on the sale", async () => {
@@ -469,27 +516,24 @@ describe("updateCoordinatorIncentive", () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it("does not notify when nothing about the incentive changed", async () => {
+  it("does not notify when the agreed amount did not change", async () => {
     // Ravi already has ₹2,000 pending.
     const res = await updateCoordinatorIncentive(
       null,
-      form({ project_id: "p1", coordinator_id: "c1", amount: "2000", paid_on: "" }),
+      form({ project_id: "p1", coordinator_id: "c1", amount: "2000" }),
     );
     expect(res?.ok).toBe(true);
     expect(projects.setCoordinatorIncentive).toHaveBeenCalledTimes(1);
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it("clearing an incentive is told as 'removed' (amount null) to that person", async () => {
+  it("clearing an incentive nobody has been paid on is told as 'removed' (amount null) to that person", async () => {
     const res = await updateCoordinatorIncentive(
       null,
-      form({ project_id: "p1", coordinator_id: "c1", amount: "", paid_on: "" }),
+      form({ project_id: "p1", coordinator_id: "c1", amount: "" }),
     );
     expect(res?.ok).toBe(true);
-    expect(projects.setCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c1", {
-      amount: null,
-      paid_on: null,
-    });
+    expect(projects.setCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c1", { amount: null });
     expect(notify).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "incentive.updated",
@@ -500,14 +544,59 @@ describe("updateCoordinatorIncentive", () => {
     );
   });
 
-  it("marking it paid is a change worth telling", async () => {
-    await updateCoordinatorIncentive(
-      null,
-      form({ project_id: "p1", coordinator_id: "c1", amount: "2000", paid_on: "2026-10-09" }),
-    );
-    expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ coordinatorId: "c1", amount: 2000, paidOn: "2026-10-09" }),
-    );
+  describe("with instalments already paid", () => {
+    beforeEach(() => {
+      projects.brief.mockResolvedValue(briefWithInstalments());
+    });
+    const ravi = { project_id: "p1", coordinator_id: "c1" };
+
+    it("will not go below what is paid, and says how much", async () => {
+      const res = await updateCoordinatorIncentive(null, form({ ...ravi, amount: "3999.99" }));
+      expect(res).toEqual({
+        ok: false,
+        error: `The incentive cannot be less than the ${formatCurrency(4000)} already paid.`,
+      });
+      expect(projects.setCoordinatorIncentive).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("will not clear an incentive that has payments — they have to be removed first", async () => {
+      const res = await updateCoordinatorIncentive(null, form({ ...ravi, amount: "" }));
+      expect(res).toEqual({
+        ok: false,
+        error: `${formatCurrency(4000)} has already been paid on this incentive — remove those payments before clearing it.`,
+      });
+      expect(projects.setCoordinatorIncentive).not.toHaveBeenCalled();
+    });
+
+    it("may be raised, or lowered to exactly what is paid", async () => {
+      expect((await updateCoordinatorIncentive(null, form({ ...ravi, amount: "7000" })))?.ok).toBe(true);
+      expect((await updateCoordinatorIncentive(null, form({ ...ravi, amount: "4000" })))?.ok).toBe(true);
+    });
+
+    it("lowering it to what is paid settles it: the person is told it is paid, on the day the last instalment was", async () => {
+      await updateCoordinatorIncentive(null, form({ ...ravi, amount: "4000" }));
+      expect(notify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "incentive.updated",
+          coordinatorId: "c1",
+          amount: 4000,
+          paidOn: "2026-09-15",
+        }),
+      );
+    });
+
+    it("the database's refusal in a race is worded for the person", async () => {
+      projects.setCoordinatorIncentive.mockResolvedValue({
+        error: "The incentive cannot be less than the ₹4,500.00 already paid.",
+      });
+      const res = await updateCoordinatorIncentive(null, form({ ...ravi, amount: "5000" }));
+      expect(res).toEqual({
+        ok: false,
+        error: "The incentive cannot be less than the ₹4,500.00 already paid.",
+      });
+      expect(notify).not.toHaveBeenCalled();
+    });
   });
 
   it("returns the database's refusal and notifies no one", async () => {
@@ -524,6 +613,259 @@ describe("updateCoordinatorIncentive", () => {
       ok: false,
       error: "Project not found — it may have been deleted.",
     });
+  });
+});
+
+describe("recordIncentivePayment", () => {
+  const body = {
+    project_id: "p1",
+    coordinator_id: "c1",
+    amount: "1500",
+    paid_on: "2026-10-09",
+    note: "Cheque 004211",
+  };
+
+  beforeEach(() => {
+    projects.brief.mockResolvedValue(briefWithInstalments());
+  });
+
+  it("is office-only", async () => {
+    vi.mocked(requireAdmin).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(recordIncentivePayment(null, form(body))).rejects.toThrow("REDIRECT:/work-orders");
+    expect(projects.recordIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("records the instalment against that person's incentive and tells them — only them, what is left", async () => {
+    const res = await recordIncentivePayment(null, form(body));
+
+    expect(res).toEqual({
+      ok: true,
+      data: {
+        message: `${formatCurrency(1500)} recorded for Ravi Kumar — ${formatCurrency(500)} still to pay.`,
+      },
+    });
+    expect(projects.recordIncentivePayment).toHaveBeenCalledWith("wo1", "c1", {
+      amount: 1500,
+      paid_on: "2026-10-09",
+      note: "Cheque 004211",
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith({
+      type: "incentive.paid",
+      actorId: "admin-1",
+      coordinatorId: "c1",
+      projectId: "p1",
+      clientName: "Anand Kumar",
+      amount: 1500,
+      pending: 500,
+    });
+    expect(revalidatePath).toHaveBeenCalledWith("/projects/p1");
+    expect(revalidatePath).toHaveBeenCalledWith("/");
+  });
+
+  it("the instalment that settles it says fully paid, in the message and the notification", async () => {
+    const res = await recordIncentivePayment(null, form({ ...body, amount: "2000", note: "" }));
+    expect(res).toEqual({
+      ok: true,
+      data: { message: `${formatCurrency(2000)} recorded for Ravi Kumar — fully paid.` },
+    });
+    expect(projects.recordIncentivePayment).toHaveBeenCalledWith("wo1", "c1", {
+      amount: 2000,
+      paid_on: "2026-10-09",
+      note: null,
+    });
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ type: "incentive.paid", pending: 0 }));
+  });
+
+  it("will not take the instalments past the agreed amount", async () => {
+    const res = await recordIncentivePayment(null, form({ ...body, amount: "2000.01" }));
+    expect(res).toEqual({
+      ok: false,
+      error: `${formatCurrency(2000.01)} is more than the ${formatCurrency(2000)} still to pay on this incentive.`,
+    });
+    expect(projects.recordIncentivePayment).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("refuses another instalment on an incentive that is fully paid", async () => {
+    projects.brief.mockResolvedValue(
+      brief({
+        coordinators: [
+          {
+            id: "c1",
+            full_name: "Ravi Kumar",
+            sort_order: 1,
+            incentive: {
+              amount: 2000,
+              paid_on: "2026-10-01",
+              payments: [instalment("pay-1", 2000, "2026-10-01")],
+              paid: 2000,
+            },
+          },
+        ],
+      }),
+    );
+    const res = await recordIncentivePayment(null, form(body));
+    expect(res).toEqual({ ok: false, error: "This incentive is already fully paid." });
+    expect(projects.recordIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("needs the agreed amount set first", async () => {
+    const res = await recordIncentivePayment(null, form({ ...body, coordinator_id: "c2" }));
+    expect(res).toEqual({ ok: false, error: "Set the incentive amount first." });
+    expect(projects.recordIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ paid_on: "2026-10-11" }, "The payment date cannot be in the future."],
+    [{ paid_on: "" }, "Enter the date the instalment was paid."],
+    [{ paid_on: "01/10/2026" }, "Enter the date the instalment was paid."],
+    [{ amount: "0" }, "The instalment must be more than zero."],
+    [{ amount: "" }, "Enter the instalment amount."],
+    [{ amount: "lots" }, "Instalment must be an amount in rupees, e.g. 2500."],
+    [{ amount: "-5" }, "Instalment cannot be negative."],
+    [{ note: "x".repeat(201) }, "The note can be at most 200 characters."],
+  ])("refuses %j without writing", async (override, error) => {
+    const res = await recordIncentivePayment(null, form({ ...body, ...override }));
+    expect(res).toEqual({ ok: false, error });
+    expect(projects.recordIncentivePayment).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("takes a payment dated today", async () => {
+    const res = await recordIncentivePayment(null, form({ ...body, paid_on: "2026-10-10" }));
+    expect(res?.ok).toBe(true);
+  });
+
+  it("refuses someone who is not on the sale", async () => {
+    const res = await recordIncentivePayment(null, form({ ...body, coordinator_id: "stranger" }));
+    expect(res).toEqual({
+      ok: false,
+      error: "That person is not a coordinator on this project.",
+    });
+    expect(projects.recordIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns the database's refusal (another office user got there first) and notifies no one", async () => {
+    projects.recordIncentivePayment.mockResolvedValue({ error: "That would take the payments above the agreed incentive." });
+    const res = await recordIncentivePayment(null, form(body));
+    expect(res).toEqual({ ok: false, error: "That would take the payments above the agreed incentive." });
+    expect(notify).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing project plainly", async () => {
+    projects.brief.mockResolvedValue(null);
+    expect(await recordIncentivePayment(null, form(body))).toEqual({
+      ok: false,
+      error: "Project not found — it may have been deleted.",
+    });
+  });
+});
+
+describe("updateIncentivePayment", () => {
+  const body = {
+    project_id: "p1",
+    payment_id: "pay-2",
+    amount: "2000",
+    paid_on: "2026-09-16",
+    note: "Corrected date",
+  };
+
+  beforeEach(() => {
+    projects.brief.mockResolvedValue(briefWithInstalments());
+  });
+
+  it("is office-only", async () => {
+    vi.mocked(requireAdmin).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(updateIncentivePayment(null, form(body))).rejects.toThrow("REDIRECT:/work-orders");
+    expect(projects.updateIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("corrects that instalment and nothing else — and does not tell anyone again", async () => {
+    const res = await updateIncentivePayment(null, form(body));
+    expect(res).toEqual({ ok: true, data: { message: "Payment corrected for Ravi Kumar." } });
+    expect(projects.updateIncentivePayment).toHaveBeenCalledWith("pay-2", {
+      amount: 2000,
+      paid_on: "2026-09-16",
+      note: "Corrected date",
+    });
+    expect(notify).not.toHaveBeenCalled();
+    expect(revalidatePath).toHaveBeenCalledWith("/projects/p1");
+  });
+
+  it("does not count the instalment's own old amount against the cap", async () => {
+    // ₹4,000 is paid of ₹6,000: a ₹2,000 instalment may become ₹4,000 (the other
+    // ₹2,000 plus this makes the agreed ₹6,000) but not ₹4,000.01.
+    expect((await updateIncentivePayment(null, form({ ...body, amount: "4000" })))?.ok).toBe(true);
+    const over = await updateIncentivePayment(null, form({ ...body, amount: "4000.01" }));
+    expect(over).toEqual({
+      ok: false,
+      error: `${formatCurrency(4000.01)} is more than the ${formatCurrency(4000)} still to pay on this incentive.`,
+    });
+  });
+
+  it("holds a corrected date to today as well", async () => {
+    const res = await updateIncentivePayment(null, form({ ...body, paid_on: "2026-10-11" }));
+    expect(res).toEqual({ ok: false, error: "The payment date cannot be in the future." });
+    expect(projects.updateIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("only touches instalments of this project", async () => {
+    const res = await updateIncentivePayment(null, form({ ...body, payment_id: "someone-elses" }));
+    expect(res).toEqual({
+      ok: false,
+      error: "That payment is not on this project — it may have been removed.",
+    });
+    expect(projects.updateIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns the database's refusal", async () => {
+    projects.updateIncentivePayment.mockResolvedValue({ error: "That payment was not found, or you cannot change it." });
+    const res = await updateIncentivePayment(null, form(body));
+    expect(res).toEqual({ ok: false, error: "That payment was not found, or you cannot change it." });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteIncentivePayment", () => {
+  const body = { project_id: "p1", payment_id: "pay-1" };
+
+  beforeEach(() => {
+    projects.brief.mockResolvedValue(briefWithInstalments());
+  });
+
+  it("is office-only", async () => {
+    vi.mocked(requireAdmin).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deleteIncentivePayment(null, form(body))).rejects.toThrow("REDIRECT:/work-orders");
+    expect(projects.deleteIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("removes that instalment, leaving the agreed amount", async () => {
+    const res = await deleteIncentivePayment(null, form(body));
+    expect(res).toEqual({
+      ok: true,
+      data: { message: `${formatCurrency(2000)} payment removed for Ravi Kumar.` },
+    });
+    expect(projects.deleteIncentivePayment).toHaveBeenCalledWith("pay-1");
+    expect(projects.setCoordinatorIncentive).not.toHaveBeenCalled();
+    expect(revalidatePath).toHaveBeenCalledWith("/projects/p1");
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("only removes instalments of this project", async () => {
+    const res = await deleteIncentivePayment(null, form({ ...body, payment_id: "someone-elses" }));
+    expect(res).toEqual({
+      ok: false,
+      error: "That payment is not on this project — it may have been removed.",
+    });
+    expect(projects.deleteIncentivePayment).not.toHaveBeenCalled();
+  });
+
+  it("returns the database's refusal", async () => {
+    projects.deleteIncentivePayment.mockResolvedValue({ error: "That payment was not found, or you cannot remove it." });
+    const res = await deleteIncentivePayment(null, form(body));
+    expect(res).toEqual({ ok: false, error: "That payment was not found, or you cannot remove it." });
   });
 });
 
@@ -552,7 +894,7 @@ describe("setProjectCancellation", () => {
     expect(res).toEqual({
       ok: true,
       data: {
-        message: `Project marked refunded. ${formatCurrency(2000)} of coordinator incentives is still unpaid — clear it if it is no longer due.`,
+        message: `Project marked refunded. ${formatCurrency(2000)} of coordinator incentives is still to pay — lower or clear it if it is no longer due.`,
       },
     });
     expect(notify).toHaveBeenCalledWith({
@@ -569,10 +911,30 @@ describe("setProjectCancellation", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/projects/p1");
   });
 
+  it("counts only what is left of an incentive that is part-paid", async () => {
+    projects.brief.mockResolvedValue(briefWithInstalments());
+    const res = await setProjectCancellation(null, form(body));
+    expect(res?.ok && res.data.message).toContain(
+      `${formatCurrency(2000)} of coordinator incentives is still to pay`,
+    );
+  });
+
   it("keeps the flash short when no incentive is owed", async () => {
     projects.brief.mockResolvedValue(
       brief({
-        coordinators: [{ id: "c1", full_name: "Ravi Kumar", sort_order: 1, incentive: { amount: 2000, paid_on: "2026-09-30" } }],
+        coordinators: [
+          {
+            id: "c1",
+            full_name: "Ravi Kumar",
+            sort_order: 1,
+            incentive: {
+              amount: 2000,
+              paid_on: "2026-09-30",
+              payments: [instalment("pay-1", 2000, "2026-09-30")],
+              paid: 2000,
+            },
+          },
+        ],
       }),
     );
     const res = await setProjectCancellation(null, form({ ...body, cancellation: "cancelled" }));

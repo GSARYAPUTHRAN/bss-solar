@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Card } from "@/components/ui/card";
-import { formatCurrency, formatCurrencyWhole } from "@/lib/format";
+import { formatCurrencyWhole } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { IncentiveSummary } from "@/server/data/projects.repository";
 
@@ -50,31 +50,66 @@ function MiniStat({
 const PENDING_TONE = "text-amber-700 dark:text-amber-300";
 const PAID_TONE = "text-emerald-700 dark:text-emerald-300";
 
-/** A coordinator's own incentives: earned (all set), paid, still pending. */
-export function CoordinatorIncentiveSummary({ summary }: { summary: IncentiveSummary }) {
+const projectCount = (n: number) => `${n} project${n === 1 ? "" : "s"}`;
+
+/**
+ * Agreed, paid and still-to-pay incentive totals as three tiles. The three come
+ * from `incentive_summary()`: Σ agreed amounts, Σ instalments paid and the
+ * difference — so what is paid is money that moved, not a tick on a sale.
+ */
+function IncentiveTiles({
+  summary,
+  ariaLabel,
+  labels,
+  agreedHint,
+  pendingHint,
+  pendingHref,
+}: {
+  summary: IncentiveSummary;
+  ariaLabel: string;
+  labels: { agreed: string; paid: string; pending: string };
+  agreedHint: string;
+  pendingHint?: string;
+  pendingHref?: string;
+}) {
   return (
-    <section aria-label="Your incentives" className="grid grid-cols-3 gap-2 sm:gap-3">
+    <section aria-label={ariaLabel} className="grid grid-cols-3 gap-2 sm:gap-3">
       <MiniStat
-        label="Earned"
+        label={labels.agreed}
         value={formatCurrencyWhole(summary.total)}
-        hint={`${summary.projects} project${summary.projects === 1 ? "" : "s"}`}
+        hint={agreedHint}
       />
-      <MiniStat label="Paid" value={formatCurrencyWhole(summary.paid)} tone={PAID_TONE} />
+      <MiniStat label={labels.paid} value={formatCurrencyWhole(summary.paid)} tone={PAID_TONE} />
       <MiniStat
-        label="Pending"
+        label={labels.pending}
         value={formatCurrencyWhole(summary.pending)}
-        tone={PENDING_TONE}
-        href={summary.pending > 0 ? PENDING_HREF : undefined}
+        tone={summary.pending > 0 ? PENDING_TONE : undefined}
+        hint={pendingHint}
+        href={summary.pending > 0 ? pendingHref : undefined}
       />
     </section>
   );
 }
 
+/** A coordinator's own incentives: earned (all agreed), paid, still pending. */
+export function CoordinatorIncentiveSummary({ summary }: { summary: IncentiveSummary }) {
+  return (
+    <IncentiveTiles
+      summary={summary}
+      ariaLabel="Your incentives"
+      labels={{ agreed: "Earned", paid: "Paid", pending: "Pending" }}
+      agreedHint={projectCount(summary.projects)}
+      pendingHref={PENDING_HREF}
+    />
+  );
+}
+
 /**
- * The office's view: what is still owed to coordinators — across everyone, or
- * the coordinator the list is filtered to.
+ * The office's view: what was agreed with coordinators, what has been paid of
+ * it and what is still owed — across everyone, or the coordinator the list is
+ * filtered to. The pending tile opens the list of sales with something owed.
  */
-export function OfficeIncentiveTile({
+export function OfficeIncentiveSummary({
   summary,
   coordinatorId,
   coordinatorName,
@@ -83,18 +118,19 @@ export function OfficeIncentiveTile({
   coordinatorId?: string | null;
   coordinatorName?: string | null;
 }) {
-  const href = coordinatorId
-    ? `${PENDING_HREF}&coordinator=${encodeURIComponent(coordinatorId)}`
-    : PENDING_HREF;
+  const scope = coordinatorName ?? "All coordinators";
   return (
-    <section aria-label="Coordinator incentives" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-      <MiniStat
-        label="Incentives pending"
-        value={formatCurrency(summary.pending)}
-        tone={summary.pending > 0 ? PENDING_TONE : undefined}
-        hint={`${coordinatorName ?? "All coordinators"} · ${summary.pendingProjects} project${summary.pendingProjects === 1 ? "" : "s"} awaiting payment`}
-        href={href}
-      />
-    </section>
+    <IncentiveTiles
+      summary={summary}
+      ariaLabel="Coordinator incentives"
+      labels={{ agreed: "Incentives agreed", paid: "Incentives paid", pending: "Incentives pending" }}
+      agreedHint={`${scope} · ${projectCount(summary.projects)}`}
+      pendingHint={`${summary.pendingProjects} ${summary.pendingProjects === 1 ? "project" : "projects"} awaiting payment`}
+      pendingHref={
+        coordinatorId
+          ? `${PENDING_HREF}&coordinator=${encodeURIComponent(coordinatorId)}`
+          : PENDING_HREF
+      }
+    />
   );
 }
