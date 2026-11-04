@@ -119,7 +119,11 @@ export function createFixtures(db: Db = serviceClient()) {
     };
   }
 
-  /** Sets one coordinator's incentive on a sale (what the office does on the project page). */
+  /**
+   * Sets one coordinator's AGREED incentive on a sale (what the office does on
+   * the project page). `paid_on` also marks it paid in full that day: whatever
+   * is not yet paid is recorded as ONE instalment dated then.
+   */
   async function incentive(
     workOrderId: string,
     coordinatorId: string,
@@ -128,7 +132,7 @@ export function createFixtures(db: Db = serviceClient()) {
     const rows = must(
       await db
         .from("coordinator_incentives")
-        .update({ amount: values.amount, paid_on: values.paid_on ?? null })
+        .update({ amount: values.amount })
         .eq("work_order_id", workOrderId)
         .eq("coordinator_id", coordinatorId)
         .select("work_order_id"),
@@ -138,6 +142,65 @@ export function createFixtures(db: Db = serviceClient()) {
     if (rows.length !== 1) {
       throw new Error(`fixture incentive: ${coordinatorId} has no row on ${workOrderId}`);
     }
+    if (values.paid_on) {
+      if (values.amount === null) {
+        throw new Error("fixture incentive: an incentive without an amount cannot be paid");
+      }
+      const paid = must(
+        await db
+          .from("coordinator_incentive_payments")
+          .select("amount")
+          .eq("work_order_id", workOrderId)
+          .eq("coordinator_id", coordinatorId),
+        "fixture instalments",
+      ).reduce((sum, p) => sum + Number(p.amount), 0);
+      const rest = Math.round((values.amount - paid) * 100) / 100;
+      if (rest > 0) {
+        await incentivePayment(workOrderId, coordinatorId, {
+          amount: rest,
+          paid_on: values.paid_on,
+        });
+      }
+    }
+  }
+
+  /** One dated instalment paid against a coordinator's agreed incentive. */
+  async function incentivePayment(
+    workOrderId: string,
+    coordinatorId: string,
+    values: { amount: number; paid_on: string; note?: string | null },
+  ): Promise<string> {
+    const { id } = must(
+      await db
+        .from("coordinator_incentive_payments")
+        .insert({
+          work_order_id: workOrderId,
+          coordinator_id: coordinatorId,
+          recorded_by: USERS.admin.id,
+          ...values,
+        })
+        .select("id")
+        .single(),
+      "fixture incentive payment",
+    );
+    return id;
+  }
+
+  /**
+   * Removes a coordinator's incentive. Its instalments go first: the agreed
+   * amount can never drop below what has been paid out of it.
+   */
+  async function clearIncentive(workOrderId: string, coordinatorId: string): Promise<void> {
+    must(
+      await db
+        .from("coordinator_incentive_payments")
+        .delete()
+        .eq("work_order_id", workOrderId)
+        .eq("coordinator_id", coordinatorId)
+        .select("id"),
+      "fixture instalment removal",
+    );
+    await incentive(workOrderId, coordinatorId, { amount: null });
   }
 
   async function payment(
@@ -241,6 +304,8 @@ export function createFixtures(db: Db = serviceClient()) {
     approvedProject,
     team,
     incentive,
+    incentivePayment,
+    clearIncentive,
     payment,
     ticket,
     notification,

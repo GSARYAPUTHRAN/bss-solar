@@ -20,9 +20,9 @@ declare
   -- Wiped completely, children before parents so each count is exact (the
   -- foreign keys would cascade anyway).
   business_tables constant text[] := array[
-    'notification_dedupe', 'notifications', 'coordinator_incentives',
-    'work_order_coordinators', 'payments', 'service_tickets',
-    'project_milestones', 'projects', 'work_orders'
+    'notification_dedupe', 'notifications', 'coordinator_incentive_payments',
+    'coordinator_incentives', 'work_order_coordinators', 'payments',
+    'service_tickets', 'project_milestones', 'projects', 'work_orders'
   ];
 
   wanted text[];
@@ -84,7 +84,8 @@ begin
   -- -------------------------------------------------------------------------
   perform set_config('lock_timeout', '10s', true);
   lock table public.work_orders, public.work_order_coordinators,
-    public.coordinator_incentives, public.projects, public.project_milestones,
+    public.coordinator_incentives, public.coordinator_incentive_payments,
+    public.projects, public.project_milestones,
     public.service_tickets, public.payments, public.notifications,
     public.notification_dedupe, public.push_subscriptions, public.profiles
     in exclusive mode;
@@ -144,6 +145,7 @@ left join public.profiles p on p.id = u.id
 union all
 select 'table', t.name, t.row_count::text
 from (values
+  ('coordinator_incentive_payments', (select count(*) from public.coordinator_incentive_payments)),
   ('coordinator_incentives', (select count(*) from public.coordinator_incentives)),
   ('notification_dedupe', (select count(*) from public.notification_dedupe)),
   ('notifications', (select count(*) from public.notifications)),

@@ -11,9 +11,9 @@ with params as (
   select
     -- ▶ KEEP IN STEP with the two lists at the top of wipe-business-data.sql.
     array[
-      'notification_dedupe', 'notifications', 'coordinator_incentives',
-      'work_order_coordinators', 'payments', 'service_tickets',
-      'project_milestones', 'projects', 'work_orders'
+      'notification_dedupe', 'notifications', 'coordinator_incentive_payments',
+      'coordinator_incentives', 'work_order_coordinators', 'payments',
+      'service_tickets', 'project_milestones', 'projects', 'work_orders'
     ]::text[] as business_tables,
     array['profiles', 'push_subscriptions']::text[] as kept_tables
 ),

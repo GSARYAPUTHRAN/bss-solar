@@ -28,6 +28,7 @@ const CONFIRM = /confirm constant text := '[^']*';/g;
 const BUSINESS_TABLES = [
   "notification_dedupe",
   "notifications",
+  "coordinator_incentive_payments",
   "coordinator_incentives",
   "work_order_coordinators",
   "payments",
@@ -180,6 +181,9 @@ describe("wipe-business-data.sql", () => {
       expect(before.work_orders).toBeGreaterThan(0);
       expect(before.work_order_coordinators).toBeGreaterThanOrEqual(before.work_orders);
       expect(before.coordinator_incentives).toBe(before.work_order_coordinators);
+      // The seed pays some incentives in instalments: they go before the
+      // incentives they belong to, and are counted on their own.
+      expect(before.coordinator_incentive_payments).toBeGreaterThan(0);
       expect(before.notification_dedupe).toBeGreaterThan(0);
       expect(before.push_subscriptions).toBeGreaterThanOrEqual(2);
 

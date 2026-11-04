@@ -340,14 +340,27 @@ describe("projects_list feasibility columns ≡ feasibilityStatus()", () => {
     const incentives = must(
       await svc
         .from("coordinator_incentives")
-        .select("work_order_id, amount")
-        .not("amount", "is", null)
-        .is("paid_on", null),
+        .select("work_order_id, coordinator_id, amount")
+        .not("amount", "is", null),
       "incentives",
     );
+    const instalments = must(
+      await svc
+        .from("coordinator_incentive_payments")
+        .select("work_order_id, coordinator_id, amount"),
+      "instalments",
+    );
+    // Still to pay: the agreed amount less what the instalments have covered.
     const incentivePending = incentives
       .filter((i) => sold.has(i.work_order_id))
-      .reduce((sum, i) => sum + Number(i.amount), 0);
+      .reduce((sum, i) => {
+        const paid = instalments
+          .filter(
+            (p) => p.work_order_id === i.work_order_id && p.coordinator_id === i.coordinator_id,
+          )
+          .reduce((total, p) => total + Number(p.amount), 0);
+        return sum + Number(i.amount) - paid;
+      }, 0);
 
     // Two expiring fixtures plus the seeded project five days from expiry.
     expect(expiring).toBeGreaterThanOrEqual(3);

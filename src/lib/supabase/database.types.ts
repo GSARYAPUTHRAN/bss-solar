@@ -34,6 +34,58 @@ export type Database = {
   };
   public: {
     Tables: {
+      coordinator_incentive_payments: {
+        Row: {
+          amount: number;
+          coordinator_id: string;
+          created_at: string;
+          id: string;
+          note: string | null;
+          paid_on: string;
+          recorded_by: string | null;
+          updated_at: string;
+          work_order_id: string;
+        };
+        ComputedFields: never;
+        Insert: {
+          amount: number;
+          coordinator_id: string;
+          created_at?: string;
+          id?: string;
+          note?: string | null;
+          paid_on: string;
+          recorded_by?: string | null;
+          updated_at?: string;
+          work_order_id: string;
+        };
+        Update: {
+          amount?: number;
+          coordinator_id?: string;
+          created_at?: string;
+          id?: string;
+          note?: string | null;
+          paid_on?: string;
+          recorded_by?: string | null;
+          updated_at?: string;
+          work_order_id?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "coordinator_incentive_payments_incentive_fkey";
+            columns: ["work_order_id", "coordinator_id"];
+            isOneToOne: false;
+            referencedRelation: "coordinator_incentives";
+            referencedColumns: ["work_order_id", "coordinator_id"];
+          },
+          {
+            foreignKeyName: "coordinator_incentive_payments_recorded_by_fkey";
+            columns: ["recorded_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       coordinator_incentives: {
         Row: {
           amount: number | null;
@@ -160,6 +212,7 @@ export type Database = {
           legacy_slot: number | null;
           method: Database["public"]["Enums"]["payment_method"];
           notes: string | null;
+          paid_by_office: boolean;
           paid_on: string;
           purpose: Database["public"]["Enums"]["payment_purpose"];
           recorded_by: string | null;
@@ -175,6 +228,7 @@ export type Database = {
           legacy_slot?: number | null;
           method?: Database["public"]["Enums"]["payment_method"];
           notes?: string | null;
+          paid_by_office?: boolean;
           paid_on: string;
           purpose?: Database["public"]["Enums"]["payment_purpose"];
           recorded_by?: string | null;
@@ -189,6 +243,7 @@ export type Database = {
           legacy_slot?: number | null;
           method?: Database["public"]["Enums"]["payment_method"];
           notes?: string | null;
+          paid_by_office?: boolean;
           paid_on?: string;
           purpose?: Database["public"]["Enums"]["payment_purpose"];
           recorded_by?: string | null;
@@ -654,6 +709,9 @@ export type Database = {
         Row: {
           address: string | null;
           advance_amount: number | null;
+          advance_method: Database["public"]["Enums"]["payment_method"] | null;
+          advance_paid_on: string | null;
+          advance_reference: string | null;
           client_name: string;
           client_phone: string | null;
           consumer_number: string | null;
@@ -676,6 +734,9 @@ export type Database = {
         Insert: {
           address?: string | null;
           advance_amount?: number | null;
+          advance_method?: Database["public"]["Enums"]["payment_method"] | null;
+          advance_paid_on?: string | null;
+          advance_reference?: string | null;
           client_name: string;
           client_phone?: string | null;
           consumer_number?: string | null;
@@ -697,6 +758,9 @@ export type Database = {
         Update: {
           address?: string | null;
           advance_amount?: number | null;
+          advance_method?: Database["public"]["Enums"]["payment_method"] | null;
+          advance_paid_on?: string | null;
+          advance_reference?: string | null;
           client_name?: string;
           client_phone?: string | null;
           consumer_number?: string | null;
@@ -758,6 +822,7 @@ export type Database = {
           financing_type: Database["public"]["Enums"]["financing_type"] | null;
           id: string | null;
           incentive_count: number | null;
+          incentive_paid: number | null;
           incentive_paid_coordinator_ids: string[] | null;
           incentive_paid_on: string | null;
           incentive_total: number | null;
@@ -765,6 +830,8 @@ export type Database = {
           incentive_unpaid_coordinator_ids: string[] | null;
           incentive_unpaid_count: number | null;
           is_completed: boolean | null;
+          kseb_fees_by_office: number | null;
+          kseb_fees_collected: number | null;
           kseb_section: string | null;
           last_payment_on: string | null;
           loan_bank_name: string | null;
@@ -776,9 +843,11 @@ export type Database = {
           plan_type: Database["public"]["Enums"]["plan_type"] | null;
           plant_capacity: string | null;
           plant_capacity_kw: number | null;
+          refunded_total: number | null;
           started_at: string | null;
           total_cost: number | null;
           work_order_id: string | null;
+          written_off_total: number | null;
         };
         ComputedFields: never;
         Relationships: [
@@ -874,6 +943,8 @@ export type Database = {
           financing_type: Database["public"]["Enums"]["financing_type"] | null;
           id: string | null;
           is_completed: boolean | null;
+          kseb_fees_by_office: number | null;
+          kseb_fees_collected: number | null;
           kseb_section: string | null;
           last_payment_on: string | null;
           loan_bank_name: string | null;
@@ -885,9 +956,11 @@ export type Database = {
           plant_capacity: string | null;
           plant_capacity_kw: number | null;
           project_id: string | null;
+          refunded_total: number | null;
           status: Database["public"]["Enums"]["work_order_status"] | null;
           total_cost: number | null;
           updated_at: string | null;
+          written_off_total: number | null;
         };
         ComputedFields: never;
         Relationships: [
@@ -987,6 +1060,18 @@ export type Database = {
           work_order_id: string;
         }[];
       };
+      incentive_paid: {
+        Args: { p_coordinator_id: string; p_work_order_id: string };
+        Returns: number;
+      };
+      incentive_paid_date: {
+        Args: {
+          p_amount: number;
+          p_coordinator_id: string;
+          p_work_order_id: string;
+        };
+        Returns: string;
+      };
       incentive_summary: {
         Args: { p_coordinator?: string };
         Returns: {
@@ -1054,7 +1139,7 @@ export type Database = {
         | "cheque"
         | "loan_disbursement"
         | "other";
-      payment_purpose: "contract" | "kseb_fees";
+      payment_purpose: "contract" | "kseb_fees" | "refund" | "write_off";
       plan_type: "solar" | "custom";
       project_cancellation: "cancelled" | "refunded";
       project_stage:
@@ -1219,7 +1304,7 @@ export const Constants = {
         "loan_disbursement",
         "other",
       ],
-      payment_purpose: ["contract", "kseb_fees"],
+      payment_purpose: ["contract", "kseb_fees", "refund", "write_off"],
       plan_type: ["solar", "custom"],
       project_cancellation: ["cancelled", "refunded"],
       project_stage: [
