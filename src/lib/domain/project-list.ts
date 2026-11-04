@@ -1,4 +1,5 @@
 import { PROJECT_STAGES } from "@/lib/constants";
+import { INCENTIVE_STATE_LABELS, type IncentiveState } from "./incentives";
 import {
   FEASIBILITY_WARNING_DAYS,
   classifyFeasibility,
@@ -20,7 +21,7 @@ import type { PlanType, ProjectListRow } from "@/lib/types";
  *
  * URL filter names/values are shared with other pages (dashboard tiles link to
  * them): /projects?view=list&feasibility=expiring|extended|not_set
- * &financing=loan|self&incentive=pending|paid&status=…&plan=solar|custom
+ * &financing=loan|self&incentive=pending|partly_paid|paid&status=…&plan=solar|custom
  *
  * A project is active, commissioned (or handed over), cancelled, or refunded.
  * Cancelled and refunded projects leave the active and commissioned counts and
@@ -71,7 +72,12 @@ export type PlanFilter = PlanType;
 export const FEASIBILITY_FILTERS = ["expiring", "extended", "not_set"] as const;
 export type FeasibilityFilter = (typeof FEASIBILITY_FILTERS)[number];
 
-export const INCENTIVE_FILTERS = ["pending", "paid"] as const;
+/**
+ * `pending`: something is still to pay (a partly paid sale included, so the
+ * dashboard's "Incentives pending" figure and this list agree); `partly_paid`:
+ * instalments are in but not all of it; `paid`: every incentive set is settled.
+ */
+export const INCENTIVE_FILTERS = ["pending", "partly_paid", "paid"] as const;
 export type IncentiveFilter = (typeof INCENTIVE_FILTERS)[number];
 
 /** Every list filter the projects page reads from the URL. */
@@ -103,6 +109,7 @@ export const FEASIBILITY_FILTER_LABELS: Record<FeasibilityFilter, string> = {
 
 export const INCENTIVE_FILTER_LABELS: Record<IncentiveFilter, string> = {
   pending: "Incentive pending",
+  partly_paid: "Incentive partly paid",
   paid: "Incentive paid",
 };
 
@@ -232,72 +239,80 @@ export function listRowProgress(
   return { done, total, pct: Math.round((done / total) * 100) };
 }
 
-/** `partly_paid`: a shared sale on which only some of the people have been paid. */
-export type IncentiveState = "not_set" | "pending" | "partly_paid" | "paid";
+export type { IncentiveState };
 
-type IncentiveColumns = Pick<ProjectListRow, "coordinator_incentive" | "incentive_paid_on">;
-
-/** One person's incentive: never `partly_paid`. */
-export function incentiveState(row: IncentiveColumns): IncentiveState {
-  if (row.coordinator_incentive === null) return "not_set";
-  return row.incentive_paid_on ? "paid" : "pending";
-}
-
-/** @deprecated Reads the single-incentive compat columns; use `matchesSaleIncentiveFilter`. */
-export function matchesIncentiveFilter(
-  row: IncentiveColumns,
-  filter: IncentiveFilter,
-): boolean {
-  return incentiveState(row) === filter;
-}
-
-type SaleIncentiveCounts = Pick<ProjectListRow, "incentive_count" | "incentive_unpaid_count">;
+type SaleIncentiveColumns = Pick<
+  ProjectListRow,
+  "incentive_count" | "incentive_unpaid_count" | "incentive_paid"
+>;
 
 /**
  * The state of a whole sale's incentives as the caller sees them (the view's
- * counts cover the incentives the caller may read: the office everyone's, a
- * coordinator their own): none set, none paid, only some paid, all paid.
+ * counts and instalment total cover the incentives the caller may read: the
+ * office everyone's, a coordinator their own): none set, nothing paid yet, some
+ * of it paid, all of it paid. It goes by money, not by people: a sale on which
+ * one person has been paid in part is partly paid, as is one where one of two
+ * people has been paid in full. An incentive of zero owes nothing, so it is paid.
  */
-export function saleIncentiveState(row: SaleIncentiveCounts): IncentiveState {
+export function saleIncentiveState(row: SaleIncentiveColumns): IncentiveState {
   const count = Number(row.incentive_count) || 0;
   const unpaid = Number(row.incentive_unpaid_count) || 0;
-  if (count === 0) return "not_set";
-  if (unpaid >= count) return "pending";
-  return unpaid > 0 ? "partly_paid" : "paid";
+  if (count === 0) return "unset";
+  if (unpaid === 0) return "paid";
+  return (Number(row.incentive_paid) || 0) > 0 ? "partly_paid" : "pending";
 }
 
 /**
- * The incentive filter on a sale. With a coordinator (the office narrowing to
- * one person), `pending` / `paid` are about that person's own incentive; without
- * one, `pending` is any unpaid incentive on the sale and `paid` is "every
- * incentive that is set has been paid".
+ * The incentive filter on a sale. Without a coordinator, `pending` is any
+ * unpaid incentive on the sale, `partly_paid` is "some money is paid and some is
+ * still to pay", and `paid` is "every incentive that is set has been paid".
+ *
+ * With a coordinator (the office narrowing to one person), `pending` / `paid`
+ * are about that person's own incentive. The view cannot say whose instalments
+ * the paid money is, so `partly_paid` there is "this person is still owed, and
+ * the sale has had money paid" — exact on a sale with one coordinator, and on a
+ * shared one it matches the sale's own "Partly paid" badge.
  */
 export function matchesSaleIncentiveFilter(
-  row: Pick<
-    ProjectListRow,
-    | "incentive_count"
-    | "incentive_unpaid_count"
-    | "incentive_unpaid_coordinator_ids"
-    | "incentive_paid_coordinator_ids"
-  >,
+  row: SaleIncentiveColumns &
+    Pick<ProjectListRow, "incentive_unpaid_coordinator_ids" | "incentive_paid_coordinator_ids">,
   filter: IncentiveFilter,
   coordinatorId?: string | null,
 ): boolean {
   const count = Number(row.incentive_count) || 0;
   const unpaid = Number(row.incentive_unpaid_count) || 0;
-  if (filter === "pending") {
-    return coordinatorId
-      ? (row.incentive_unpaid_coordinator_ids ?? []).includes(coordinatorId)
-      : unpaid > 0;
+  const owed = coordinatorId
+    ? (row.incentive_unpaid_coordinator_ids ?? []).includes(coordinatorId)
+    : unpaid > 0;
+  switch (filter) {
+    case "pending":
+      return owed;
+    case "partly_paid":
+      return owed && (Number(row.incentive_paid) || 0) > 0;
+    case "paid":
+      return coordinatorId
+        ? (row.incentive_paid_coordinator_ids ?? []).includes(coordinatorId)
+        : count > 0 && unpaid === 0;
   }
-  return coordinatorId
-    ? (row.incentive_paid_coordinator_ids ?? []).includes(coordinatorId)
-    : count > 0 && unpaid === 0;
 }
 
 export const INCENTIVE_STATE: StatusRegistry<IncentiveState> = {
-  not_set: { label: "Not set", badgeClass: TONES.gray },
-  pending: { label: "Pending", badgeClass: TONES.amber },
-  partly_paid: { label: "Partly paid", badgeClass: TONES.blue },
-  paid: { label: "Paid", badgeClass: TONES.emerald },
+  unset: { label: INCENTIVE_STATE_LABELS.unset, badgeClass: TONES.gray },
+  pending: { label: INCENTIVE_STATE_LABELS.pending, badgeClass: TONES.amber },
+  partly_paid: { label: INCENTIVE_STATE_LABELS.partly_paid, badgeClass: TONES.blue },
+  paid: { label: INCENTIVE_STATE_LABELS.paid, badgeClass: TONES.emerald },
 };
+
+/**
+ * What the badge says: the state's label, except that an incentive agreed at
+ * zero reads "Nothing owed" rather than "Paid" (nothing was ever paid, and none
+ * is due — the views count it as paid for the same reason).
+ */
+export function incentiveStateLabel(
+  state: IncentiveState,
+  total: number | string | null | undefined,
+): string {
+  return state === "paid" && total != null && Number(total) === 0
+    ? "Nothing owed"
+    : INCENTIVE_STATE[state].label;
+}

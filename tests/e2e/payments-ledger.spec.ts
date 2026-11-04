@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { expectFlash } from "./support/flash";
+import { expectNothingClipped } from "./support/layout";
 
 // The ledger renders as a table from `md` up and as cards below it; both are in
 // the DOM, so text lookups are scoped to the visible one (role queries skip
@@ -85,6 +86,10 @@ test("the office records instalments in any number of stages", async ({ page }) 
   }
   await expect(section.getByText(/3 instalments after the advance/i)).toBeVisible();
   await expect(section.getByText(/83% collected/i)).toBeVisible();
+  // Nothing was refunded or written off, so the summary keeps its plain lines.
+  await expect(section.locator("dt", { hasText: /^Total received$/ })).toBeVisible();
+  await expect(section.locator("dt", { hasText: /^Refunded$/ })).toHaveCount(0);
+  await expect(section.locator("dt", { hasText: /^Written off$/ })).toHaveCount(0);
 
   // An instalment above the balance is refused in plain language and the
   // dialog keeps what was typed.
@@ -124,6 +129,5 @@ test("a coordinator sees their project's ledger read-only", async ({ page }) => 
   await expect(cards).toBeVisible();
   await expect(cards.getByText("Stage 1", { exact: true })).toBeVisible();
   await expect(section.getByRole("table")).toBeHidden();
-  const overflows = await section.evaluate((el) => el.scrollWidth > el.clientWidth);
-  expect(overflows).toBe(false);
+  await expectNothingClipped(section);
 });

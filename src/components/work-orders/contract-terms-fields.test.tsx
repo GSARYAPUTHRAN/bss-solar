@@ -45,6 +45,71 @@ describe("ContractTermsFields", () => {
     expect(advance).not.toHaveAttribute("aria-invalid");
   });
 
+  describe("details of the advance (method, date, reference) with no advance amount", () => {
+    // The details are another component's fields in the same form.
+    function withDetails(defaultAdvance: number) {
+      const { container } = render(
+        <form>
+          <ContractTermsFields defaultAdvance={defaultAdvance} defaultTotal={195000} />
+          <input aria-label="method" name="advance_method" defaultValue="none" />
+          <input aria-label="paid on" name="advance_paid_on" />
+          <input aria-label="reference" name="advance_reference" />
+        </form>,
+      );
+      return {
+        form: container.querySelector("form") as HTMLFormElement,
+        advance: screen.getByLabelText(/advance collected/i) as HTMLInputElement,
+        method: screen.getByLabelText("method"),
+        paidOn: screen.getByLabelText("paid on"),
+        reference: screen.getByLabelText("reference"),
+      };
+    }
+    const MESSAGE = /there is no advance amount/i;
+
+    it("blocks the submit with the server's message, and clears once either side is fixed", () => {
+      const { form, advance, method, reference } = withDetails(0);
+      expect(form.checkValidity()).toBe(true);
+
+      fireEvent.change(method, { target: { value: "upi" } });
+      expect(form.checkValidity()).toBe(false);
+      expect(advance.validationMessage).toMatch(MESSAGE);
+      expect(advance).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByText(MESSAGE)).toBeInTheDocument();
+
+      // Entering the advance fixes it ...
+      fireEvent.change(advance, { target: { value: "25000" } });
+      expect(form.checkValidity()).toBe(true);
+      // ... and so does clearing it again, whichever detail was the one filled.
+      fireEvent.change(advance, { target: { value: "" } });
+      expect(form.checkValidity()).toBe(false);
+      fireEvent.change(method, { target: { value: "none" } });
+      expect(form.checkValidity()).toBe(true);
+      fireEvent.change(reference, { target: { value: "UTR 1" } });
+      expect(form.checkValidity()).toBe(false);
+      fireEvent.change(reference, { target: { value: "  " } });
+      expect(form.checkValidity()).toBe(true);
+    });
+
+    it("counts a date alone, and a zero advance as no advance", () => {
+      const { form, paidOn } = withDetails(0);
+      fireEvent.change(paidOn, { target: { value: "2026-06-01" } });
+      expect(form.checkValidity()).toBe(false);
+    });
+
+    it("leaves an order that has an advance alone", () => {
+      const { form } = withDetails(30000);
+      expect(form.checkValidity()).toBe(true);
+    });
+
+    it("keeps the over-total message when both apply", () => {
+      const { form, advance, method } = withDetails(0);
+      fireEvent.change(method, { target: { value: "upi" } });
+      fireEvent.change(advance, { target: { value: "999999" } });
+      expect(advance.validationMessage).toBe("The advance cannot be more than the total cost.");
+      expect(form.checkValidity()).toBe(false);
+    });
+  });
+
   it("allows an advance equal to the total (paid in full at booking)", () => {
     const { form } = setup({ defaultAdvance: 195000, defaultTotal: 195000 });
     expect(form.checkValidity()).toBe(true);

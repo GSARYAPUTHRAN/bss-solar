@@ -21,6 +21,7 @@ const SHARED = `${PREFIX} Shared`;
 const CUSTOM = `${PREFIX} Custom`;
 const CANCELLED = `${PREFIX} Cancelled`;
 const REFUNDED = `${PREFIX} Refunded`;
+const PART_PAID = `${PREFIX} Part-paid`;
 
 const RAHUL = ACCOUNTS.rahul;
 const PRIYA = ACCOUNTS.priya;
@@ -38,6 +39,10 @@ const COLUMNS = [
   "cancelled_on",
   "cancellation_remarks",
   "coordinator_incentive",
+  // An incentive in instalments: a dated group is paid, an undated one is still to pay.
+  "incentive_1_amount",
+  "incentive_1_date",
+  "incentive_2_amount",
 ] as const;
 
 function csvLine(cells: Partial<Record<(typeof COLUMNS)[number], string>>): string {
@@ -82,6 +87,17 @@ const CSV = [
     cancelled_on: "2026-03-01",
     cancellation_remarks: "E2E customer withdrew",
   }),
+  // Rahul's, with ₹6,000 agreed and ₹4,000 of it already paid in an instalment.
+  csvLine({
+    client_name: PART_PAID,
+    plant_capacity: "2kW",
+    total_cost: "130000",
+    order_date: "2026-03-13",
+    coordinator: RAHUL.email,
+    incentive_1_amount: "4000",
+    incentive_1_date: "2026-03-20",
+    incentive_2_amount: "2000",
+  }),
   // Refunded, and Arun's: neither Rahul nor Priya may see it.
   csvLine({
     client_name: REFUNDED,
@@ -101,6 +117,8 @@ interface Counts {
   closed: number;
   cancelled: number;
   refunded: number;
+  /** The "Incentives Pending" tile: agreed less paid, in rupees. */
+  incentivePending: number;
 }
 
 /** The tile's figure: the paragraph after its label. */
@@ -116,7 +134,12 @@ async function dashboardCounts(page: Page): Promise<Counts> {
   const hint = await closedLabel.locator("xpath=following-sibling::p[2]").innerText();
   const split = /(\d+) cancelled · (\d+) refunded/.exec(hint);
   if (!split) throw new Error(`unexpected closed-projects hint: ${hint}`);
+  const pending = await page
+    .getByText(/^incentives pending$/i)
+    .locator("xpath=following-sibling::p[1]")
+    .innerText();
   return {
+    incentivePending: Number(pending.replace(/[^\d.]/g, "")),
     active: await tileValue(page, /^active projects$/i),
     commissioned: await tileValue(page, /^commissioned$/i),
     closed: await tileValue(page, /^cancelled \/ refunded$/i),
@@ -170,7 +193,7 @@ test.beforeAll(async ({ browser }) => {
   await admin.goto("/onboarding");
   await admin.getByLabel("CSV data").fill(CSV);
   await admin.getByRole("button", { name: /import projects/i }).click();
-  await expect(admin.getByRole("button", { name: /^5 imported$/i })).toBeVisible();
+  await expect(admin.getByRole("button", { name: /^6 imported$/i })).toBeVisible();
   await admin.context().close();
 });
 
@@ -180,12 +203,15 @@ test("the dashboard counts the new projects as active or out of the pipeline", a
   const admin = await signedInPage(browser, ACCOUNTS.admin);
   const after = await dashboardCounts(admin);
 
-  // Live, shared and custom are in the pipeline; cancelled and refunded are not.
-  expect(after.active).toBe(before.active + 3);
+  // Live, shared, custom and part-paid are in the pipeline; cancelled and refunded are not.
+  expect(after.active).toBe(before.active + 4);
   expect(after.commissioned).toBe(before.commissioned);
   expect(after.closed).toBe(before.closed + 2);
   expect(after.cancelled).toBe(before.cancelled + 1);
   expect(after.refunded).toBe(before.refunded + 1);
+  // What is still to pay is agreed less paid: ₹5,000 on the live sale, and the
+  // ₹2,000 left of the part-paid one's ₹6,000 (₹4,000 is paid).
+  expect(after.incentivePending - before.incentivePending).toBe(7000);
 
   await admin.getByText(/^active projects$/i).scrollIntoViewIfNeeded();
   await expect(admin.getByText(/excludes cancelled and refunded/i).first()).toBeVisible();
@@ -207,7 +233,7 @@ test("the project list filters by status, plan and any coordinator on a sale", a
 }) => {
   const admin = await signedInPage(browser, ACCOUNTS.admin);
   await admin.goto(listUrl());
-  for (const client of [LIVE, SHARED, CUSTOM, CANCELLED, REFUNDED]) {
+  for (const client of [LIVE, SHARED, CUSTOM, CANCELLED, REFUNDED, PART_PAID]) {
     await expect(row(admin, client)).toBeVisible();
   }
 
@@ -227,6 +253,32 @@ test("the project list filters by status, plan and any coordinator on a sale", a
     await expect(row(admin, LIVE)).toContainText("₹5,000");
     await expect(row(admin, LIVE)).toContainText(/pending/i);
     await expect(row(admin, CUSTOM)).not.toContainText("₹5,000");
+  });
+
+  await test.step("an incentive in instalments shows agreed, paid so far and its state", async () => {
+    await expect(row(admin, PART_PAID)).toContainText(/₹6,000(\.00)?/);
+    await expect(row(admin, PART_PAID)).toContainText(/₹4,000(\.00)? paid/);
+    await expect(badge(admin, PART_PAID, "Partly paid")).toBeVisible();
+    // Nothing paid on the live sale, so no "paid" figure and no Partly paid.
+    await expect(row(admin, LIVE)).not.toContainText(/₹[\d,]+(\.\d+)? paid/);
+  });
+
+  await test.step("the Incentive filter tells pending, partly paid and paid apart", async () => {
+    await admin.goto(listUrl({ incentive: "pending" }));
+    // Anything still owed: the live sale and the part-paid one.
+    await expect(row(admin, LIVE)).toBeVisible();
+    await expect(row(admin, PART_PAID)).toBeVisible();
+    await expect(row(admin, CUSTOM)).toHaveCount(0);
+
+    await admin.goto(listUrl({ incentive: "partly_paid" }));
+    await expect(row(admin, PART_PAID)).toBeVisible();
+    await expect(row(admin, LIVE)).toHaveCount(0);
+
+    // Nothing here is paid in full.
+    await admin.goto(listUrl({ incentive: "paid" }));
+    await expect(row(admin, PART_PAID)).toHaveCount(0);
+    await expect(row(admin, LIVE)).toHaveCount(0);
+    await admin.goto(listUrl());
   });
 
   await test.step("Active leaves the closed projects out", async () => {
@@ -277,11 +329,12 @@ test("the project list filters by status, plan and any coordinator on a sale", a
     await admin.goto(listUrl());
     await admin.getByRole("button", { name: /^sort by incentive$/i }).click();
     await expect(admin).toHaveURL(/sort=incentive_total/);
-    // Projects without an incentive sort last whichever way it goes.
+    // Smallest agreed incentive first (₹5,000 on the live sale); projects without one sort last whichever way it goes.
     await expect(admin.getByRole("row").nth(1)).toContainText(LIVE);
     await admin.getByRole("button", { name: /^sort by incentive$/i }).click();
     await expect(admin).toHaveURL(/dir=desc/);
-    await expect(admin.getByRole("row").nth(1)).toContainText(LIVE);
+    // Largest agreed incentive first: the part-paid sale's ₹6,000 ahead of the live sale's ₹5,000.
+    await expect(admin.getByRole("row").nth(1)).toContainText(PART_PAID);
   });
   await admin.context().close();
 });
@@ -348,6 +401,10 @@ test("a coordinator on a phone sees who they share a sale with, their own incent
   await expect(row(rahul, LIVE)).not.toContainText(/\bwith\b/);
   // Their own incentive, worded as theirs.
   await expect(row(rahul, LIVE)).toContainText(/your incentive\s*₹5,000(\.00)?\s*pending/i);
+  // …with what has been paid of it, when some has.
+  await expect(row(rahul, PART_PAID)).toContainText(
+    /your incentive\s*₹6,000(\.00)?\s*· ₹4,000(\.00)? paid\s*partly paid/i,
+  );
   await expect(badge(rahul, CANCELLED, "Cancelled")).toBeVisible();
   // Another coordinator's refunded sale is not theirs to see.
   await expect(row(rahul, REFUNDED)).toHaveCount(0);

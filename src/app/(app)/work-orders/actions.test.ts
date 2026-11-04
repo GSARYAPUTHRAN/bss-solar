@@ -707,6 +707,165 @@ describe("updateWorkOrder", () => {
   });
 });
 
+describe("advance details", () => {
+  const EDIT_ERROR = "REDIRECT:/work-orders/wo-1/edit?error=";
+  const DETAILS = {
+    advance_method: "upi",
+    advance_paid_on: "2026-09-02",
+    advance_reference: "UPI 4410021199",
+  };
+  // The office has approved this sale and recorded how the advance was paid.
+  const approved = pendingOrder({
+    status: "approved",
+    total_cost: 310000,
+    advance_amount: 30000,
+    advance_method: "cheque",
+    advance_paid_on: "2026-09-01",
+    advance_reference: "CHQ 3003",
+    project: liveProject(),
+  });
+  const { total_cost: _t, advance_amount: _a, ...detailsOnly } = BODY;
+  void _t;
+  void _a;
+
+  describe("when logging a work order", () => {
+    it("stores how, when and the reference of the advance", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      await expect(
+        createWorkOrder(form({ ...BODY, ...DETAILS })),
+      ).rejects.toThrow(/^REDIRECT:\/work-orders\?flash=/);
+      expect(workOrders.create).toHaveBeenCalledWith(
+        expect.objectContaining({ advance_amount: 30000, ...DETAILS }),
+      );
+    });
+
+    it("stores nothing about them when they are left blank", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      await expect(createWorkOrder(form(BODY))).rejects.toThrow(/^REDIRECT:\/work-orders\?flash=/);
+      expect(workOrders.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          advance_method: null,
+          advance_paid_on: null,
+          advance_reference: null,
+        }),
+      );
+    });
+
+    it("refuses an advance dated in the future before anything is written", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      await expect(
+        createWorkOrder(form({ ...BODY, advance_paid_on: "2999-01-01" })),
+      ).rejects.toThrow(
+        `REDIRECT:/work-orders/new?error=${encodeURIComponent("The advance date cannot be in the future.")}`,
+      );
+      expect(workOrders.create).not.toHaveBeenCalled();
+    });
+
+    it("refuses details when there is no advance", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      await expect(
+        createWorkOrder(form({ ...BODY, advance_amount: "0", advance_method: "upi" })),
+      ).rejects.toThrow(/^REDIRECT:\/work-orders\/new\?error=/);
+      expect(workOrders.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("when editing one", () => {
+    it("a coordinator's edit of an approved order writes the office's details back as they were", async () => {
+      // The edit form leaves the locked details out. The database refuses a
+      // coordinator any change to them once the order is reviewed, and it
+      // compares what it is sent: so they must go back exactly as stored.
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      workOrders.byId.mockResolvedValue(approved);
+      await expect(
+        updateWorkOrder(form({ ...detailsOnly, id: "wo-1", client_phone: "98470 22222" })),
+      ).rejects.toThrow(/^REDIRECT:\/work-orders\/wo-1\?flash=/);
+      expect(workOrders.update).toHaveBeenCalledWith(
+        "wo-1",
+        expect.objectContaining({
+          client_phone: "98470 22222",
+          advance_amount: 30000,
+          advance_method: "cheque",
+          advance_paid_on: "2026-09-01",
+          advance_reference: "CHQ 3003",
+        }),
+      );
+    });
+
+    it("a coordinator cannot change them once the order is approved", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      workOrders.byId.mockResolvedValue(approved);
+      await expect(
+        updateWorkOrder(
+          form({ ...detailsOnly, id: "wo-1", advance_method: "cash", advance_paid_on: "2026-09-01", advance_reference: "CHQ 3003" }),
+        ),
+      ).rejects.toThrow(`${EDIT_ERROR}${encodeURIComponent(CONTRACT_TERMS_LOCKED_ERROR)}`);
+      expect(workOrders.update).not.toHaveBeenCalled();
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it("a partner cannot either", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(PARTNER);
+      workOrders.byId.mockResolvedValue({
+        ...approved,
+        coordinators: [RAHUL_ON_SALE, PRIYA_ON_SALE],
+      });
+      await expect(
+        updateWorkOrder(form({ ...detailsOnly, id: "wo-1", advance_reference: "CHQ 0000" })),
+      ).rejects.toThrow(`${EDIT_ERROR}${encodeURIComponent(CONTRACT_TERMS_LOCKED_ERROR)}`);
+      expect(workOrders.update).not.toHaveBeenCalled();
+    });
+
+    it("the office may correct them on an approved order", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(ADMIN);
+      workOrders.byId.mockResolvedValue(approved);
+      await expect(
+        updateWorkOrder(
+          form({ ...BODY, ...DETAILS, id: "wo-1", total_cost: "310000", advance_amount: "30000" }),
+        ),
+      ).rejects.toThrow(/^REDIRECT:\/work-orders\/wo-1\?flash=/);
+      expect(workOrders.update).toHaveBeenCalledWith("wo-1", expect.objectContaining(DETAILS));
+    });
+
+    it("the coordinator who logged a pending order may still change them", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(COORD);
+      workOrders.byId.mockResolvedValue(
+        pendingOrder({ total_cost: 310000, advance_amount: 30000, advance_method: "cash" }),
+      );
+      await expect(
+        updateWorkOrder(form({ ...BODY, ...DETAILS, id: "wo-1", total_cost: "310000" })),
+      ).rejects.toThrow(/^REDIRECT:\/work-orders\/wo-1\?flash=/);
+      expect(workOrders.update).toHaveBeenCalledWith("wo-1", expect.objectContaining(DETAILS));
+    });
+
+    it("the office may clear them", async () => {
+      vi.mocked(requireWorkOrderRole).mockResolvedValue(ADMIN);
+      workOrders.byId.mockResolvedValue(approved);
+      await expect(
+        updateWorkOrder(
+          form({
+            ...BODY,
+            id: "wo-1",
+            total_cost: "310000",
+            advance_amount: "30000",
+            advance_method: "none",
+            advance_paid_on: "",
+            advance_reference: "",
+          }),
+        ),
+      ).rejects.toThrow(/^REDIRECT:\/work-orders\/wo-1\?flash=/);
+      expect(workOrders.update).toHaveBeenCalledWith(
+        "wo-1",
+        expect.objectContaining({
+          advance_method: null,
+          advance_paid_on: null,
+          advance_reference: null,
+        }),
+      );
+    });
+  });
+});
+
 describe("setWorkOrderCoordinators", () => {
   const DETAIL = "/work-orders/wo-1";
   const flash = (message: string) =>

@@ -7,6 +7,7 @@ import {
 } from "@/lib/pagination";
 import { OFFICE_ROLES, WORK_ORDER_OWNER_ROLES } from "@/lib/domain/role";
 import { ACTIVE_TICKET_STATUSES } from "@/lib/domain/ticket-workflow";
+import type { DirectoryAccount } from "@/lib/domain/coordinator-match";
 import type { OwnedWork } from "@/lib/domain/team";
 import type { Profile, UserRole } from "@/lib/types";
 
@@ -57,6 +58,33 @@ export const profilesRepository = {
       full_name: row.full_name,
       role: row.role,
     }));
+  },
+
+  /**
+   * Every account with its login e-mail — the Team page's edit dialog shows it,
+   * and an edit checks names and e-mails against it before writing. Reads
+   * `account_directory()`, which the database restricts to the office: the
+   * signed-in admin's own session is enough, no service-role key. Read failures
+   * are reported rather than swallowed, so a duplicate check can fail closed.
+   */
+  async accounts(): Promise<{ accounts: DirectoryAccount[]; error: string | null }> {
+    const supabase = await createClient();
+    const reply = await supabase.rpc("account_directory").then(
+      (r) => r,
+      () => null,
+    );
+    if (!reply || reply.error) {
+      return { accounts: [], error: reply?.error.message ?? "The request did not complete" };
+    }
+    return {
+      accounts: (reply.data ?? []).map((a) => ({
+        id: a.id,
+        fullName: a.full_name,
+        email: a.email ?? null,
+        role: a.role,
+      })),
+      error: null,
+    };
   },
 
   /** Members a service ticket may be assigned to. */

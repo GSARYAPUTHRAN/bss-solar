@@ -14,6 +14,11 @@ import {
   parseRemarks,
   progressLockedReason,
 } from "@/lib/domain/cancellation";
+import {
+  checkIncentiveAmount,
+  derivedPaidOn,
+  planIncentiveInstalment,
+} from "@/lib/domain/incentives";
 import { deriveProjectStage } from "@/lib/domain/project";
 import {
   completionStamp,
@@ -27,6 +32,7 @@ import {
   hasUndatedCommissioning,
   incentiveChanged,
   parseFeasibilitySetting,
+  parseIncentiveInstalment,
   parseIncentiveSetting,
   UNDATED_COMMISSIONING_FEASIBILITY_ERROR,
   unpaidIncentives,
@@ -36,7 +42,12 @@ import { str, text } from "@/server/form";
 import { withFlash } from "@/lib/flash";
 import { formatCurrency, formatDate, todayISO } from "@/lib/format";
 import { fail, ok, type ActionResult } from "@/lib/result";
-import type { MilestoneStatus, Profile } from "@/lib/types";
+import type {
+  IncentivePayment,
+  MilestoneStatus,
+  Profile,
+  SaleCoordinator,
+} from "@/lib/types";
 
 /**
  * Project lifecycle. Everything that changes a project is office-only (RLS says
@@ -44,8 +55,9 @@ import type { MilestoneStatus, Profile } from "@/lib/types";
  *
  * The milestone and settings forms redirect (inline `?error=` banner, flash
  * toast). The dialogs and per-person forms — cancel/refund, reinstate, one
- * coordinator's incentive — return a result instead, so a refusal stays inside
- * the form with what was typed (the payments ledger works the same way).
+ * coordinator's incentive and its instalments — return a result instead, so a
+ * refusal stays inside the form with what was typed (the payments ledger works
+ * the same way).
  */
 
 /** `null` before the first submit. */
@@ -221,7 +233,8 @@ export async function advanceProject(formData: FormData) {
 
 /**
  * The KSEB feasibility date, the one project fact the office keeps here (each
- * coordinator's incentive has its own form — updateCoordinatorIncentive). A
+ * coordinator's incentive has its own forms — updateCoordinatorIncentive and
+ * its instalments). A
  * custom plan has no KSEB process, so no date.
  */
 export async function updateProjectSettings(formData: FormData) {
@@ -241,10 +254,47 @@ export async function updateProjectSettings(formData: FormData) {
   redirect(withFlash(back, "Project settings saved."));
 }
 
+/** The coordinator of the sale the form names, or why not. */
+function personOf(
+  project: ProjectBrief,
+  formData: FormData,
+): ActionResult<SaleCoordinator> {
+  const person = project.coordinators.find(
+    (c) => c.id === text(formData.get("coordinator_id")),
+  );
+  return person ? ok(person) : fail("That person is not a coordinator on this project.");
+}
+
 /**
- * One coordinator's incentive on a sale: amount, and when it was paid. Private
- * to that person and the office. The coordinator is told whenever theirs
- * changes — clearing it included ("Incentive removed").
+ * One recorded instalment of the sale and whose incentive it is, or why not. The
+ * form names the instalment alone; it is found among the sale's own, so one of
+ * another project cannot be changed through this one.
+ */
+function instalmentOf(
+  project: ProjectBrief,
+  formData: FormData,
+): ActionResult<{ person: SaleCoordinator; payment: IncentivePayment }> {
+  const id = text(formData.get("payment_id"));
+  for (const person of project.coordinators) {
+    const payment = person.incentive?.payments.find((p) => p.id === id);
+    if (payment) return ok({ person, payment });
+  }
+  return fail("That payment is not on this project — it may have been removed.");
+}
+
+function instalmentFields(formData: FormData) {
+  return parseIncentiveInstalment({
+    amount: str(formData.get("amount")),
+    paidOn: str(formData.get("paid_on")),
+    note: str(formData.get("note")),
+  });
+}
+
+/**
+ * One coordinator's AGREED incentive on a sale: the amount (empty removes it).
+ * What has been paid against it is recorded as instalments, and the amount can
+ * never go below that. Private to that person and the office. The coordinator is
+ * told whenever the amount changes — clearing it included ("Incentive removed").
  */
 export async function updateCoordinatorIncentive(
   _prev: ProjectFormState,
@@ -255,38 +305,165 @@ export async function updateCoordinatorIncentive(
   const project = await projectsRepository.brief(text(formData.get("project_id")));
   if (!project) return fail(PROJECT_GONE);
 
-  const person = project.coordinators.find(
-    (c) => c.id === text(formData.get("coordinator_id")),
-  );
-  if (!person) return fail("That person is not a coordinator on this project.");
+  const person = personOf(project, formData);
+  if (!person.ok) return person;
 
-  const parsed = parseIncentiveSetting(
-    { amount: str(formData.get("amount")), paidOn: str(formData.get("paid_on")) },
-    todayISO(),
-  );
+  const parsed = parseIncentiveSetting({ amount: str(formData.get("amount")) });
   if (!parsed.ok) return parsed;
+
+  // The database refuses the same, mid-race; this says it first, in rupees.
+  const incentive = person.data.incentive;
+  const floor = checkIncentiveAmount(parsed.data.amount, incentive?.paid ?? 0);
+  if (!floor.ok) return floor;
 
   const { error } = await projectsRepository.setCoordinatorIncentive(
     project.work_order_id,
-    person.id,
+    person.data.id,
     parsed.data,
   );
   if (error) return fail(error);
 
-  if (incentiveChanged(person.incentive ?? { amount: null, paid_on: null }, parsed.data)) {
+  if (incentiveChanged(incentive ?? { amount: null }, parsed.data)) {
     notify({
       type: "incentive.updated",
       actorId: actor.id,
-      coordinatorId: person.id,
+      coordinatorId: person.data.id,
       projectId: project.id,
       clientName: project.client_name,
       amount: parsed.data.amount,
-      paidOn: parsed.data.paid_on,
+      // The date the instalments now reach the amount (the database derives the same).
+      paidOn: derivedPaidOn(parsed.data.amount, incentive?.payments ?? []),
     });
   }
 
   revalidateProject(project.id);
-  return ok({ message: `Incentive saved for ${person.full_name}.` });
+  return ok({ message: `Incentive saved for ${person.data.full_name}.` });
+}
+
+/**
+ * Record one instalment paid to a coordinator against their agreed incentive.
+ * It needs the amount set first, is dated no later than today and — with the
+ * others — cannot exceed the agreed amount (`planIncentiveInstalment`, the
+ * database's own rules). Only that coordinator is told, never the person who
+ * recorded it.
+ */
+export async function recordIncentivePayment(
+  _prev: ProjectFormState,
+  formData: FormData,
+): Promise<ProjectFormState> {
+  const actor = await requireAdmin();
+
+  const project = await projectsRepository.brief(text(formData.get("project_id")));
+  if (!project) return fail(PROJECT_GONE);
+
+  const person = personOf(project, formData);
+  if (!person.ok) return person;
+
+  const input = instalmentFields(formData);
+  if (!input.ok) return input;
+
+  const incentive = person.data.incentive;
+  const plan = planIncentiveInstalment({
+    amount: incentive?.amount ?? null,
+    paid: incentive?.paid ?? 0,
+    instalment: input.data.amount,
+    paidOn: input.data.paidOn,
+    today: todayISO(),
+  });
+  if (!plan.ok) return plan;
+
+  const { error } = await projectsRepository.recordIncentivePayment(
+    project.work_order_id,
+    person.data.id,
+    { amount: input.data.amount, paid_on: input.data.paidOn, note: input.data.note },
+  );
+  if (error) return fail(error);
+
+  notify({
+    type: "incentive.paid",
+    actorId: actor.id,
+    coordinatorId: person.data.id,
+    projectId: project.id,
+    clientName: project.client_name,
+    amount: input.data.amount,
+    pending: plan.data.pendingAfter,
+  });
+
+  revalidateProject(project.id);
+  const { pendingAfter } = plan.data;
+  return ok({
+    message: `${formatCurrency(input.data.amount)} recorded for ${person.data.full_name} — ${
+      pendingAfter > 0 ? `${formatCurrency(pendingAfter)} still to pay.` : "fully paid."
+    }`,
+  });
+}
+
+/**
+ * Correct a recorded instalment's amount, date or note. It is checked the way a
+ * new one is, with the instalment's own old amount taken out of what counts as
+ * paid. The coordinator is not told again: nothing new was paid.
+ */
+export async function updateIncentivePayment(
+  _prev: ProjectFormState,
+  formData: FormData,
+): Promise<ProjectFormState> {
+  await requireAdmin();
+
+  const project = await projectsRepository.brief(text(formData.get("project_id")));
+  if (!project) return fail(PROJECT_GONE);
+
+  const found = instalmentOf(project, formData);
+  if (!found.ok) return found;
+  const { person, payment } = found.data;
+
+  const input = instalmentFields(formData);
+  if (!input.ok) return input;
+
+  const plan = planIncentiveInstalment({
+    amount: person.incentive?.amount ?? null,
+    paid: person.incentive?.paid ?? 0,
+    instalment: input.data.amount,
+    replacing: payment.amount,
+    paidOn: input.data.paidOn,
+    today: todayISO(),
+  });
+  if (!plan.ok) return plan;
+
+  const { error } = await projectsRepository.updateIncentivePayment(payment.id, {
+    amount: input.data.amount,
+    paid_on: input.data.paidOn,
+    note: input.data.note,
+  });
+  if (error) return fail(error);
+
+  revalidateProject(project.id);
+  return ok({ message: `Payment corrected for ${person.full_name}.` });
+}
+
+/**
+ * Remove a recorded instalment (a mistaken one): that much of the incentive is
+ * owed again. The agreed amount is untouched.
+ */
+export async function deleteIncentivePayment(
+  _prev: ProjectFormState,
+  formData: FormData,
+): Promise<ProjectFormState> {
+  await requireAdmin();
+
+  const project = await projectsRepository.brief(text(formData.get("project_id")));
+  if (!project) return fail(PROJECT_GONE);
+
+  const found = instalmentOf(project, formData);
+  if (!found.ok) return found;
+  const { person, payment } = found.data;
+
+  const { error } = await projectsRepository.deleteIncentivePayment(payment.id);
+  if (error) return fail(error);
+
+  revalidateProject(project.id);
+  return ok({
+    message: `${formatCurrency(payment.amount)} payment removed for ${person.full_name}.`,
+  });
 }
 
 /**
@@ -346,7 +523,7 @@ export async function setProjectCancellation(
   return ok({
     message: `Project marked ${parsed.data.cancellation}.${
       unpaid.count > 0
-        ? ` ${formatCurrency(unpaid.total)} of coordinator incentives is still unpaid — clear it if it is no longer due.`
+        ? ` ${formatCurrency(unpaid.total)} of coordinator incentives is still to pay — lower or clear it if it is no longer due.`
         : ""
     }`,
   });

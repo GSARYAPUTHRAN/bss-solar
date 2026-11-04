@@ -127,7 +127,7 @@ export function PaymentBadge({
   cancellation?: ProjectCancellation | null;
   className?: string;
 }) {
-  const { balanceDue, isSettled } = paymentSummary(source);
+  const { balanceDue, isSettled, writtenOff, received, totalCost } = paymentSummary(source);
 
   if (cancellation) {
     return (
@@ -138,6 +138,8 @@ export function PaymentBadge({
   }
 
   if (isSettled) {
+    // A balance the office gave up is closed, not collected: say which.
+    const writtenOffShort = writtenOff > 0 && received < totalCost;
     return (
       <Badge
         className={cn(
@@ -145,7 +147,7 @@ export function PaymentBadge({
           className,
         )}
       >
-        Paid in full
+        {writtenOffShort ? "Settled — written off" : "Paid in full"}
       </Badge>
     );
   }

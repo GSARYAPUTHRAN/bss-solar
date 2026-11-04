@@ -42,6 +42,9 @@ function project(over: Partial<ProjectDetail> = {}): ProjectDetail {
       plan_type: "solar",
       plant_capacity_kw: 3,
       advance_amount: 20000,
+      advance_method: null,
+      advance_paid_on: null,
+      advance_reference: null,
       total_cost: 195000,
       order_date: "2026-08-01",
       status: "approved",
@@ -145,23 +148,41 @@ describe("ProjectSummaryCard", () => {
     });
 
     it("a coordinator sees their own, labelled as such", () => {
-      renderCard(project(), { incentive: { view: "own", amount: 2750, paidOn: null } });
+      renderCard(project(), { incentive: { view: "own", amount: 2750, paid: 0 } });
       const row = valueOf("Your incentive");
       expect(row).toHaveTextContent(formatCurrency(2750));
       expect(row).toHaveTextContent("Pending");
     });
 
+    it("a coordinator part-way through being paid sees how much, and Partly paid", () => {
+      renderCard(project(), { incentive: { view: "own", amount: 6000, paid: 4000 } });
+      const row = valueOf("Your incentive");
+      expect(row).toHaveTextContent(formatCurrency(6000));
+      expect(row).toHaveTextContent(`${formatCurrency(4000)} paid`);
+      expect(row).toHaveTextContent("Partly paid");
+    });
+
     it("a coordinator with none set sees a dash", () => {
-      renderCard(project(), { incentive: { view: "own", amount: null, paidOn: null } });
+      renderCard(project(), { incentive: { view: "own", amount: null, paid: 0 } });
       expect(valueOf("Your incentive")).toHaveTextContent("—");
     });
 
     it("the office sees the whole sale's total and how far along it is", () => {
-      renderCard(project(), { incentive: { view: "sale", total: 5500, count: 2, unpaidCount: 1 } });
+      renderCard(project(), {
+        incentive: { view: "sale", total: 5500, paid: 2000, count: 2, unpaidCount: 1 },
+      });
       const row = valueOf("Incentives");
       expect(row).toHaveTextContent(formatCurrency(5500));
+      expect(row).toHaveTextContent(`${formatCurrency(2000)} paid`);
       expect(row).toHaveTextContent("Partly paid");
       expect(screen.queryByText("Your incentive")).not.toBeInTheDocument();
+    });
+
+    it("the office sees Pending until any money has been paid", () => {
+      renderCard(project(), {
+        incentive: { view: "sale", total: 5500, paid: 0, count: 2, unpaidCount: 2 },
+      });
+      expect(valueOf("Incentives")).toHaveTextContent("Pending");
     });
   });
 });

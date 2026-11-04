@@ -21,7 +21,10 @@ export interface DashboardMetrics {
   feasibilityExpiring: number;
   /** Σ renewal fees BSS has borne (₹1,000 per extra 30-day period). */
   feasibilityExtensionCost: number;
-  /** Σ coordinator incentives set but not yet paid (everyone on every sale). */
+  /**
+   * Σ coordinator incentives still to pay — what was agreed less the instalments
+   * paid against it, per person (everyone on every sale).
+   */
   incentivePending: number;
   /** Projects the office marked cancelled — out of the pipeline and the counts above. */
   cancelledProjects: number;

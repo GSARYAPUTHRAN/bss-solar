@@ -4,22 +4,34 @@ import type {
   CoordinatorIncentive,
   PlanType,
   ProjectCancellation,
-  SaleCoordinator,
 } from "@/lib/types";
 import { isIsoDate } from "./dates";
+import { summarizeIncentives, type IncentiveFigures } from "./incentives";
 import { feasibilityStatus } from "./kseb";
 import { round2 } from "./rounding";
 
 /**
  * The office-maintained facts on a project: when KSEB issued the feasibility,
- * and each coordinator's own incentive (amount + when it was paid). Validated
- * here so the server actions, their tests and any future caller share one set of
- * rules. The lifecycle helpers at the end (what cancelling a project touches,
- * what reinstating it would cost) are pure for the same reason.
+ * and each coordinator's own incentive (the agreed amount, and the dated
+ * instalments paid against it). Validated here so the server actions, their
+ * tests and any future caller share one set of rules; what an instalment may be
+ * (the cap, the date, the amount set first) is `planIncentiveInstalment` in
+ * ./incentives. The lifecycle helpers at the end (what cancelling a project
+ * touches, what reinstating it would cost) are pure for the same reason.
  */
+
+/**
+ * What the office types for one person's incentive: the agreed amount (null
+ * removes it). The paid date is never typed — the database derives it from the
+ * instalments.
+ */
+export type IncentiveSetting = Pick<CoordinatorIncentive, "amount">;
 
 /** The largest amount `numeric(12,2)` can hold. */
 export const MAX_INCENTIVE = 9_999_999_999.99;
+
+/** The longest note on an instalment ("Cheque 004211", "Second part"). */
+export const INCENTIVE_NOTE_MAX = 200;
 
 // Digits with an optional fraction; thousands separators, spaces and a rupee
 // sign are tolerated because that is how people type money.
@@ -36,17 +48,17 @@ function pastOrToday(
   return ok(value);
 }
 
-function incentiveAmount(value: string | null): ActionResult<number | null> {
-  if (value === null) return ok(null);
+/** Typed money as a number of rupees; `noun` starts the message ("Incentive …"). */
+function rupees(value: string, noun: string): ActionResult<number> {
   const cleaned = value.replace(/[,\s₹]/g, "");
   if (!AMOUNT.test(cleaned)) {
-    return fail("Incentive must be an amount in rupees, e.g. 2500.");
+    return fail(`${noun} must be an amount in rupees, e.g. 2500.`);
   }
   const n = Number(cleaned);
-  if (n < 0) return fail("Incentive cannot be negative.");
-  if (n > MAX_INCENTIVE) return fail("Incentive is too large.");
-  // Paise precision, as stored. `+ 0` folds -0 into 0.
-  return ok(Math.round(n * 100) / 100 + 0);
+  if (n < 0) return fail(`${noun} cannot be negative.`);
+  if (n > MAX_INCENTIVE) return fail(`${noun} is too large.`);
+  // Paise precision, as stored.
+  return ok(round2(n));
 }
 
 /**
@@ -62,37 +74,75 @@ export function parseFeasibilitySetting(
 }
 
 /**
- * One coordinator's incentive. An empty amount removes it; a paid-on date needs
- * an amount to have been paid and, like the amount's date, cannot be in the
- * future.
+ * One coordinator's agreed incentive. An empty amount removes it (the database
+ * and `checkIncentiveAmount` refuse that while instalments are recorded).
  */
-export function parseIncentiveSetting(
-  input: { amount: string | null; paidOn: string | null },
-  today: string,
-): ActionResult<CoordinatorIncentive> {
-  const amount = incentiveAmount(input.amount);
-  if (!amount.ok) return amount;
-
-  const paidOn = pastOrToday(input.paidOn, "Incentive paid-on date", today);
-  if (!paidOn.ok) return paidOn;
-  if (paidOn.data !== null && amount.data === null) {
-    return fail("Enter the incentive amount before marking it paid.");
-  }
-
-  return ok({ amount: amount.data, paid_on: paidOn.data });
+export function parseIncentiveSetting(input: {
+  amount: string | null;
+}): ActionResult<IncentiveSetting> {
+  if (input.amount === null) return ok({ amount: null });
+  const amount = rupees(input.amount, "Incentive");
+  return amount.ok ? ok({ amount: amount.data }) : amount;
 }
 
-/** The coordinator hears about a change to their incentive — and only that. */
+/** The coordinator hears about a change to their agreed amount — and only that. */
 export function incentiveChanged(
-  before: CoordinatorIncentive,
-  after: CoordinatorIncentive,
+  before: IncentiveSetting,
+  after: IncentiveSetting,
 ): boolean {
   // The database may hand a numeric back as a string.
   const amountOf = (v: number | string | null) => (v === null ? null : Number(v));
-  return (
-    amountOf(before.amount) !== amountOf(after.amount) ||
-    before.paid_on !== after.paid_on
+  return amountOf(before.amount) !== amountOf(after.amount);
+}
+
+/** One instalment as the office typed it, before the incentive's figures are known. */
+export interface IncentiveInstalmentInput {
+  amount: number;
+  /** As typed: `planIncentiveInstalment` decides whether it is a real, past date. */
+  paidOn: string;
+  note: string | null;
+}
+
+/**
+ * The text fields of an instalment form as numbers and strings. Only what can be
+ * read without knowing the incentive is checked here; the amount cap, the date
+ * and "set the amount first" are `planIncentiveInstalment`'s, so the app and the
+ * database rules are stated once.
+ */
+export function parseIncentiveInstalment(input: {
+  amount: string | null;
+  paidOn: string | null;
+  note: string | null;
+}): ActionResult<IncentiveInstalmentInput> {
+  if (input.amount === null) return fail("Enter the instalment amount.");
+  const amount = rupees(input.amount, "Instalment");
+  if (!amount.ok) return amount;
+  if (input.note !== null && input.note.length > INCENTIVE_NOTE_MAX) {
+    return fail(`The note can be at most ${INCENTIVE_NOTE_MAX} characters.`);
+  }
+  return ok({ amount: amount.data, paidOn: input.paidOn ?? "", note: input.note });
+}
+
+/**
+ * The database's refusals of an incentive write, worded for the person (they are
+ * the same rules `planIncentiveInstalment` and `checkIncentiveAmount` check
+ * first, so these are what a second office user's change a moment earlier
+ * looks like). Anything else is returned as it came.
+ */
+export function incentiveWriteMessage(message: string): string {
+  if (/^Set the incentive amount first/i.test(message)) {
+    return "Set the incentive amount first.";
+  }
+  if (/^Instalments exceed the incentive/i.test(message)) {
+    return "That would take the payments above the agreed incentive — it may have changed meanwhile; reload to see what has been paid.";
+  }
+  const floor = /^The incentive cannot be less than the (\d+(?:\.\d+)?) already paid/i.exec(
+    message,
   );
+  if (floor) {
+    return `The incentive cannot be less than the ${formatCurrency(Number(floor[1]))} already paid.`;
+  }
+  return message;
 }
 
 export const CUSTOM_PLAN_FEASIBILITY_ERROR = "A custom plan has no KSEB feasibility date.";
@@ -152,43 +202,22 @@ export function feasibilityDateRefusal(
  * amount, even zero, is a record; an empty row is not). Each person's is as
  * loaded: the office sees everyone's, so this is the office's view of the sale.
  */
-export function incentiveTotals(coordinators: readonly Pick<SaleCoordinator, "incentive">[]): {
-  /** How many people have an incentive set. */
-  count: number;
-  /** Their sum; null when nobody has one. */
-  total: number | null;
-  /** Of those, how many are not yet paid, and what they add up to. */
-  unpaidCount: number;
-  unpaidTotal: number;
-} {
-  let count = 0;
-  let total = 0;
-  let unpaidCount = 0;
-  let unpaidTotal = 0;
-  for (const { incentive } of coordinators) {
-    if (incentive?.amount == null) continue;
-    const amount = Number(incentive.amount);
-    count += 1;
-    total += amount;
-    if (incentive.paid_on === null) {
-      unpaidCount += 1;
-      unpaidTotal += amount;
-    }
-  }
-  return {
-    count,
-    total: count > 0 ? round2(total) : null,
-    unpaidCount,
-    unpaidTotal: round2(unpaidTotal),
-  };
+export function saleIncentives(
+  coordinators: readonly { incentive: IncentiveFigures | null }[],
+): ReturnType<typeof summarizeIncentives> {
+  return summarizeIncentives(coordinators.flatMap(({ incentive }) => incentive ?? []));
 }
 
-/** Incentives set but not yet paid — money the office still owes the team. */
+/**
+ * Incentives still to pay: how many people, and what is left of their agreed
+ * amounts (instalments already paid are not owed again) — money the office
+ * still owes the team.
+ */
 export function unpaidIncentives(
-  coordinators: readonly Pick<SaleCoordinator, "incentive">[],
+  coordinators: readonly { incentive: IncentiveFigures | null }[],
 ): { count: number; total: number } {
-  const { unpaidCount, unpaidTotal } = incentiveTotals(coordinators);
-  return { count: unpaidCount, total: unpaidTotal };
+  const { unpaidCount, pending } = saleIncentives(coordinators);
+  return { count: unpaidCount, total: pending };
 }
 
 /**
@@ -199,7 +228,7 @@ export function unpaidIncentives(
  * are NOT changed — which is why unpaid ones are called out.
  */
 export function cancellationImpact(input: {
-  /** advance + ledger instalments. */
+  /** What BSS holds now: advance + contract instalments − refunds. */
   received: number;
   balanceDue: number;
   feasibilityDate: string | null;
@@ -236,8 +265,8 @@ export function cancellationImpact(input: {
   if (input.unpaid.count > 0) {
     lines.push(
       input.unpaid.count === 1
-        ? `1 unpaid incentive (${formatCurrency(input.unpaid.total)}) stays owed — clear it under Coordinator incentives if it won't be paid`
-        : `${input.unpaid.count} unpaid incentives (${formatCurrency(input.unpaid.total)}) stay owed — clear them under Coordinator incentives if they won't be paid`,
+        ? `1 unpaid incentive (${formatCurrency(input.unpaid.total)} still to pay) stays owed — lower or clear it under Coordinator incentives if it won't be paid in full`
+        : `${input.unpaid.count} unpaid incentives (${formatCurrency(input.unpaid.total)} still to pay) stay owed — lower or clear them under Coordinator incentives if they won't be paid in full`,
     );
   }
   return lines;

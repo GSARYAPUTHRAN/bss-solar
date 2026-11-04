@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { addDays, diffDays, isIsoDate, istDateOf } from "./dates";
+import {
+  addDays,
+  diffDays,
+  isIsoDate,
+  istDateOf,
+  monthKey,
+  monthName,
+  parseDateText,
+} from "./dates";
 
 describe("isIsoDate", () => {
   it.each(["2026-01-01", "2026-12-31", "2024-02-29", "2000-02-29", "1999-12-31"])(
@@ -141,5 +149,105 @@ describe("istDateOf", () => {
 
   it("returns a strict ISO date", () => {
     expect(isIsoDate(istDateOf("2026-06-15T10:00:00Z"))).toBe(true);
+  });
+});
+
+describe("parseDateText — dates are day first", () => {
+  const ok = (iso: string, dayFirst: boolean) => ({ ok: true, iso, dayFirst });
+
+  it("keeps ISO as it is, and says it was not read day first", () => {
+    expect(parseDateText("2025-02-13")).toEqual(ok("2025-02-13", false));
+    expect(parseDateText("  2025-02-13  ")).toEqual(ok("2025-02-13", false));
+  });
+
+  it.each([
+    ["13/02/2025", "2025-02-13"],
+    ["13-02-2025", "2025-02-13"],
+    ["13.02.2025", "2025-02-13"],
+    ["3/2/2025", "2025-02-03"],
+    ["03/02/2025", "2025-02-03"],
+    ["13/02/25", "2025-02-13"],
+    ["3/2/25", "2025-02-03"],
+    ["  13/02/2025 ", "2025-02-13"],
+  ])("reads %s as %s", (written, iso) => {
+    expect(parseDateText(written)).toEqual(ok(iso, true));
+  });
+
+  // The clerk's Excel (US locale) shows 4 February as 04-02-25: it must still
+  // be 4 February, never 2 April.
+  it("never reads a date month first", () => {
+    expect(parseDateText("04/02/2025")).toEqual(ok("2025-02-04", true));
+    expect(parseDateText("04-02-25")).toEqual(ok("2025-02-04", true));
+    expect(parseDateText("02/04/2025")).toEqual(ok("2025-04-02", true));
+  });
+
+  it("puts a two-digit year of 00-69 in the 2000s and 70-99 in the 1900s", () => {
+    expect(parseDateText("01/01/00")).toEqual(ok("2000-01-01", true));
+    expect(parseDateText("01/01/69")).toEqual(ok("2069-01-01", true));
+    expect(parseDateText("01/01/70")).toEqual(ok("1970-01-01", true));
+    expect(parseDateText("31/12/99")).toEqual(ok("1999-12-31", true));
+  });
+
+  it("knows leap days in either shape", () => {
+    expect(parseDateText("29/02/2024")).toEqual(ok("2024-02-29", true));
+    expect(parseDateText("29/02/24")).toEqual(ok("2024-02-29", true));
+    expect(parseDateText("2024-02-29")).toEqual(ok("2024-02-29", false));
+  });
+
+  it.each(["31/04/2025", "29/02/2025", "00/01/2025", "01/00/2025", "32/01/2025", "13/13/2025"])(
+    "refuses %s as a day that does not exist",
+    (written) => {
+      expect(parseDateText(written)).toMatchObject({ ok: false, problem: "not_real" });
+    },
+  );
+
+  it("refuses an ISO-shaped date that does not exist", () => {
+    expect(parseDateText("2025-02-30")).toEqual({
+      ok: false,
+      problem: "not_real",
+      swapped: null,
+    });
+  });
+
+  it("offers the swapped reading as a question when only that one is a real date", () => {
+    // 02/13/2025 is no day-first date; swapped it is 13 February.
+    expect(parseDateText("02/13/2025")).toEqual({
+      ok: false,
+      problem: "not_real",
+      swapped: "2025-02-13",
+    });
+    expect(parseDateText("31/04/2025")).toMatchObject({ swapped: null });
+  });
+
+  it.each([
+    "",
+    "   ",
+    "tomorrow",
+    "2025/02/13",
+    "2025-2-13",
+    "13/02-2025",
+    "13-02.2025",
+    "13/2",
+    "13/02/202",
+    "13/02/20255",
+    "130/02/2025",
+    "13/02/2025 10:00",
+    "13/02/2025+14/02/2025",
+    "１３/02/2025",
+  ])("cannot read %j", (written) => {
+    expect(parseDateText(written)).toEqual({ ok: false, problem: "unreadable", swapped: null });
+  });
+});
+
+describe("monthKey / monthName", () => {
+  it("takes the calendar month of an ISO date", () => {
+    expect(monthKey("2025-02-13")).toBe("2025-02");
+    expect(monthKey("2025-12-01")).toBe("2025-12");
+  });
+
+  it("names a month in English", () => {
+    expect(monthName("2025-02")).toBe("February 2025");
+    expect(monthName("2024-12")).toBe("December 2024");
+    expect(monthName("2025-01")).toBe("January 2025");
   });
 });

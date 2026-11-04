@@ -69,7 +69,7 @@ describe("CancellationDialog — cancel or refund", () => {
       `${formatCurrency(120000)} collected stays in the ledger`,
       `${formatCurrency(75000)} balance is no longer counted as outstanding`,
       `The feasibility clock stops (${formatCurrency(1000)} of renewals already borne stays a cost)`,
-      `2 unpaid incentives (${formatCurrency(5500)}) stay owed — clear them under Coordinator incentives if they won't be paid`,
+      `2 unpaid incentives (${formatCurrency(5500)} still to pay) stay owed — lower or clear them under Coordinator incentives if they won't be paid in full`,
     ]) {
       expect(within(dialog).getByText(line)).toBeInTheDocument();
     }

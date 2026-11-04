@@ -7,6 +7,7 @@ import {
   type PageParams,
   type PageResult,
 } from "@/lib/pagination";
+import type { AdvanceDetails } from "@/lib/domain/advance";
 import { normalizeCoordinatorIds } from "@/lib/domain/coordinators";
 import { isFinancingType } from "@/lib/domain/payment";
 import { isPlanFilter } from "@/lib/domain/project-list";
@@ -40,7 +41,8 @@ const WO_SORT_COLUMNS = new Set([
  * embed would be ambiguous (PGRST201).
  */
 const SELECT = `id, coordinator_id, client_name, client_phone, address,
-  plan_type, plant_capacity, plant_capacity_kw, advance_amount, total_cost, order_date,
+  plan_type, plant_capacity, plant_capacity_kw, advance_amount, advance_method,
+  advance_paid_on, advance_reference, total_cost, order_date,
   status, consumer_number, notes, kseb_section, financing_type, loan_bank_name,
   created_at, updated_at,
   coordinators:work_order_coordinators!work_order_coordinators_work_order_id_fkey(
@@ -122,7 +124,11 @@ export interface WorkOrderDetailsInput {
   loan_bank_name: string | null;
 }
 
-export interface WorkOrderInput extends WorkOrderDetailsInput {
+/**
+ * Every column the contract-terms lock covers once the order is reviewed: the
+ * advance and how it was paid (`AdvanceDetails`) go together with the total.
+ */
+export interface WorkOrderInput extends WorkOrderDetailsInput, AdvanceDetails {
   /** The first coordinator; the rest are added with `setCoordinators`. */
   coordinator_id: string;
   client_name: string;
@@ -241,18 +247,25 @@ export const workOrdersRepository = {
       return query;
     };
 
+    // Typed with `created_at` too, so the tie-break below can tell it apart.
     const sortCol = WO_SORT_COLUMNS.has(params.sort ?? "")
-      ? (params.sort as "order_date")
+      ? (params.sort as "order_date" | "created_at")
       : "order_date";
     const { rows, total } = await fetchCountedPage(
       {
-        rows: () =>
-          filtered(false)
-            .order(sortCol, { ascending: params.dir === "asc" })
-            // Unique last: an import's rows share one created_at, so the sort key
-            // alone ties and pages overlap or skip rows.
+        rows: () => {
+          const sorted = filtered(false).order(sortCol, { ascending: params.dir === "asc" });
+          // Orders of the same date (and sales of the same name or total) show the
+          // newest first, so a work order just created is on top, not lost among
+          // today's. An import's rows share one created_at, so `id` goes last: a
+          // unique key keeps pages from overlapping or skipping rows.
+          return (sortCol === "created_at"
+            ? sorted
+            : sorted.order("created_at", { ascending: false })
+          )
             .order("id", { ascending: true })
-            .range(from, to),
+            .range(from, to);
+        },
         countOnly: () => filtered(true),
       },
       "work orders",
@@ -273,6 +286,21 @@ export const workOrdersRepository = {
       .eq("id", id)
       .maybeSingle();
     return data ? mapWorkOrder(data as Record<string, unknown>) : null;
+  },
+
+  /**
+   * How and when the booking advance was paid — for a page that already has the
+   * amount and only needs this (the project's payments ledger). Null when the
+   * order is not visible to the caller.
+   */
+  async advanceDetails(id: string): Promise<AdvanceDetails | null> {
+    const supabase = await createClient();
+    const { data } = await supabase
+      .from("work_orders")
+      .select("advance_method, advance_paid_on, advance_reference")
+      .eq("id", id)
+      .maybeSingle();
+    return data ?? null;
   },
 
   /** Insert and return the new id (notifications link to it). */

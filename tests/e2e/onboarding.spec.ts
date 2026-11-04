@@ -155,7 +155,9 @@ test("admin bulk imports projects with staged payments, KSEB and incentive colum
     await expect(page.getByRole("button", { name: /^2 failed$/i })).toBeVisible();
 
     await expect(
-      page.getByText(/Imported at Panel Installation · 4 payments recorded · Rahul Menon/i),
+      page.getByText(
+        /Imported at Panel Installation · 4 payments recorded · Incentive ₹5,000(\.00)? \(unpaid\) · Rahul Menon/i,
+      ),
     ).toBeVisible();
     await expect(
       page.getByText(/Commissioned · ₹50,000(\.00)? outstanding · 2 payments recorded · Priya Suresh/i),
@@ -546,4 +548,241 @@ test("a column given under both its old and new name is refused", async ({ page 
   await expect(
     page.getByText(/"coordinator_email" and "coordinator" are the same column — keep one/i),
   ).toBeVisible();
+});
+
+test("Check file reads day-first dates, says so, and warns about a date that looks swapped", async ({
+  page,
+}) => {
+  await openOnboardingAsAdmin(page);
+
+  const stamp = Date.now();
+  const columns = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "order_date",
+    "coordinator",
+    "payment_1_amount",
+    "payment_1_date",
+  ];
+  const base = { plant_capacity: "3kW", total_cost: "195000", coordinator: "Rahul Menon" };
+  // A February sheet as the clerk's Excel leaves it: day first, and the 9th of February that
+  // turned into 09/04/2025 — April, read day first.
+  const csv = [
+    columns.join(","),
+    line(columns, {
+      ...base,
+      client_name: `E2E Day ${stamp} 1`,
+      order_date: "04/02/2025",
+      payment_1_amount: "50000",
+      payment_1_date: "13-02-25",
+    }),
+    line(columns, { ...base, client_name: `E2E Day ${stamp} 2`, order_date: "05/02/2025" }),
+    line(columns, { ...base, client_name: `E2E Day ${stamp} 3`, order_date: "06.02.2025" }),
+    line(columns, { ...base, client_name: `E2E Day ${stamp} 4`, order_date: "2025-02-07" }),
+    line(columns, { ...base, client_name: `E2E Day ${stamp} 5`, order_date: "09/04/2025" }),
+  ].join("\n");
+
+  await checkCsv(page, csv);
+
+  await expect(page.getByRole("button", { name: /^5 ready$/i })).toBeVisible();
+
+  await test.step("the file's notes say the dates were read day first, never month first", async () => {
+    const notes = page.getByRole("region", { name: /how the file was read/i });
+    await expect(notes).toContainText(/5 date cells were written day first \(in 4 rows\)/);
+    await expect(notes).toContainText(/"04\/02\/2025" is 04 Feb 2025/);
+    await expect(notes).toContainText(/never read month first/i);
+  });
+
+  await test.step("the warnings name the order date that is in another month", async () => {
+    const worth = page.getByRole("region", { name: /worth a look/i });
+    await expect(worth).toContainText(
+      /4 of 5 order dates are in February 2025, but row 6 is in April 2025 — may be a day\/month mix-up/,
+    );
+  });
+
+  await test.step("the row with a payment counts it, its dates read without complaint", async () => {
+    await expect(
+      page.getByText(/^Ready · At Site Feasibility Survey · 1 payment to record · Rahul Menon$/),
+    ).toBeVisible();
+  });
+});
+
+test("Check file refuses every row of the downloaded template, as examples to delete", async ({
+  page,
+}) => {
+  await openOnboardingAsAdmin(page);
+
+  const downloading = page.waitForEvent("download");
+  await page.getByRole("button", { name: /download template/i }).click();
+  const template = (await readFile(await (await downloading).path(), "utf8")).replace(/^﻿/, "");
+
+  await checkCsv(page, template);
+
+  await expect(page.getByRole("button", { name: /^6 failed$/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^0 ready$/i })).toBeVisible();
+  await expect(
+    page.getByText("this is one of the template's example rows — delete it"),
+  ).toHaveCount(6);
+  // Nothing about their coordinators or anything else: they are deleted, not repaired.
+  await expect(page.getByRole("region", { name: /coordinator matches/i })).toHaveCount(0);
+});
+
+test("an overpaid row is told to record a refund or a write-off", async ({ page }) => {
+  await openOnboardingAsAdmin(page);
+
+  const columns = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "order_date",
+    "coordinator",
+    "advance_amount",
+    "payment_1_amount",
+    "payment_1_date",
+  ];
+  await checkCsv(
+    page,
+    [
+      columns.join(","),
+      line(columns, {
+        client_name: `E2E Overpaid ${Date.now()}`,
+        plant_capacity: "3kW",
+        total_cost: "195000",
+        order_date: "2025-01-10",
+        coordinator: "Rahul Menon",
+        advance_amount: "20000",
+        payment_1_amount: "190000",
+        payment_1_date: "2025-01-20",
+      }),
+    ].join("\n"),
+  );
+
+  await expect(page.getByRole("button", { name: /^1 failed$/i })).toBeVisible();
+  await expect(
+    page.getByText(/If money was returned, record it as a refund \(payment_N_purpose = refund\)/),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      /if a few rupees are simply not coming, record a write-off \(payment_N_purpose = write_off/,
+    ),
+  ).toBeVisible();
+});
+
+test("Import writes a shared sale's incentive instalments, a write-off, a refund and the advance's details", async ({
+  page,
+}) => {
+  await openOnboardingAsAdmin(page);
+
+  const stamp = Date.now();
+  const sharedClient = `E2E Ledger Shared ${stamp}`;
+  const refundClient = `E2E Ledger Refund ${stamp}`;
+  const columns = [
+    "client_name",
+    "plant_capacity",
+    "total_cost",
+    "advance_amount",
+    "advance_method",
+    "advance_date",
+    "advance_reference",
+    "order_date",
+    "coordinator",
+    "consumer_number",
+    "is_completed",
+    "commissioned_on",
+    "incentive_1_coordinator",
+    "incentive_1_amount",
+    "incentive_1_date",
+    "incentive_2_coordinator",
+    "incentive_2_amount",
+    "incentive_2_date",
+    "incentive_3_coordinator",
+    "incentive_3_amount",
+    "incentive_3_date",
+    "payment_1_amount",
+    "payment_1_date",
+    "payment_1_method",
+    "payment_1_purpose",
+    "payment_1_reference",
+    "payment_2_amount",
+    "payment_2_date",
+    "payment_2_purpose",
+    "payment_2_reference",
+  ];
+  const csv = [
+    columns.join(","),
+    // Shared by Rahul and Priya: Rahul's agreed ₹15,000 is ₹12,000 paid and ₹3,000 still to
+    // pay; Priya's ₹8,000 is paid. The customer was ₹800 short and it was written off.
+    line(columns, {
+      client_name: sharedClient,
+      plant_capacity: "3kW+2kW",
+      total_cost: "200000",
+      advance_amount: "50000",
+      advance_method: "UPI",
+      advance_date: "04/02/2025",
+      advance_reference: "UPI 440011",
+      order_date: "04/02/2025",
+      coordinator: "Rahul Menon + Priya Suresh",
+      consumer_number: `${stamp}7`,
+      is_completed: "yes",
+      commissioned_on: "20/03/2025",
+      incentive_1_coordinator: "Rahul Menon",
+      incentive_1_amount: "12000",
+      incentive_1_date: "25/03/2025",
+      incentive_2_coordinator: "Rahul Menon",
+      incentive_2_amount: "3000",
+      incentive_3_coordinator: "Priya Suresh",
+      incentive_3_amount: "8000",
+      incentive_3_date: "25/03/2025",
+      payment_1_amount: "149200",
+      payment_1_date: "20/03/2025",
+      payment_1_method: "bank transfer",
+      payment_2_amount: "800",
+      payment_2_date: "20/03/2025",
+      payment_2_purpose: "write_off",
+      payment_2_reference: "Short at handover, waived",
+    }),
+    // Paid in full at booking, then ₹10,000 sent back: ₹10,000 is due again.
+    line(columns, {
+      client_name: refundClient,
+      plant_capacity: "2kW",
+      total_cost: "100000",
+      advance_amount: "100000",
+      advance_method: "cash",
+      order_date: "01/02/2025",
+      coordinator: "Arun Krishnan",
+      consumer_number: `${stamp}8`,
+      is_completed: "yes",
+      commissioned_on: "20/02/2025",
+      payment_1_amount: "10000",
+      payment_1_date: "10/02/2025",
+      payment_1_method: "bank transfer",
+      payment_1_purpose: "refund",
+    }),
+  ].join("\n");
+
+  await importCsv(page, csv);
+
+  await expect(page.getByRole("button", { name: /^2 imported$/i })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^0 failed$/i })).toBeVisible();
+
+  await test.step("the results say what was written, in the office's terms", async () => {
+    await expect(
+      page.getByText(
+        /Commissioned · settled · 1 payment recorded · ₹800(\.00)? written off · Incentive ₹23,000(\.00)? \(₹20,000(\.00)? paid\) · Rahul Menon & Priya Suresh/,
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        /Commissioned · ₹10,000(\.00)? outstanding · ₹10,000(\.00)? refund recorded · Arun Krishnan/,
+      ),
+    ).toBeVisible();
+  });
+
+  await test.step("the capacity written as a sum was stored as its total, and said so", async () => {
+    await expect(page.getByText(/plant_capacity "3kW\+2kW" read as 5 kW/)).toBeVisible();
+    const rows = await workOrdersMatching(page, sharedClient);
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toContainText("5kW");
+  });
 });

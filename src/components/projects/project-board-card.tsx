@@ -9,6 +9,7 @@ import {
   PlanBadge,
 } from "@/components/status-badges";
 import { SaleIncentiveLine } from "./incentive-badge";
+import { amount } from "@/lib/domain/payment";
 import { completionLabel } from "@/lib/domain/plan";
 import { listRowFeasibility, listRowProgress } from "@/lib/domain/project-list";
 import { teamNote } from "@/lib/domain/work-order-list";
@@ -65,6 +66,7 @@ export function ProjectBoardCard({
         {team && <p className="break-words text-xs text-muted-foreground">{team}</p>}
         <SaleIncentiveLine
           total={p.incentive_total}
+          paid={amount(p.incentive_paid)}
           count={p.incentive_count}
           unpaidCount={p.incentive_unpaid_count}
           label={showCoordinator ? "Incentive" : "Your incentive"}

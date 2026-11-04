@@ -7,6 +7,8 @@ import userEvent from "@testing-library/user-event";
 import { formatCurrency } from "@/lib/format";
 import {
   ARUN,
+  PAID_INCENTIVE,
+  PART_PAID_INCENTIVE,
   PENDING_INCENTIVE,
   PRIYA,
   RAHUL,
@@ -88,6 +90,7 @@ describe("ProjectsTable — phone summary", () => {
           id: "20000000-0000-0000-0000-000000000002",
           client_name: "Meera Nair",
           incentive_total: 8000,
+          incentive_paid: 8000,
           incentive_unpaid: 0,
           incentive_count: 1,
           incentive_unpaid_count: 0,
@@ -116,6 +119,7 @@ describe("ProjectsTable — phone summary", () => {
       [
         sharedSale({
           incentive_total: 12000,
+          incentive_paid: 8000,
           incentive_unpaid: 4000,
           incentive_count: 2,
           incentive_unpaid_count: 1,
@@ -127,6 +131,14 @@ describe("ProjectsTable — phone summary", () => {
     );
     const cell = clientCell("Anand Kumar");
     expect(within(cell).getByText(formatCurrency(12000))).toBeInTheDocument();
+    expect(within(cell).getByText("Partly paid")).toBeInTheDocument();
+  });
+
+  it("says how much has been paid when an incentive is part-way through its instalments", () => {
+    renderTable([projectListRow({ ...PART_PAID_INCENTIVE })], { isAdmin: true });
+    const cell = clientCell("Anand Kumar");
+    expect(cell).toHaveTextContent(formatCurrency(6000));
+    expect(cell).toHaveTextContent(`${formatCurrency(4000)} paid`);
     expect(within(cell).getByText("Partly paid")).toBeInTheDocument();
   });
 
@@ -197,6 +209,14 @@ describe("ProjectsTable — columns", () => {
     const cell = cellUnder("Anand Kumar", "Incentive");
     expect(cell).toHaveTextContent(formatCurrency(12000));
     expect(cell).toHaveTextContent("Pending");
+  });
+
+  it("shows agreed and paid in the Incentive column, with the state", () => {
+    renderTable([projectListRow({ ...PART_PAID_INCENTIVE })]);
+    const cell = cellUnder("Anand Kumar", "Incentive");
+    expect(cell).toHaveTextContent(formatCurrency(6000));
+    expect(cell).toHaveTextContent(`${formatCurrency(4000)} paid`);
+    expect(cell).toHaveTextContent("Partly paid");
   });
 
   it("does not read the deprecated single-incentive columns", () => {
@@ -466,6 +486,7 @@ describe("ProjectsTable — filters", () => {
           id: "3",
           client_name: "Partly Sale",
           incentive_total: 9000,
+          incentive_paid: 5000,
           incentive_unpaid: 4000,
           incentive_count: 2,
           incentive_unpaid_count: 1,
@@ -474,6 +495,7 @@ describe("ProjectsTable — filters", () => {
           id: "4",
           client_name: "Paid Sale",
           incentive_total: 3000,
+          incentive_paid: 3000,
           incentive_count: 1,
           incentive_unpaid_count: 0,
         }),
@@ -485,6 +507,23 @@ describe("ProjectsTable — filters", () => {
     expect(screen.queryByText("Partly Sale")).toBeInTheDocument();
     expect(screen.queryByText("No Incentive Sale")).toBeNull();
     expect(screen.queryByText("Paid Sale")).toBeNull();
+  });
+
+  it("finds the sales whose incentive is part-paid — money in, something still owed", async () => {
+    renderTable(
+      [
+        projectListRow({ client_name: "No Incentive Sale" }),
+        projectListRow({ id: "2", client_name: "Pending Sale", ...PENDING_INCENTIVE }),
+        projectListRow({ id: "3", client_name: "Instalments Sale", ...PART_PAID_INCENTIVE }),
+        projectListRow({ id: "4", client_name: "Paid Sale", ...PAID_INCENTIVE }),
+      ],
+      { isAdmin: true },
+    );
+    await pickFilter("Any incentive", "Incentive partly paid");
+    expect(screen.queryByText("Instalments Sale")).toBeInTheDocument();
+    expect(screen.queryByText("Pending Sale")).toBeNull();
+    expect(screen.queryByText("Paid Sale")).toBeNull();
+    expect(screen.queryByText("No Incentive Sale")).toBeNull();
   });
 });
 

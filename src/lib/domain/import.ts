@@ -1,5 +1,5 @@
 import { parseCsvRecords } from "@/lib/csv";
-import { formatCurrency, formatCurrencyWhole } from "@/lib/format";
+import { formatCurrency, formatCurrencyWhole, formatDate } from "@/lib/format";
 import { fail, ok, type ActionResult } from "@/lib/result";
 import type {
   FinancingType,
@@ -9,7 +9,7 @@ import type {
   ProjectCancellation,
   ProjectStage,
 } from "@/lib/types";
-import { capacityProblem } from "./capacity";
+import { capacityProblem, capacitySum, formatKw } from "./capacity";
 import { CANCELLATION_REMARKS_MAX } from "./cancellation";
 import {
   analyzeCoordinatorCell,
@@ -18,30 +18,37 @@ import {
   type CoordinatorReference,
   type DirectoryAccount,
 } from "./coordinator-match";
+import { monthKey, monthName } from "./dates";
 import {
+  advanceMethodCell,
   booleanCell,
   cancellationCell,
-  dateCell,
+  dateCellRead,
   financingCell,
   identifierCell,
   moneyCell,
+  moneyPartsCell,
   paymentMethodCell,
   paymentPurposeCell,
   planTypeCell,
   stageCell,
   textCell,
   type Cell,
+  type DateRead,
 } from "./import-cells";
-import { ledgerTotals, paymentSummary } from "./payment";
+import { TEMPLATE_ROWS } from "./import-template-rows";
+import { ledgerProblems, ledgerTotals, paymentSummary, withLedger } from "./payment";
+import { PAYMENT_LIMITS } from "./payment-limits";
 import { HANDOVER_STAGE, PLAN_LABEL_MAX } from "./plan";
 import { WORK_ORDER_OWNER_ROLES } from "./role";
+import { round2 } from "./rounding";
 import { closestMatch } from "./suggest";
 
 /**
  * The onboarding import: CSV columns, header validation and row rules.
  *
  * Everything here is pure. The server action feeds the rows this module
- * accepts to the `import_projects` RPC (migration 20261022120300), whose input
+ * accepts to the `import_projects` RPC (migration 20261104120200), whose input
  * shape `ImportRow` mirrors field for field. The database makes the checks only
  * it can (is the consumer number already there, does an id still belong to a
  * coordinator); this module makes the ones a person can fix in the sheet — who
@@ -51,7 +58,8 @@ import { closestMatch } from "./suggest";
  *
  * The import never invents data: a coordinator is never guessed from a close
  * spelling, a date the sheet leaves out stays unknown, and a blank coordinator
- * cell is a problem unless the office chose a default for it.
+ * cell is a problem unless the office chose a default for it. Dates are read
+ * day first, never month first.
  */
 
 /** Rows per upload; larger sheets are split into several files. */
@@ -63,13 +71,19 @@ export const REQUIRED_IMPORT_HEADERS = [
   "total_cost",
 ] as const;
 
-/** The fixed columns, in template order. Payments follow as `payment_<N>_*`. */
+/**
+ * The fixed columns, in template order. The incentive instalments follow as
+ * `incentive_<N>_*` and the ledger entries as `payment_<N>_*`.
+ */
 export const IMPORT_HEADERS = [
   ...REQUIRED_IMPORT_HEADERS,
   // work order
   "client_phone",
   "address",
   "advance_amount",
+  "advance_method",
+  "advance_date",
+  "advance_reference",
   "order_date",
   "coordinator",
   "plan_type",
@@ -104,7 +118,14 @@ export const IMPORT_HEADER_ALIASES: Readonly<Record<string, ImportHeader>> = {
 };
 
 /** One payment is a group of these columns: `payment_<N>_<field>`, N ≥ 1. */
-export const PAYMENT_FIELDS = ["amount", "date", "method", "purpose", "reference"] as const;
+export const PAYMENT_FIELDS = [
+  "amount",
+  "date",
+  "method",
+  "purpose",
+  "reference",
+  "paid_by_office",
+] as const;
 export type PaymentField = (typeof PAYMENT_FIELDS)[number];
 export type PaymentColumn = `payment_${number}_${PaymentField}`;
 
@@ -113,6 +134,21 @@ export function paymentColumn(n: number, field: PaymentField): PaymentColumn {
 }
 
 const PAYMENT_COLUMN = new RegExp(`^payment_([1-9]\\d*)_(${PAYMENT_FIELDS.join("|")})$`);
+
+/**
+ * One incentive instalment is a group of these columns:
+ * `incentive_<N>_<field>`, N ≥ 1. A group with a date is PAID; one without is a
+ * still-unpaid part of that coordinator's agreed incentive.
+ */
+export const INCENTIVE_FIELDS = ["coordinator", "amount", "date"] as const;
+export type IncentiveField = (typeof INCENTIVE_FIELDS)[number];
+export type IncentiveColumn = `incentive_${number}_${IncentiveField}`;
+
+export function incentiveColumn(n: number, field: IncentiveField): IncentiveColumn {
+  return `incentive_${n}_${field}`;
+}
+
+const INCENTIVE_COLUMN = new RegExp(`^incentive_([1-9]\\d*)_(${INCENTIVE_FIELDS.join("|")})$`);
 
 /**
  * The failed-rows download appends this column. The importer ignores it, so a
@@ -147,6 +183,9 @@ export const IMPORT_COLUMN_GROUPS: readonly {
       "client_phone",
       "address",
       "advance_amount",
+      "advance_method",
+      "advance_date",
+      "advance_reference",
       "order_date",
       "coordinator",
       "plan_type",
@@ -167,7 +206,10 @@ export const IMPORT_COLUMN_GROUPS: readonly {
     title: "KSEB & feasibility",
     columns: ["consumer_number", "kseb_section", "feasibility_date"],
   },
-  { title: "Incentive", columns: ["coordinator_incentive", "incentive_paid_on"] },
+  {
+    title: "Incentive — one coordinator",
+    columns: ["coordinator_incentive", "incentive_paid_on"],
+  },
 ];
 
 // --- Header -------------------------------------------------------------------
@@ -177,6 +219,8 @@ export interface ImportLayout {
   headers: string[];
   /** Payment group numbers present, ascending. */
   paymentSlots: number[];
+  /** Incentive group numbers present, ascending. */
+  incentiveSlots: number[];
   /** Each fixed column of the file, by the name it was uploaded under, and the column it is. */
   canonical: Record<string, ImportHeader>;
 }
@@ -195,19 +239,21 @@ function quoteAnd(names: readonly string[]): string {
     : `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
 }
 
-/** "did you mean" candidates: fixed columns + the payment group the name hints at. */
+/** "did you mean" candidates: fixed columns + the payment and incentive groups the name hints at. */
 function suggestColumn(name: string): string | null {
   const n = Number(/\d+/.exec(name)?.[0] ?? 1) || 1;
   return closestMatch(name, [
     ...IMPORT_HEADERS,
     ...PAYMENT_FIELDS.map((f) => paymentColumn(n, f)),
+    ...INCENTIVE_FIELDS.map((f) => incentiveColumn(n, f)),
   ]);
 }
 
 /**
  * Check the header row before any data row: unknown, duplicated, renamed or
- * missing columns, one column under two names, and payment groups without both
- * an amount and a date column. Every problem is reported in one message.
+ * missing columns, one column under two names, payment groups without both an
+ * amount and a date column, and incentive groups without an amount column.
+ * Every problem is reported in one message.
  */
 export function validateImportHeaders(headers: readonly string[]): ActionResult<ImportLayout> {
   const named = headers.filter(Boolean);
@@ -231,6 +277,7 @@ export function validateImportHeaders(headers: readonly string[]): ActionResult<
 
   const canonical: Record<string, ImportHeader> = {};
   const slots = new Map<number, Set<string>>();
+  const incentiveSlots = new Map<number, Set<string>>();
   const unknown: string[] = [];
   for (const h of named) {
     if (FIXED_COLUMNS.has(h)) {
@@ -241,9 +288,13 @@ export function validateImportHeaders(headers: readonly string[]): ActionResult<
       continue;
     } else {
       const m = PAYMENT_COLUMN.exec(h);
+      const i = INCENTIVE_COLUMN.exec(h);
       if (m) {
         const n = Number(m[1]);
         slots.set(n, (slots.get(n) ?? new Set()).add(m[2]));
+      } else if (i) {
+        const n = Number(i[1]);
+        incentiveSlots.set(n, (incentiveSlots.get(n) ?? new Set()).add(i[2]));
       } else {
         unknown.push(h);
       }
@@ -289,10 +340,22 @@ export function validateImportHeaders(headers: readonly string[]): ActionResult<
     }
   }
 
+  const incentiveGroups = [...incentiveSlots].sort(([a], [b]) => a - b);
+  for (const [n, fields] of incentiveGroups) {
+    if (!fields.has("amount")) {
+      problems.push(`Incentive ${n} needs an "${incentiveColumn(n, "amount")}" column.`);
+    }
+  }
+
   if (problems.length) {
     return fail(`The header row needs fixing. ${problems.join(" ")}`);
   }
-  return ok({ headers: [...headers], paymentSlots: groups.map(([n]) => n), canonical });
+  return ok({
+    headers: [...headers],
+    paymentSlots: groups.map(([n]) => n),
+    incentiveSlots: incentiveGroups.map(([n]) => n),
+    canonical,
+  });
 }
 
 /** The name the sheet used for each fixed column that has one, for messages. */
@@ -313,15 +376,30 @@ export type ImportPayment = {
   paid_on: string;
   method: PaymentMethod;
   purpose: PaymentPurpose;
+  /** `kseb_fees` only: the office paid KSEB, not the customer. */
+  paid_by_office: boolean;
   reference: string | null;
+  /** A write-off's reason (the database requires one); null for every other entry. */
   notes: string | null;
 };
 
-/** One coordinator's incentive on a sale (`import_projects` → `coordinator_incentives`). */
+/** One dated instalment paid against an incentive (`coordinator_incentive_payments`). */
+export type ImportIncentivePayment = {
+  amount: number;
+  paid_on: string;
+  note: string | null;
+};
+
+/**
+ * One coordinator's incentive on a sale (`import_projects` →
+ * `coordinator_incentives`): the AGREED total, and the instalments already paid
+ * against it. The paid instalments never add up to more than `amount`; the rest
+ * is still to pay.
+ */
 export type ImportIncentive = {
   coordinator_id: string;
   amount: number;
-  paid_on: string | null;
+  payments: ImportIncentivePayment[];
 };
 
 /** A validated row, exactly the `import_projects` input row. */
@@ -335,6 +413,11 @@ export type ImportRow = {
   plant_capacity: string;
   total_cost: number;
   advance_amount: number;
+  /** How the advance was paid; null when the sheet does not say. */
+  advance_method: PaymentMethod | null;
+  /** When the advance was received; null when the sheet does not say. */
+  advance_paid_on: string | null;
+  advance_reference: string | null;
   order_date: string;
   /** 1 to 5 accounts, in the order written; the first is the first coordinator. */
   coordinator_ids: string[];
@@ -348,7 +431,7 @@ export type ImportRow = {
   is_completed: boolean;
   commissioned_on: string | null;
   feasibility_date: string | null;
-  /** Single-coordinator rows only: a shared sale's pay is never split by guess. */
+  /** One entry per coordinator who has an incentive; a shared sale's pay is never split by guess. */
   incentives: ImportIncentive[];
   cancellation: ProjectCancellation | null;
   cancelled_on: string | null;
@@ -361,6 +444,8 @@ export interface ImportRowContext {
   today: string;
   /** From `validateImportHeaders`. */
   paymentSlots: readonly number[];
+  /** From `validateImportHeaders`: the `incentive_<N>_*` groups the file has. */
+  incentiveSlots: readonly number[];
   /** The team's accounts, for the coordinator cell. */
   directory: CoordinatorDirectory;
   /** Who a blank coordinator cell means; null when the office chose none. */
@@ -375,6 +460,8 @@ type CsvRecord = Readonly<Record<string, string>>;
 /** Collects every problem in a row instead of stopping at the first. */
 class RowProblems {
   readonly list: string[] = [];
+  /** The date cells read day / month / year (anything but ISO), in the order met. */
+  readonly dayFirst: DateRead[] = [];
 
   add(problem: string) {
     this.list.push(problem);
@@ -386,6 +473,18 @@ class RowProblems {
     this.list.push(cell.error);
     return fallback;
   }
+
+  /** A date cell as its ISO date; notes a day-first reading for the file's summary. */
+  dateCell(
+    raw: string | undefined,
+    column: string,
+    options: { notAfter?: string } = {},
+  ): Cell<string | null> {
+    const read = dateCellRead(raw, column, options);
+    if (!read.ok) return read;
+    if (read.data?.dayFirst) this.dayFirst.push(read.data);
+    return ok(read.data?.iso ?? null);
+  }
 }
 
 function required<T>(cell: Cell<T | null>, message: string): Cell<T> {
@@ -393,42 +492,68 @@ function required<T>(cell: Cell<T | null>, message: string): Cell<T> {
   return cell.data === null ? fail(message) : ok(cell.data);
 }
 
-/** One `payment_<N>_*` group; null when the group is blank on this row. */
+/**
+ * One `payment_<N>_*` group; null when the group is blank on this row.
+ * `rowNotes` is the row's `notes` cell: a write-off with no reference of its
+ * own takes it as its reason.
+ */
 function parsePayment(
   record: CsvRecord,
   n: number,
   today: string,
-  problems: RowProblems,
+  rowNotes: string | null,
+  p: RowProblems,
 ): ImportPayment | null {
   const cell = (field: PaymentField) => record[paymentColumn(n, field)] ?? "";
   if (PAYMENT_FIELDS.every((f) => !cell(f).trim())) return null;
 
   const amountCol = paymentColumn(n, "amount");
   const dateCol = paymentColumn(n, "date");
-  const amount = problems.take(
+  const amount = p.take(
     required(
       moneyCell(cell("amount"), amountCol, { positive: true }),
       `${amountCol} is required — other payment ${n} cells are filled`,
     ),
     null,
   );
-  const paid_on = problems.take(
+  const paid_on = p.take(
     required(
-      dateCell(cell("date"), dateCol, { notAfter: today }),
+      p.dateCell(cell("date"), dateCol, { notAfter: today }),
       `${dateCol} is required — other payment ${n} cells are filled`,
     ),
     null,
   );
-  const method = problems.take(
-    paymentMethodCell(cell("method"), paymentColumn(n, "method")),
-    "other",
-  );
-  const purpose = problems.take(
-    paymentPurposeCell(cell("purpose"), paymentColumn(n, "purpose")),
-    "contract",
-  );
+  const method = p.take(paymentMethodCell(cell("method"), paymentColumn(n, "method")), "other");
+  const purposeCell = paymentPurposeCell(cell("purpose"), paymentColumn(n, "purpose"));
+  const purpose = p.take(purposeCell, "contract");
+
+  const officeCol = paymentColumn(n, "paid_by_office");
+  const paidByOffice = p.take(booleanCell(cell("paid_by_office"), officeCol), null);
+  // An unreadable purpose is already reported; do not also say it is not KSEB.
+  if (paidByOffice === true && purposeCell.ok && purpose !== "kseb_fees") {
+    p.add(`${officeCol} is only for a payment_${n}_purpose of kseb_fees — the office pays KSEB, not the contract`);
+  }
+
+  let reference = textCell(cell("reference"));
+  let notes: string | null = null;
+  if (purpose === "write_off") {
+    // The reason is mandatory, and it is kept as the entry's note.
+    const refCol = paymentColumn(n, "reference");
+    const reason = reference ?? rowNotes;
+    if (reason === null) {
+      p.add(
+        `${refCol} is required for a write_off — say why the balance is being written off (or fill the row's notes)`,
+      );
+    } else if (reason.length > PAYMENT_LIMITS.notesLength) {
+      p.add(
+        `${refCol} is too long for a write-off reason (${reason.length} characters; the most is ${PAYMENT_LIMITS.notesLength})`,
+      );
+    }
+    notes = reason;
+    reference = null;
+  }
   if (amount === null || paid_on === null) return null;
-  return { amount, paid_on, method, purpose, reference: textCell(cell("reference")), notes: null };
+  return { amount, paid_on, method, purpose, paid_by_office: paidByOffice === true, reference, notes };
 }
 
 type ColumnName = (header: ImportHeader) => string;
@@ -461,7 +586,13 @@ function labelProblem(plan: PlanType, label: string, name: ColumnName): string |
 }
 
 /** The three required columns; nulls only alongside a recorded problem. */
-function readRequired(record: CsvRecord, kind: Kind, p: RowProblems, name: ColumnName) {
+function readRequired(
+  record: CsvRecord,
+  kind: Kind,
+  p: RowProblems,
+  name: ColumnName,
+  warnings: string[],
+) {
   const cancelled = kind.cancellation !== null;
   const client_name = textCell(record.client_name);
   if (!client_name) p.add("client_name is required");
@@ -472,7 +603,16 @@ function readRequired(record: CsvRecord, kind: Kind, p: RowProblems, name: Colum
     else p.add("plant_capacity is required");
   } else if (kind.planKnown) {
     const problem = labelProblem(kind.plan, plant_capacity, name);
-    if (problem) p.add(problem);
+    if (problem) {
+      p.add(problem);
+    } else if (kind.plan === "solar") {
+      // "3kW+2kW" is a 5 kW plant: store the total, and say how it was read.
+      const sum = capacitySum(plant_capacity);
+      if (sum) {
+        warnings.push(`plant_capacity "${plant_capacity}" read as ${formatKw(sum.kw)}`);
+        plant_capacity = sum.label;
+      }
+    }
   }
 
   const cost = moneyCell(record.total_cost, "total_cost");
@@ -501,7 +641,7 @@ function readWorkOrder(
     );
   }
 
-  const written = dateCell(record.order_date, "order_date", { notAfter: today });
+  const written = p.dateCell(record.order_date, "order_date", { notAfter: today });
   const orderDateBlank = written.ok && written.data === null;
   const parsedDate = p.take(written, null);
   if (orderDateBlank) {
@@ -514,10 +654,39 @@ function readWorkOrder(
     }
   }
 
+  const advance = moneyCell(record.advance_amount, "advance_amount");
+  const advance_amount = p.take(advance, null) ?? 0;
+  const advance_method = p.take(advanceMethodCell(record.advance_method, "advance_method"), null);
+  const advance_paid_on = p.take(
+    p.dateCell(record.advance_date, "advance_date", { notAfter: today }),
+    null,
+  );
+  const advance_reference = textCell(record.advance_reference);
+  if (advance_reference && advance_reference.length > PAYMENT_LIMITS.advanceReferenceLength) {
+    p.add(
+      `advance_reference is too long (${advance_reference.length} characters; the most is ${PAYMENT_LIMITS.advanceReferenceLength})`,
+    );
+  }
+  // How and when an advance was paid means nothing without the advance. A
+  // malformed amount is already reported; do not also call it blank.
+  const described = [
+    advance_method && "advance_method",
+    advance_paid_on && "advance_date",
+    advance_reference && "advance_reference",
+  ].filter((column): column is string => Boolean(column));
+  if (advance.ok && advance_amount === 0 && described.length > 0) {
+    p.add(
+      `${described.join(", ")} ${described.length === 1 ? "is" : "are"} filled but advance_amount is blank or zero — enter the advance, or clear ${described.length === 1 ? "it" : "them"}`,
+    );
+  }
+
   return {
     client_phone: p.take(identifierCell(record.client_phone, "client_phone"), null),
     address: textCell(record.address),
-    advance_amount: p.take(moneyCell(record.advance_amount, "advance_amount"), null) ?? 0,
+    advance_amount,
+    advance_method,
+    advance_paid_on,
+    advance_reference,
     order_date: parsedDate ?? today,
     /** The row said when it was ordered (a blank one is today, or refused). */
     orderDateGiven: parsedDate !== null,
@@ -581,11 +750,11 @@ function readProgress(
 ) {
   const notFuture = { notAfter: ctx.today };
   const feasibility_date = p.take(
-    dateCell(record.feasibility_date, "feasibility_date", notFuture),
+    p.dateCell(record.feasibility_date, "feasibility_date", notFuture),
     null,
   );
   const commissioned_on = p.take(
-    dateCell(record.commissioned_on, "commissioned_on", notFuture),
+    p.dateCell(record.commissioned_on, "commissioned_on", notFuture),
     null,
   );
   const completed = p.take(booleanCell(record.is_completed, "is_completed"), null);
@@ -654,7 +823,7 @@ function readCancellation(
   name: ColumnName,
 ) {
   const cancelled_on = p.take(
-    dateCell(record.cancelled_on, name("cancelled_on"), { notAfter: ctx.today }),
+    p.dateCell(record.cancelled_on, name("cancelled_on"), { notAfter: ctx.today }),
     null,
   );
   const remarks = textCell(record.cancellation_remarks);
@@ -692,12 +861,169 @@ function readCancellation(
 }
 
 /**
- * The incentive columns are shorthand for ONE coordinator's pay, so they are
- * only taken on a row that names that coordinator itself. A shared sale's pay
- * is never split by guess, and a row that fell back to the default coordinator
- * does not say whose it is.
+ * What a row's incentive columns came to: each coordinator's agreed total with
+ * the instalments already paid, and everyone the `incentive_<N>_coordinator`
+ * cells named (for the matches panel).
  */
-function readIncentive(
+interface IncentiveReading {
+  incentives: ImportIncentive[];
+  references: CoordinatorReference[];
+}
+
+const NO_INCENTIVES: IncentiveReading = { incentives: [], references: [] };
+
+const INCENTIVE_GROUPS_HINT =
+  "the incentive_N_coordinator, incentive_N_amount and incentive_N_date columns";
+
+/** One instalment of an incentive: one `incentive_<N>_*` group, or one part of the shorthand. */
+interface IncentivePart {
+  coordinatorId: string;
+  amount: number;
+  /** Null: not paid yet — still part of the agreed total. */
+  paid_on: string | null;
+}
+
+/** Add each coordinator's parts up: the agreed total, and the instalments already paid. */
+function gatherIncentives(parts: readonly IncentivePart[]): ImportIncentive[] {
+  const byCoordinator = new Map<string, ImportIncentive>();
+  for (const part of parts) {
+    const incentive = byCoordinator.get(part.coordinatorId) ?? {
+      coordinator_id: part.coordinatorId,
+      amount: 0,
+      payments: [],
+    };
+    incentive.amount = round2(incentive.amount + part.amount);
+    if (part.paid_on !== null) {
+      incentive.payments.push({ amount: part.amount, paid_on: part.paid_on, note: null });
+    }
+    byCoordinator.set(part.coordinatorId, incentive);
+  }
+  return [...byCoordinator.values()];
+}
+
+/**
+ * Whose an `incentive_<N>` group is: the coordinator it names — resolved like
+ * the coordinator column, and one of the sale's own — or, when the cell is
+ * blank, the sale's only coordinator. A shared sale never guesses.
+ */
+function incentiveOwner(
+  n: number,
+  raw: string,
+  ctx: ImportRowContext,
+  team: Team,
+  p: RowProblems,
+  references: CoordinatorReference[],
+): string | null {
+  const column = incentiveColumn(n, "coordinator");
+  const written = raw.trim();
+
+  if (written === "") {
+    if (team.ids.length > 1) {
+      p.add(
+        `${column} is required on a shared sale (${team.names.join(", ")}) — name who this incentive is for`,
+      );
+      return null;
+    }
+    if (team.defaulted) {
+      p.add(`${column} needs the coordinator cell filled — name the coordinator this incentive belongs to`);
+      return null;
+    }
+    // One named coordinator; none when the coordinator cell itself was refused.
+    return team.ids[0] ?? null;
+  }
+
+  const analysis = analyzeCoordinatorCell(written, ctx.directory, column);
+  references.push(...analysis.references);
+  for (const problem of analysis.problems) p.add(problem);
+  if (!analysis.value) return null;
+  if (analysis.value.ids.length !== 1) {
+    p.add(
+      `${column} "${written}" names ${analysis.value.ids.length} people — an incentive belongs to one coordinator; give each their own incentive_N group`,
+    );
+    return null;
+  }
+  const [id] = analysis.value.ids;
+  if (team.ids.length > 0 && !team.ids.includes(id)) {
+    p.add(
+      `${column} "${written}" is not a coordinator on this sale (${team.names.join(", ")}) — name one of them`,
+    );
+    return null;
+  }
+  return id;
+}
+
+/**
+ * The explicit incentive columns: each `incentive_<N>_*` group is one
+ * instalment. A group with a date is PAID; one without is a still-unpaid part
+ * of that coordinator's agreed incentive, so the agreed total is the sum of all
+ * of a coordinator's groups.
+ */
+function readIncentiveGroups(
+  record: CsvRecord,
+  ctx: ImportRowContext,
+  team: Team,
+  p: RowProblems,
+): IncentiveReading {
+  const parts: IncentivePart[] = [];
+  const references: CoordinatorReference[] = [];
+  for (const n of ctx.incentiveSlots) {
+    const cell = (field: IncentiveField) => record[incentiveColumn(n, field)] ?? "";
+    if (INCENTIVE_FIELDS.every((f) => !cell(f).trim())) continue;
+
+    const amountColumn = incentiveColumn(n, "amount");
+    const amount = p.take(
+      required(
+        moneyCell(cell("amount"), amountColumn, { positive: true }),
+        `${amountColumn} is required — other incentive ${n} cells are filled`,
+      ),
+      null,
+    );
+    const paid_on = p.take(
+      p.dateCell(cell("date"), incentiveColumn(n, "date"), { notAfter: ctx.today }),
+      null,
+    );
+    const coordinatorId = incentiveOwner(n, cell("coordinator"), ctx, team, p, references);
+    if (amount !== null && coordinatorId !== null) {
+      parts.push({ coordinatorId, amount, paid_on });
+    }
+  }
+  return { incentives: gatherIncentives(parts), references };
+}
+
+/** The `incentive_paid_on` cell as its `+`-separated dates. */
+function shorthandDates(
+  raw: string | undefined,
+  column: string,
+  today: string,
+  p: RowProblems,
+): { blank: boolean; ok: boolean; dates: string[] } {
+  const written = (raw ?? "").trim();
+  if (written === "") return { blank: true, ok: true, dates: [] };
+
+  const dates: string[] = [];
+  let valid = true;
+  for (const piece of written.split("+").map((d) => d.trim())) {
+    if (piece === "") {
+      p.add(`${column} "${written}" has an empty date — write one date per amount, joined by +`);
+      valid = false;
+      continue;
+    }
+    const date = p.take(p.dateCell(piece, column, { notAfter: today }), null);
+    if (date === null) valid = false;
+    else dates.push(date);
+  }
+  return { blank: false, ok: valid, dates };
+}
+
+/**
+ * The single-coordinator shorthand: `coordinator_incentive` (an amount, or a sum
+ * — `12000+5000` is two instalments) with `incentive_paid_on` (one date for one
+ * amount, or exactly one date per amount). An amount with no date is an unpaid
+ * incentive. It belongs to a row's only coordinator, so a shared sale's pay is
+ * never split by guess (it takes the `incentive_N_*` columns), and a row that
+ * fell back to the default coordinator does not say whose it is.
+ */
+function readIncentiveShorthand(
   record: CsvRecord,
   ctx: ImportRowContext,
   team: Team,
@@ -706,52 +1032,228 @@ function readIncentive(
 ): ImportIncentive[] {
   const amountColumn = name("coordinator_incentive");
   const paidColumn = name("incentive_paid_on");
-  const incentive = moneyCell(record.coordinator_incentive, amountColumn);
-  const amount = p.take(incentive, null);
-  const paid_on = p.take(
-    dateCell(record.incentive_paid_on, paidColumn, { notAfter: ctx.today }),
-    null,
-  );
+  const amounts = moneyPartsCell(record.coordinator_incentive, amountColumn);
+  const parts = p.take(amounts, null);
+  const paid = shorthandDates(record.incentive_paid_on, paidColumn, ctx.today, p);
 
   const shared = team.ids.length > 1;
   if (shared || team.defaulted) {
     const refusal = shared
-      ? `cannot be split automatically for a shared sale (${team.names.join(", ")}) — leave it blank and set each coordinator's incentive on the project page`
+      ? `cannot be split automatically for a shared sale (${team.names.join(", ")}) — use ${INCENTIVE_GROUPS_HINT} to say who gets what`
       : `needs the ${name("coordinator")} cell filled — name the coordinator this incentive belongs to`;
-    if (amount !== null) p.add(`${amountColumn} ${refusal}`);
-    if (paid_on !== null) p.add(`${paidColumn} ${refusal}`);
+    if (parts !== null) p.add(`${amountColumn} ${refusal}`);
+    if (!paid.blank && paid.ok) p.add(`${paidColumn} ${refusal}`);
     return [];
   }
 
-  // Only when the amount is genuinely blank — a malformed one is already reported.
-  if (paid_on && incentive.ok && amount === null) {
-    p.add(`${paidColumn} needs a ${amountColumn} amount`);
+  if (parts === null) {
+    // Only when the amount is genuinely blank — a malformed one is already reported.
+    if (!paid.blank && amounts.ok) p.add(`${paidColumn} needs a ${amountColumn} amount`);
+    return [];
   }
-  return amount !== null && team.ids.length === 1
-    ? [{ coordinator_id: team.ids[0], amount, paid_on }]
-    : [];
+  if (team.ids.length !== 1) return [];
+
+  const dated = !paid.blank && paid.ok;
+  if (dated && paid.dates.length !== parts.length) {
+    p.add(
+      `${paidColumn} has ${paid.dates.length} ${paid.dates.length === 1 ? "date" : "dates"} for ${parts.length} ${parts.length === 1 ? "amount" : "amounts"} in ${amountColumn} — one date per amount, joined by + in the same order (or leave it blank for an incentive not yet paid)`,
+    );
+    return [];
+  }
+  if (dated && parts.some((amount) => amount === 0)) {
+    p.add(
+      `${paidColumn} dates a payment of zero — every part of ${amountColumn} that has a date must be more than zero`,
+    );
+    return [];
+  }
+  return gatherIncentives(
+    parts.map((amount, i) => ({
+      coordinatorId: team.ids[0],
+      amount,
+      paid_on: dated ? paid.dates[i] : null,
+    })),
+  );
 }
 
 /**
- * Typo guard: more collected than the contract is worth is almost always a
- * slipped digit, and it would hide a real balance. KSEB fees are not counted.
+ * A row's incentives, from the `incentive_<N>_*` groups or the single-coordinator
+ * shorthand — never both in one row.
  */
-function checkCollections(
-  totalCost: number,
+function readIncentives(
+  record: CsvRecord,
+  ctx: ImportRowContext,
+  team: Team,
+  p: RowProblems,
+  name: ColumnName,
+): IncentiveReading {
+  const filled = (column: string) => (record[column] ?? "").trim() !== "";
+  const shorthand = (["coordinator_incentive", "incentive_paid_on"] as const)
+    .filter(filled)
+    .map(name);
+  const groups = ctx.incentiveSlots.filter((n) =>
+    INCENTIVE_FIELDS.some((f) => filled(incentiveColumn(n, f))),
+  );
+
+  if (shorthand.length > 0 && groups.length > 0) {
+    p.add(
+      `${shorthand.join(" and ")} and ${groups.map((n) => `incentive_${n}_*`).join(", ")} are both filled — use either the shorthand or the incentive_N_* columns, not both`,
+    );
+    return NO_INCENTIVES;
+  }
+  if (groups.length > 0) return readIncentiveGroups(record, ctx, team, p);
+  if (shorthand.length > 0) {
+    return { incentives: readIncentiveShorthand(record, ctx, team, p, name), references: [] };
+  }
+  return NO_INCENTIVES;
+}
+
+/**
+ * Typo guard on the ledger. The refunds and write-offs are replayed in the
+ * order they happened (by date): a refund cannot exceed what BSS held then, a
+ * write-off cannot exceed the balance then due. Then the end state: advance plus
+ * contract payments, less refunds, plus write-offs, may not exceed the contract —
+ * more than that is almost always a slipped digit, and it would hide a real
+ * balance. (A customer may overpay and be refunded the excess, so the contract
+ * itself is judged on the end state.) KSEB fees are not counted.
+ */
+function checkLedger(
+  cost: { total: number; unknown: boolean },
   advance: number,
   payments: readonly ImportPayment[],
+  slots: readonly number[],
   p: RowProblems,
 ) {
-  const { received, balanceDue } = paymentSummary({
-    total_cost: totalCost,
-    advance_amount: advance,
-    payments_total: ledgerTotals(payments).contract,
-  });
+  const terms = { total_cost: cost.total, advance_amount: advance };
+
+  const problems = ledgerProblems(terms, payments);
+  for (const problem of problems) {
+    const entry = payments[problem.entry];
+    const column = paymentColumn(slots[problem.entry], "amount");
+    if (problem.kind === "refund_over_collected") {
+      p.add(
+        `${column} ${formatCurrency(entry.amount)} is more than the ${formatCurrency(problem.limit)} BSS held on ${entry.paid_on} (advance plus contract payments, less earlier refunds) — a refund cannot exceed what was collected`,
+      );
+    } else if (!cost.unknown) {
+      p.add(
+        `${column} ${formatCurrency(entry.amount)} is more than the ${formatCurrency(problem.limit)} still due on ${entry.paid_on} — a write-off cannot exceed the balance`,
+      );
+    }
+  }
+  if (cost.unknown) {
+    // The price is stored as 0: there is no balance to write anything off.
+    payments.forEach((entry, i) => {
+      if (entry.purpose === "write_off") {
+        p.add(`${paymentColumn(slots[i], "purpose")} write_off needs a total_cost — the balance is not known`);
+      }
+    });
+    return;
+  }
+
+  // An entry already refused above is not counted again in the end state.
+  const refused = new Set(problems.map((problem) => problem.entry));
+  const { received, writtenOff, refunded, balanceDue } = paymentSummary(
+    withLedger(
+      terms,
+      payments.filter((_, i) => !refused.has(i)),
+    ),
+  );
   if (balanceDue < 0) {
+    const adjusted = refunded > 0 || writtenOff > 0 ? " (less refunds, plus write-offs)" : "";
     p.add(
-      `advance_amount plus contract payments come to ${formatCurrency(received)}, more than total_cost ${formatCurrency(totalCost)} — check for a typo`,
+      `advance_amount plus contract payments${adjusted} come to ${formatCurrency(round2(received + writtenOff))}, more than total_cost ${formatCurrency(cost.total)} — check for a typo. If money was returned, record it as a refund (payment_N_purpose = refund); if a few rupees are simply not coming, record a write-off (payment_N_purpose = write_off, with the reason in payment_N_reference or notes)`,
     );
   }
+}
+
+/** Before this a year is a typo (`1025`, `0225`), not a sale. */
+const EARLIEST_PLAUSIBLE_DATE = "2015-01-01";
+
+/** At most this many dates are named in one note; the rest are counted. */
+const DATES_NAMED = 3;
+
+function namedDates(items: readonly string[]): string {
+  const shown = items.slice(0, DATES_NAMED);
+  const rest = items.length - shown.length;
+  return rest > 0 ? `${shown.join("; ")} and ${rest} more` : shown.join("; ");
+}
+
+/**
+ * What the ledger and the dates of one row make worth a second look. All of it
+ * is legal and the row still imports: it is here because a sheet typed by hand
+ * goes wrong in these ways, and nothing else would say so.
+ *   - a sale marked refunded whose ledger still holds the customer's money;
+ *   - a date a year-typo away from sensible;
+ *   - an advance, payment or incentive dated before the order it belongs to;
+ *   - contract payments whose dates run backwards (a day and month swapped).
+ */
+function ledgerWarnings(row: {
+  cancellation: ProjectCancellation | null;
+  /** As the sheet wrote it; null when blank (today stands in, and is no evidence). */
+  orderDate: string | null;
+  advance: number;
+  advancePaidOn: string | null;
+  payments: readonly ImportPayment[];
+  slots: readonly number[];
+  incentives: readonly ImportIncentive[];
+  commissionedOn: string | null;
+}): string[] {
+  const notes: string[] = [];
+
+  if (row.cancellation === "refunded") {
+    const { contract, refunded } = ledgerTotals(row.payments);
+    const held = round2(row.advance + contract - refunded);
+    if (held > 0) {
+      notes.push(
+        `marked refunded, but ${rupees(held)} (advance plus payments, less refunds) is still held in the ledger — if it was handed back, add a refund line (payment_N_purpose = refund, with its date); if BSS kept it, ignore this`,
+      );
+    }
+  }
+
+  const afterOrder: { what: string; date: string }[] = [];
+  if (row.advancePaidOn) afterOrder.push({ what: "advance_date", date: row.advancePaidOn });
+  row.payments.forEach((entry, i) => {
+    afterOrder.push({ what: paymentColumn(row.slots[i], "date"), date: entry.paid_on });
+  });
+  for (const incentive of row.incentives) {
+    for (const instalment of incentive.payments) {
+      afterOrder.push({ what: "an incentive payment", date: instalment.paid_on });
+    }
+  }
+
+  const dated = [
+    ...afterOrder,
+    ...(row.orderDate ? [{ what: "order_date", date: row.orderDate }] : []),
+    ...(row.commissionedOn ? [{ what: "commissioned_on", date: row.commissionedOn }] : []),
+  ];
+  const early = dated.filter(({ date }) => date < EARLIEST_PLAUSIBLE_DATE);
+  if (early.length > 0) {
+    notes.push(
+      `${namedDates(early.map(({ what, date }) => `${what} ${formatDate(date)}`))} — before 2015, which is most likely a mistyped year`,
+    );
+  }
+
+  if (row.orderDate) {
+    const order = row.orderDate;
+    const before = afterOrder.filter(({ date }) => date < order && date >= EARLIEST_PLAUSIBLE_DATE);
+    if (before.length > 0) {
+      notes.push(
+        `${namedDates(before.map(({ what, date }) => `${what} ${formatDate(date)}`))} — before order_date ${formatDate(order)}; check the day and month`,
+      );
+    }
+  }
+
+  const contract = row.payments.flatMap((entry, i) =>
+    entry.purpose === "contract" ? [{ column: paymentColumn(row.slots[i], "date"), date: entry.paid_on }] : [],
+  );
+  for (let i = 1; i < contract.length; i += 1) {
+    if (contract[i].date < contract[i - 1].date) {
+      notes.push(
+        `${contract[i].column} ${formatDate(contract[i].date)} is earlier than ${contract[i - 1].column} ${formatDate(contract[i - 1].date)} — payments run backwards; check the day and month`,
+      );
+      break;
+    }
+  }
+  return notes;
 }
 
 /** Remarks written in the coordinator cell's brackets stay with the sale. */
@@ -759,6 +1261,66 @@ function withCoordinatorAside(notes: string | null, raw: string, asides: readonl
   if (asides.length === 0) return notes;
   const line = `Coordinator as written in the import sheet: ${raw.trim()}`;
   return notes ? `${notes}\n${line}` : line;
+}
+
+/** Look-alike key for a name typed twice: case, spacing and punctuation ignored. */
+const nameKey = (name: string) => name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/** The key the RPC compares consumer numbers by: all whitespace removed, case kept. */
+const consumerKey = (consumerNumber: string) => consumerNumber.replace(/\s+/g, "");
+
+/**
+ * A sample row of the downloadable template, reduced to what tells it from a
+ * real customer. The samples ARE the template's rows (`import-template-rows`),
+ * so the two cannot drift apart: a sheet built from the template and not
+ * cleaned up is caught however old the copy.
+ */
+interface TemplateSample {
+  client: string;
+  consumer: string | null;
+  cost: number | null;
+  date: string | null;
+}
+
+const TEMPLATE_SAMPLES: readonly TemplateSample[] = TEMPLATE_ROWS.map((row) => {
+  const cost = moneyCell(row.total_cost, "total_cost");
+  const date = dateCellRead(row.order_date, "order_date");
+  return {
+    client: nameKey(row.client_name ?? ""),
+    consumer: row.consumer_number ? consumerKey(row.consumer_number) : null,
+    cost: cost.ok ? cost.data : null,
+    date: date.ok ? (date.data?.iso ?? null) : null,
+  };
+});
+
+/** Why a row that is still one of the template's examples is refused. */
+export const TEMPLATE_EXAMPLE_PROBLEM = "this is one of the template's example rows — delete it";
+
+/**
+ * A template example left in a real file: the sample's client name together
+ * with its consumer number, or with its total cost and order date — each equal
+ * to the sample's, a blank order date included when the sample has none. A date
+ * that could not be read matches nothing; it is reported on its own.
+ */
+function isTemplateExample(row: {
+  client_name: string | null;
+  consumer_number: string | null;
+  total_cost: number | null;
+  order_date: string | null;
+}): boolean {
+  if (!row.client_name) return false;
+  const client = nameKey(row.client_name);
+  return TEMPLATE_SAMPLES.some((sample) => {
+    if (sample.client !== client) return false;
+    if (
+      sample.consumer !== null &&
+      row.consumer_number !== null &&
+      consumerKey(row.consumer_number) === sample.consumer
+    ) {
+      return true;
+    }
+    return row.total_cost === sample.cost && row.order_date === sample.date;
+  });
 }
 
 /** One row, read: the RPC row or its problems, and what the file-level checks need. */
@@ -770,10 +1332,31 @@ export interface RowReading {
   defaulted: boolean;
   /** The coordinator cell was blank (defaulted or not). */
   blankCoordinator: boolean;
-  /** Everything the coordinator cell named, for the matches panel. */
+  /** Everything the coordinator and incentive-coordinator cells named, for the matches panel. */
   references: CoordinatorReference[];
   /** Things worth a look that do not stop the row (only on a valid row). */
   warnings: string[];
+  /**
+   * The order date the sheet wrote; null when it is blank, unreadable or the row
+   * is a template example. Feeds the file's month-spread check.
+   */
+  orderDate: string | null;
+  /** Every date cell of the row that was read day / month / year, as typed. */
+  dayFirst: DateRead[];
+}
+
+/** A template example row: nothing else about it is worth reporting. */
+function templateExampleReading(): RowReading {
+  return {
+    parsed: fail(TEMPLATE_EXAMPLE_PROBLEM),
+    coordinators: [],
+    defaulted: false,
+    blankCoordinator: false,
+    references: [],
+    warnings: [],
+    orderDate: null,
+    dayFirst: [],
+  };
 }
 
 /**
@@ -786,26 +1369,68 @@ export function readImportRow(record: CsvRecord, rowNo: number, ctx: ImportRowCo
   const name: ColumnName = (header) => ctx.columnNames?.[header] ?? header;
 
   const kind = readKind(record, p, name);
-  const core = readRequired(record, kind, p, name);
+  const core = readRequired(record, kind, p, name, warnings);
   const workOrder = readWorkOrder(record, ctx, kind, p, warnings);
+  const orderDate = workOrder.orderDateGiven ? workOrder.order_date : null;
+  // A template example left in the file is deleted, not fixed: report only that.
+  if (
+    isTemplateExample({
+      client_name: core.client_name,
+      consumer_number: workOrder.consumer_number,
+      total_cost: core.total_cost,
+      order_date: orderDate,
+    })
+  ) {
+    return templateExampleReading();
+  }
+
   const team = readCoordinators(record, ctx, p, name);
   const progress = readProgress(record, ctx, kind, workOrder, p, name);
   const cancellation = readCancellation(record, ctx, kind, workOrder, progress.feasibility_date, p, name);
-  const incentives = readIncentive(record, ctx, team, p, name);
-  const payments = ctx.paymentSlots.flatMap((n) => parsePayment(record, n, ctx.today, p) ?? []);
-  if (core.total_cost !== null && !core.costUnknown) {
-    checkCollections(core.total_cost, workOrder.advance_amount, payments, p);
-  } else if (core.costUnknown && workOrder.advance_amount > 0) {
+  const incentives = readIncentives(record, ctx, team, p, name);
+  const slots: number[] = [];
+  const payments: ImportPayment[] = [];
+  for (const n of ctx.paymentSlots) {
+    const payment = parsePayment(record, n, ctx.today, textCell(record.notes), p);
+    if (payment) {
+      slots.push(n);
+      payments.push(payment);
+    }
+  }
+  if (core.total_cost !== null) {
+    checkLedger(
+      { total: core.total_cost, unknown: core.costUnknown },
+      workOrder.advance_amount,
+      payments,
+      slots,
+      p,
+    );
+  }
+  if (core.costUnknown && workOrder.advance_amount > 0) {
     // The unknown total is stored as 0, so the advance would be more than the
     // total — a state the work order's own edit form refuses to save.
     p.add("total_cost is blank but advance_amount is filled — enter the total, or clear the advance");
   }
+  warnings.push(
+    ...ledgerWarnings({
+      cancellation: kind.cancellation,
+      orderDate,
+      advance: workOrder.advance_amount,
+      advancePaidOn: workOrder.advance_paid_on,
+      payments,
+      slots,
+      incentives: incentives.incentives,
+      commissionedOn: progress.commissioned_on,
+    }),
+  );
 
   const reading = {
     coordinators: team.names,
     defaulted: team.defaulted,
     blankCoordinator: team.blank,
-    references: team.references,
+    references: [...team.references, ...incentives.references],
+    orderDate,
+    dayFirst: p.dayFirst,
   };
   // The null checks only narrow types: a missing required value always
   // recorded a problem above.
@@ -825,6 +1450,9 @@ export function readImportRow(record: CsvRecord, rowNo: number, ctx: ImportRowCo
       plant_capacity,
       total_cost,
       advance_amount: workOrder.advance_amount,
+      advance_method: workOrder.advance_method,
+      advance_paid_on: workOrder.advance_paid_on,
+      advance_reference: workOrder.advance_reference,
       order_date: workOrder.order_date,
       coordinator_ids: team.ids,
       financing_type: workOrder.financing_type,
@@ -833,7 +1461,7 @@ export function readImportRow(record: CsvRecord, rowNo: number, ctx: ImportRowCo
       kseb_section: workOrder.kseb_section,
       notes: withCoordinatorAside(textCell(record.notes), record.coordinator ?? "", team.asides),
       ...progress,
-      incentives,
+      incentives: incentives.incentives,
       cancellation: kind.cancellation,
       ...cancellation,
       payments,
@@ -878,6 +1506,8 @@ export interface ImportPlan {
   coordinatorMatches: CoordinatorMatch[];
   /** File-level things worth a look, never failures. */
   warnings: string[];
+  /** File-level information (not a problem): how the sheet's dates were read. */
+  notes: string[];
 }
 
 export interface ImportPlanOptions {
@@ -939,14 +1569,19 @@ function collectMatches(
   return [...all.filter((m) => m.account === null), ...all.filter((m) => m.account !== null)];
 }
 
+/** `3`, `3 and 5`, `3, 5 and 9`. */
+function joinAnd(items: readonly (string | number)[]): string {
+  return items.length < 2
+    ? items.join("")
+    : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
 /** `3`, `3 and 5`, `3, 5 and 9`; past `limit` rows, `3, 5, 9 and 20 more`. */
 function listRows(rows: readonly number[], limit = rows.length): string {
   if (rows.length > limit) {
     return `${rows.slice(0, limit).join(", ")} and ${rows.length - limit} more`;
   }
-  return rows.length < 2
-    ? rows.join("")
-    : `${rows.slice(0, -1).join(", ")} and ${rows[rows.length - 1]}`;
+  return joinAnd(rows);
 }
 
 /** Rows named in a warning before the rest are counted (as the matches panel does). */
@@ -960,12 +1595,8 @@ function rupees(n: number): string {
 
 /** Look-alike key for the same sale typed twice. */
 function saleKey(row: ImportRow): string {
-  const client = row.client_name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  return `${client}|${row.order_date}|${row.total_cost}`;
+  return `${nameKey(row.client_name)}|${row.order_date}|${row.total_cost}`;
 }
-
-/** The key the RPC compares consumer numbers by: all whitespace removed, case kept. */
-const consumerKey = (consumerNumber: string) => consumerNumber.replace(/\s+/g, "");
 
 /**
  * The importer skips a row whose consumer number is already in, and a row met
@@ -1028,6 +1659,68 @@ function fileWarnings(
     );
   }
   return warnings;
+}
+
+/** `March 2025`, `March 2025 and April 2025`; past three, `\u2026, \u2026 and 2 more`. */
+function listMonths(months: readonly string[]): string {
+  const shown = months.slice(0, 3);
+  const rest = months.length - shown.length;
+  return rest > 0 ? `${shown.join(", ")} and ${rest} more` : joinAnd(shown);
+}
+
+/** Which rows are the odd ones out of a sheet's order dates. */
+interface DatedRow {
+  rowNo: number;
+  reading: RowReading;
+}
+
+/**
+ * Dates are read day first. When some cells were written that way (anything
+ * but YYYY-MM-DD), say how many and show one, so a sheet whose dates Excel
+ * turned around is noticed on the first check. Information, not a warning:
+ * the reading is a rule, not a guess.
+ */
+function dayFirstNote(readings: readonly DatedRow[]): string[] {
+  const reads = readings.flatMap(({ reading }) => reading.dayFirst);
+  if (reads.length === 0) return [];
+  const rows = readings.filter(({ reading }) => reading.dayFirst.length > 0).length;
+  const [example] = reads;
+  return [
+    `${reads.length} date ${plural(reads.length, "cell was", "cells were")} written day first (in ${rows} ${plural(rows, "row", "rows")}) and read that way \u2014 "${example.written}" is ${formatDate(example.iso)}. Dates are never read month first.`,
+  ];
+}
+
+/** At least this many in five order dates in one month makes the others suspect. */
+const SPREAD_MAJORITY = { of: 5, atLeast: 3 };
+
+/**
+ * A monthly sheet's order dates sit in one month. When most of them do (60% or
+ * more) and some fall elsewhere, the odd ones are often a day and month swapped
+ * \u2014 Excel in a US locale does it silently \u2014 so list them. Never a failure: an
+ * order from late last month is legitimate.
+ */
+function monthSpreadWarning(readings: readonly DatedRow[]): string[] {
+  const dated = readings.flatMap(({ rowNo, reading }) =>
+    reading.orderDate ? [{ rowNo, month: monthKey(reading.orderDate) }] : [],
+  );
+  const counts = new Map<string, number>();
+  for (const { month } of dated) counts.set(month, (counts.get(month) ?? 0) + 1);
+  // The busiest month; the earlier one when two tie.
+  const [main] = [...counts].sort(([ma, a], [mb, b]) => b - a || (ma < mb ? -1 : 1));
+  if (!main) return [];
+
+  const [mainMonth, mainCount] = main;
+  const others = dated.filter(({ month }) => month !== mainMonth);
+  if (others.length === 0 || mainCount * SPREAD_MAJORITY.of < dated.length * SPREAD_MAJORITY.atLeast) {
+    return [];
+  }
+  const months = [...new Set(others.map(({ month }) => month))].sort().map(monthName);
+  return [
+    `${mainCount} of ${dated.length} order dates are in ${monthName(mainMonth)}, but ${plural(others.length, "row", "rows")} ${listRows(
+      others.map((o) => o.rowNo),
+      ROWS_NAMED,
+    )} ${plural(others.length, "is", "are")} in ${listMonths(months)} \u2014 may be a day/month mix-up. Check ${plural(others.length, "that date", "those dates")}.`,
+  ];
 }
 
 const REPLACEMENT_CHARACTER = "\uFFFD";
@@ -1094,6 +1787,7 @@ export function planImport(
   const ctx: ImportRowContext = {
     today,
     paymentSlots: layout.data.paymentSlots,
+    incentiveSlots: layout.data.incentiveSlots,
     directory,
     defaultCoordinator,
     columnNames: uploadedNames(layout.data),
@@ -1119,13 +1813,16 @@ export function planImport(
 
   const rows = readings.map((r) => r.row);
   const valid = rows.flatMap((r) => (r.parsed.ok ? [r.parsed.data] : []));
+  const read = readings.map(({ row, reading }) => ({ rowNo: row.rowNo, reading }));
   return ok({
     headers: layout.data.headers,
     rows,
-    coordinatorMatches: collectMatches(
-      readings.map(({ row, reading }) => ({ rowNo: row.rowNo, reading })),
-      defaultCoordinator,
-    ),
-    warnings: [...damagedTextWarning(rows), ...fileWarnings(valid, { skipExisting })],
+    coordinatorMatches: collectMatches(read, defaultCoordinator),
+    warnings: [
+      ...damagedTextWarning(rows),
+      ...fileWarnings(valid, { skipExisting }),
+      ...monthSpreadWarning(read),
+    ],
+    notes: dayFirstNote(read),
   });
 }

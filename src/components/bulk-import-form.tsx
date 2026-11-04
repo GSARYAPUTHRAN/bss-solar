@@ -329,6 +329,26 @@ function Warnings({ warnings }: { warnings: readonly string[] }) {
   );
 }
 
+/** How the sheet was read — not a problem, but worth knowing (its dates went day first). */
+function Notes({ notes }: { notes: readonly string[] }) {
+  if (notes.length === 0) return null;
+  return (
+    <section
+      aria-labelledby="import-notes-title"
+      className="space-y-1.5 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 dark:border-blue-500/30 dark:bg-blue-500/10 dark:text-blue-200"
+    >
+      <h3 id="import-notes-title" className="text-sm font-semibold">
+        How the file was read
+      </h3>
+      <ul className="list-disc space-y-1 pl-5 [overflow-wrap:anywhere]">
+        {notes.map((n) => (
+          <li key={n}>{n}</li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function ImportResults({ state }: { state: ImportState }) {
   const checking = state.mode === "check";
   // The filter belongs to one run: a new result resets it (no effect needed).
@@ -363,6 +383,7 @@ function ImportResults({ state }: { state: ImportState }) {
       </div>
 
       <Warnings warnings={state.warnings} />
+      <Notes notes={state.notes} />
       <CoordinatorMatches matches={state.coordinatorMatches} />
 
       <div className="space-y-2">

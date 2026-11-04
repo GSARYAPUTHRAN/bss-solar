@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   CAPACITY_PROBLEM,
   capacityProblem,
+  capacitySum,
   formatKw,
   isValidCapacity,
   parseCapacityKw,
@@ -263,4 +264,52 @@ describe("formatKw", () => {
       expect(formatKw(value)).toBe("—");
     },
   );
+});
+
+describe("capacitySum", () => {
+  it.each([
+    ["3kW+2kW", 5, "5kW"],
+    ["3kW + 2kW", 5, "5kW"],
+    ["3KW+2kWp", 5, "5kW"],
+    ["1.5kW+1.5kW", 3, "3kW"],
+    ["3kW+500W", 3.5, "3.5kW"],
+    ["3000W+2kW", 5, "5kW"],
+    ["3 kW + 2 kW + 1 kW", 6, "6kW"],
+    ["2k+3k", 5, "5kW"],
+    ["1,000W+2kW", 3, "3kW"],
+    ["0.1kW+0.2kW", 0.3, "0.3kW"],
+  ])("reads %j as %d kW, labelled %j", (label, kw, normalised) => {
+    expect(capacitySum(label)).toEqual({ kw, label: normalised });
+  });
+
+  it("adds in whole watts-worth, so 0.1 + 0.2 is exactly 0.3 kW", () => {
+    expect(capacitySum("0.1kW+0.2kW")?.kw).toBe(0.3);
+  });
+
+  // Anything with a term that is not a quantity keeps the reading the database
+  // gives it (the first number), so it is not a sum.
+  it.each(["3kW+inverter", "3kW+inverter+panel", "inverter+3kW", "3+2", "3kW+2", "3kW+", "+3kW"])(
+    "does not treat %j as a sum",
+    (label) => {
+      expect(capacitySum(label)).toBeNull();
+    },
+  );
+
+  it.each(["3kW", "5 kWp", "", "   ", "1 panel", "0kW+0kW"])(
+    "has no sum for %j (one term, nothing, or nothing above zero)",
+    (label) => {
+      expect(capacitySum(label)).toBeNull();
+    },
+  );
+
+  it.each([[null], [undefined]])("has no sum for %j", (label) => {
+    expect(capacitySum(label)).toBeNull();
+  });
+
+  it("agrees with parseCapacityKw when its label is stored", () => {
+    for (const label of ["3kW+2kW", "3000W+2kW", "1.5kW+0.5kW+500W"]) {
+      const sum = capacitySum(label);
+      expect(parseCapacityKw(sum?.label)).toBe(sum?.kw);
+    }
+  });
 });

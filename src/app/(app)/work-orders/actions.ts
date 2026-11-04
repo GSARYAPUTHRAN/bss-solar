@@ -179,7 +179,9 @@ export async function createWorkOrder(formData: FormData) {
  * rules: once the order has been reviewed only the office changes them (the
  * coordinator's form leaves them out, and the DB guards the same), and no edit
  * may overpay the contract against the ledger (`checkContractTerms`, the cap
- * every ledger write obeys).
+ * every ledger write obeys). How and when the advance was paid is locked with
+ * it; the stored details are written back unchanged, so a coordinator's edit of
+ * an approved order never looks to the database like a change to them.
  *
  * The plan (solar or custom) is chosen while the order is pending; once a
  * project exists its milestones were seeded from it and it is fixed.
