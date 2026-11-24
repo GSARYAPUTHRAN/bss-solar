@@ -1320,7 +1320,7 @@ B,3kW,1,Rahul`);
         ].join("\n"),
       );
       expect(res.warnings).toEqual([
-        "2 rows have no consumer_number — they will be imported again on every upload; to retry, upload only the failed-rows download",
+        "2 rows have no consumer_number — they can only be recognised on a later upload by customer name and order date; add the consumer number where you have it",
       ]);
     });
 
@@ -1328,7 +1328,7 @@ B,3kW,1,Rahul`);
       expect(
         plan("client_name,plant_capacity,total_cost,coordinator,consumer_number\nA,3kW,1,Rahul,").warnings,
       ).toEqual([
-        "1 row has no consumer_number — it will be imported again on every upload; to retry, upload only the failed-rows download",
+        "1 row has no consumer_number — it can only be recognised on a later upload by customer name and order date; add the consumer number where you have it",
       ]);
       expect(
         plan("client_name,plant_capacity,total_cost,coordinator,consumer_number\nA,3kW,1,Rahul,9").warnings,
@@ -1367,6 +1367,41 @@ B,3kW,1,Rahul`);
       );
       expect(res.warnings).toEqual([
         "Rows 2, 3 and 4 look like the same sale (Prasad K, 2025-01-08, ₹1,000) — remove one if so",
+      ]);
+    });
+
+    it("compare names as the check against the system does, whatever the totals, and only warn", () => {
+      const res = plan(
+        [
+          "client_name,plant_capacity,total_cost,coordinator,order_date,consumer_number",
+          "R.Vijayakumar,3kW,195000,Rahul,2025-01-08,1",
+          "K.C Santhi,3kW,100000,Rahul,2025-01-08,2",
+          "Vijayakumar R,3kW,200000,Priya,2025-01-08,3",
+          "Santhi KC,3kW,100000,Rahul,2025-01-08,4",
+          "Santhi KS,3kW,100000,Rahul,2025-01-08,5",
+          "Santhi kumari,3kW,1,Rahul,2025-01-08,6",
+          "Santhikumari,3kW,1,Rahul,2025-01-09,7",
+        ].join("\n"),
+      );
+      expect(res.rows.every((r) => r.parsed.ok)).toBe(true);
+      expect(res.warnings).toEqual([
+        "Rows 2 and 4 look like the same sale (R.Vijayakumar, 2025-01-08, ₹1,95,000 / ₹2,00,000) — remove one if so",
+        "Rows 3 and 5 look like the same sale (K.C Santhi, 2025-01-08, ₹1,00,000) — remove one if so",
+      ]);
+    });
+
+    it("group rows linked name to name, and give each total once", () => {
+      const res = plan(
+        [
+          "client_name,plant_capacity,total_cost,coordinator,order_date,consumer_number",
+          "Anil B,3kW,1000,Rahul,2025-01-08,1",
+          "Anilb,3kW,2000,Rahul,2025-01-08,2",
+          "B Anil,3kW,1000,Rahul,2025-01-08,3",
+        ].join("\n"),
+      );
+      // "Anil B" = "B Anil" (words sorted) and "Anilb" = "Anil B" (run together).
+      expect(res.warnings).toEqual([
+        "Rows 2, 3 and 4 look like the same sale (Anil B, 2025-01-08, ₹1,000 / ₹2,000) — remove one if so",
       ]);
     });
 
@@ -1671,7 +1706,7 @@ describe("a sheet with every quirk of the real one", () => {
 
   it("warns about what the sheet cannot tell: no consumer numbers, a repeated sale, undated completions", () => {
     expect(sheet.warnings).toEqual([
-      "15 rows have no consumer_number — they will be imported again on every upload; to retry, upload only the failed-rows download",
+      "15 rows have no consumer_number — they can only be recognised on a later upload by customer name and order date; add the consumer number where you have it",
       "Rows 3 and 16 look like the same sale (Customer 02, 2025-01-03, ₹2,28,000) — remove one if so",
       "13 completed rows have no commissioned_on — they are imported as complete with the commissioning date not recorded",
     ]);

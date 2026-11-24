@@ -12,9 +12,11 @@ import { Download, FileWarning, Loader2, Upload } from "lucide-react";
 import { importProjects } from "@/app/(app)/onboarding/actions";
 import { decodeCsvBytes } from "@/lib/csv";
 import { IMPORT_TEMPLATE } from "@/lib/domain/import-template";
+import type { DuplicateChoice } from "@/lib/domain/import-duplicates";
 import {
-  IMPORT_COUNT_STATUSES,
+  IMPORT_COUNT_LABELS,
   IMPORT_INITIAL,
+  shownCountStatuses,
   type ImportMode,
   type ImportRowResult,
   type ImportRowStatus,
@@ -25,6 +27,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { FormError, FormField } from "@/components/layout";
 import { FormSelect } from "@/components/form-select";
 import { CoordinatorMatches } from "@/components/onboarding/coordinator-matches";
+import { DuplicateDialog } from "@/components/onboarding/duplicate-dialog";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -60,6 +63,7 @@ const NO_DEFAULT_OPTION = {
 
 const IMPORT_ROW_STATUS: StatusRegistry<ImportRowStatus> = {
   ready: { label: "Ready", badgeClass: TONES.blue },
+  duplicate: { label: "Already in", badgeClass: TONES.amber },
   imported: { label: "Imported", badgeClass: TONES.emerald },
   skipped: { label: "Skipped", badgeClass: TONES.amber },
   failed: { label: "Failed", badgeClass: TONES.red },
@@ -99,6 +103,13 @@ export function BulkImportForm({
   const [pressed, setPressed] = useState<ImportMode | null>(null);
   const pressedRef = useRef<ImportMode | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // What was last sent, so a choice about the rows already in the system goes
+  // with exactly the CSV, default coordinator and skip setting it was asked about.
+  const postedRef = useRef<FormData | null>(null);
+  // The result whose duplicates warning was closed. A new result reopens it
+  // (no effect needed); this one stays closed.
+  const [dismissed, setDismissed] = useState<ImportState | null>(null);
+  const warningOpen = state.duplicates !== null && dismissed !== state;
 
   async function onFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -143,6 +154,25 @@ export function BulkImportForm({
     setPressed(intent);
     const data = new FormData(e.currentTarget);
     data.set("intent", intent ?? "");
+    postedRef.current = data;
+    startTransition(() => formAction(data));
+  }
+
+  /**
+   * The admin chose what to do with the rows already in the system: send the
+   * import they were asked about again, saying so. Cancel sends nothing — the
+   * server wrote nothing and keeps refusing until a choice is posted.
+   */
+  function onChoose(choice: DuplicateChoice) {
+    setDismissed(state);
+    const posted = postedRef.current;
+    if (!posted) return;
+    const data = new FormData();
+    for (const [key, value] of posted) data.append(key, value);
+    data.set("intent", "import");
+    data.set("duplicates", choice);
+    postedRef.current = data;
+    setPressed("import");
     startTransition(() => formAction(data));
   }
 
@@ -269,6 +299,13 @@ export function BulkImportForm({
       </form>
 
       {state.ran && state.results.length > 0 && <ImportResults state={state} />}
+
+      <DuplicateDialog
+        notice={state.duplicates}
+        open={warningOpen}
+        onClose={() => setDismissed(state)}
+        onChoose={onChoose}
+      />
     </div>
   );
 }
@@ -296,9 +333,10 @@ function SkipExistingField({
         <p id="skip_existing_hint" className="text-xs text-muted-foreground">
           A row whose KSEB consumer number is already in the system is reported as
           skipped instead of creating a duplicate project. Rows without a consumer
-          number are imported again every time, so to retry, upload the failed-rows
-          download rather than the whole sheet. Turn off only to add a second plant
-          on an existing connection.
+          number are recognised only by customer name and order date — Import asks
+          before writing those again — so to retry, upload the failed-rows download
+          rather than the whole sheet. Turn off only to add a second plant on an
+          existing connection.
         </p>
       </div>
       {/* An unchecked checkbox posts nothing; post the choice explicitly. */}
@@ -362,13 +400,19 @@ function ImportResults({ state }: { state: ImportState }) {
 
   const rows =
     filter === "all" ? state.results : state.results.filter((r) => r.status === filter);
-  const statuses = IMPORT_COUNT_STATUSES[state.mode];
+  const statuses = shownCountStatuses(state);
+  // Import projects stopped for the choice about rows already in the system.
+  const awaitingChoice = state.duplicates?.kind === "confirm";
 
   return (
     <section aria-labelledby="import-results-title" className="space-y-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h3 id="import-results-title" className="text-sm font-semibold">
-          {checking ? "Check results — nothing was imported" : "Results"}
+          {awaitingChoice
+            ? "Nothing was imported — some sales are already in the system"
+            : checking
+              ? "Check results — nothing was imported"
+              : "Results"}
         </h3>
         {state.retryCsv && (
           <Button
@@ -404,7 +448,7 @@ function ImportResults({ state }: { state: ImportState }) {
               )}
             >
               <span className="text-lg font-semibold tabular-nums">{state.counts[status]}</span>{" "}
-              <span className="text-muted-foreground">{status}</span>
+              <span className="text-muted-foreground">{IMPORT_COUNT_LABELS[status]}</span>
             </button>
           ))}
         </div>
@@ -414,12 +458,24 @@ function ImportResults({ state }: { state: ImportState }) {
             the system or repeated earlier in this file, which are skipped.
           </p>
         )}
+        {checking && state.counts.duplicate > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Rows already in the system match a sale with the same customer and order date.
+            Import projects asks whether to skip them or import them again.
+          </p>
+        )}
       </div>
 
-      {checking && (
+      {checking && !awaitingChoice && (
         <p className="text-xs text-muted-foreground">
           Nothing has been written. Fix the failed rows in the CSV above (or choose a default
           coordinator for blank cells), check again, then press Import projects.
+        </p>
+      )}
+      {awaitingChoice && (
+        <p className="text-xs text-muted-foreground">
+          Nothing has been written. Press Import projects again to choose what to do with the
+          rows already in the system.
         </p>
       )}
       {!checking && state.retryCsv && (
@@ -432,7 +488,7 @@ function ImportResults({ state }: { state: ImportState }) {
 
       {rows.length === 0 ? (
         <p className="rounded-lg border p-4 text-sm text-muted-foreground">
-          No {filter} rows.
+          {filter === "duplicate" ? "No rows already in the system." : `No ${filter} rows.`}
         </p>
       ) : (
         <ResultList rows={rows} />

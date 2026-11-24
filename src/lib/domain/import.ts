@@ -36,6 +36,7 @@ import {
   type Cell,
   type DateRead,
 } from "./import-cells";
+import { sameCustomerGroups } from "./import-duplicates";
 import { TEMPLATE_ROWS } from "./import-template-rows";
 import { ledgerProblems, ledgerTotals, paymentSummary, withLedger } from "./payment";
 import { PAYMENT_LIMITS } from "./payment-limits";
@@ -1593,9 +1594,19 @@ function rupees(n: number): string {
   return Number.isInteger(n) ? formatCurrencyWhole(n) : formatCurrency(n);
 }
 
-/** Look-alike key for the same sale typed twice. */
-function saleKey(row: ImportRow): string {
-  return `${nameKey(row.client_name)}|${row.order_date}|${row.total_cost}`;
+/**
+ * Rows that look like the same sale typed twice: the same order date and the
+ * same customer, names compared as the check against the sales already in the
+ * system compares them (`sameCustomer`: "R.Vijayakumar" is "Vijayakumar R").
+ * The totals are not compared — a sale typed again often has its amount
+ * corrected. In the order of each group's first row.
+ */
+function lookAlikeSales(rows: readonly ImportRow[]): ImportRow[][] {
+  const byDate = new Map<string, ImportRow[]>();
+  for (const row of rows) byDate.set(row.order_date, [...(byDate.get(row.order_date) ?? []), row]);
+  return [...byDate.values()]
+    .flatMap((dated) => sameCustomerGroups(dated, (r) => r.client_name))
+    .sort(([a], [b]) => a.row_no - b.row_no);
 }
 
 /**
@@ -1634,21 +1645,17 @@ function fileWarnings(
   const unnumbered = rows.filter((r) => r.consumer_number === null).length;
   if (unnumbered > 0) {
     warnings.push(
-      `${unnumbered} ${plural(unnumbered, "row has", "rows have")} no consumer_number — ${plural(unnumbered, "it", "they")} will be imported again on every upload; to retry, upload only the failed-rows download`,
+      `${unnumbered} ${plural(unnumbered, "row has", "rows have")} no consumer_number — ${plural(unnumbered, "it", "they")} can only be recognised on a later upload by customer name and order date; add the consumer number where you have it`,
     );
   }
   if (skipExisting) warnings.push(...repeatedConsumerNumbers(rows));
 
-  const groups = new Map<string, ImportRow[]>();
-  for (const row of rows) {
-    const key = saleKey(row);
-    groups.set(key, [...(groups.get(key) ?? []), row]);
-  }
-  for (const same of groups.values()) {
-    if (same.length < 2) continue;
+  for (const same of lookAlikeSales(rows)) {
     const [first] = same;
+    // Each total once: they need not agree.
+    const totals = [...new Set(same.map((r) => r.total_cost))].map(rupees).join(" / ");
     warnings.push(
-      `Rows ${listRows(same.map((r) => r.row_no))} look like the same sale (${first.client_name}, ${first.order_date}, ${rupees(first.total_cost)}) — remove one if so`,
+      `Rows ${listRows(same.map((r) => r.row_no))} look like the same sale (${first.client_name}, ${first.order_date}, ${totals}) — remove one if so`,
     );
   }
 

@@ -66,7 +66,7 @@ const COLUMN_HINTS: Record<ImportHeader, string> = {
   financing_type: "loan or self. Blank is self, or loan when a bank is named.",
   loan_bank_name: "Lending bank, for loan-financed plants.",
   consumer_number:
-    "KSEB consumer number. Used to skip projects that are already in the system — a row without one is imported again on every upload. Of several rows in one file with the same number, only the first is imported.",
+    "KSEB consumer number. Used to skip projects that are already in the system. A row without one is recognised by customer name and order date instead: a sale already in the system is flagged, and the import skips it unless you choose to import it again. Of several rows in one file with the same number, only the first is imported.",
   kseb_section: "KSEB section office.",
   notes: "Anything else the office should know.",
   current_stage:
@@ -329,8 +329,10 @@ function HowItWorks() {
       </li>
       <li>
         Up to {MAX_IMPORT_ROWS.toLocaleString("en-IN")} rows per file. Download the
-        failed rows, fix them and upload that file, not the whole sheet: only rows
-        with a consumer number are recognised as already imported. Its{" "}
+        failed rows, fix them and upload that file, not the whole sheet. A sale that
+        is already in the system (same consumer number, or same customer and order
+        date) is flagged with a warning and skipped unless you choose to import it
+        again. Its{" "}
         <Code>{IMPORT_ERROR_COLUMN}</Code> column is ignored.
       </li>
     </ol>
