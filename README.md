@@ -126,10 +126,26 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
   which account each name resolved to, with warnings (rows with no consumer number, likely
   duplicates), **without writing anything**; **Import projects** then loads it. Every
   problem in a row is reported together, re-uploads skip rows already imported, and failed
-  rows download as a fix-and-retry CSV.
+  rows download as a fix-and-retry CSV. **Duplicate uploads are caught:** a row whose
+  customer (name compared loosely) and order date match a sale already in the system is
+  flagged, a popup says the sheet was already uploaded and when, and **Import** writes
+  nothing until the admin chooses to skip those rows (the default) or, after ticking a
+  confirmation, to import them again.
 - **Dashboard** — KPI cards (single aggregate query) plus recent-activity tables. Cancelled
   and refunded projects are left out of *Active Projects* and the approved pipeline and
   counted in their own tile.
+- **Reports** (office only) — a **monthly management report** for the CEO and the team: sales
+  booked (count, value, kW, average), net collections (advances + payments − refunds; KSEB
+  fees and write-offs apart), commissioned, cancelled / refunded, service visits and
+  incentives paid, each compared with the previous month and the same month last year (the
+  current month is compared day-for-day, "1–24 Nov vs 1–24 Oct"). It adds the financial year
+  to date (April–March) against last year, a 12-month trend, a by-coordinator table (a shared
+  sale is split exactly between its coordinators) and an *as of today* snapshot. Downloads:
+  a **PDF** report and **CSV** files of the month's sales, collections and the trend.
+- **Services report** (office only, *Reports → Services*) — service visits completed per
+  engineer and in total for a month or all time (routine / ad-hoc, charges billed), what each
+  engineer has open, in progress and overdue now, a 12-month trend and the list of visits,
+  with a CSV download.
 - **Scalable lists** — every list paginates, filters, sorts and searches **server-side** (URL-driven) via RLS-respecting Postgres views, so they hold up at large data volumes.
 - **Installable app** — a web manifest and icons, so field staff can add it to their home screen.
 - **Light / dark theme** — system-aware with a toggle; preference persists.
@@ -277,6 +293,7 @@ public/brand/                  # Official logo assets from bsssolar.com
 | Payments ledger | Record/edit + delete, write off a balance | Record/edit, write off a balance | Read their sales' | — |
 | Feasibility | Set | Set | Read their sales' | — |
 | Incentives | Set + delete with the sale | Set (agreed amount, record / edit instalments) | Read **their own** only, never a partner's | — |
+| Reports (monthly + services) | View + download | View + download | — | — |
 | Service Tickets | Full CRUD | Full CRUD | Read tickets on their sales' projects | Read + set *in progress* / *completed* on **their own** only |
 | Notifications | Own inbox | Own inbox | Own inbox | Own inbox |
 | Team / Profiles | Add + roles + delete + edit anyone | Add + roles + edit (not another admin's or the Super Admin's login) | Read own profile, and the name, role and phone of whoever shares a sale with them | Read own profile only |

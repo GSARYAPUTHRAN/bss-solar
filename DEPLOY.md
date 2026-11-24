@@ -467,8 +467,9 @@ everything back if their final check fails.
 4. **Check file.** Onboarding → paste or upload the CSV → **Check file**. This validates
    everything and **writes nothing**. Read the *Coordinator matches* panel (problems come
    first: every written reference and the account it resolved to), the file-level warnings
-   (rows with no consumer number, which would be imported again on every upload; two rows
-   that look like the same sale; blank order dates) and each failed row, then fix the
+   (rows with no consumer number, which a later upload can only recognise by customer name
+   and order date; two rows that look like the same sale; blank order dates). If rows match
+   sales already in the system, a popup says so: the sheet (or part of it) was uploaded before and each failed row, then fix the
    sheet and check again. Leave **Default coordinator** at *No default* unless the rows
    with a blank coordinator cell really belong to one person: with no default, a blank
    cell fails instead of silently giving the sale to whoever is uploading, and a row that
@@ -477,9 +478,12 @@ everything back if their final check fails.
    result table lists imported / skipped / failed rows, with the coordinators each sale
    ended up with. *Download failed rows* gives a CSV of exactly the rows to fix. **Fix and
    re-upload that file, not the original.** Leave **Skip rows whose consumer number already
-   exists** ticked: it skips a row whose KSEB consumer number is already in the database,
-   but only rows **with** a consumer number are protected — a row without one is imported
-   again every time it is uploaded.
+   exists** ticked: it skips a row whose KSEB consumer number is already in the database.
+   A row without one is compared by customer name and order date: when it matches a sale
+   already in the system, **Import** stops before writing anything and asks — *Skip* them
+   (the default) or tick *I understand this creates duplicate sales* and import them again.
+   Two people importing the same sheet at the very same moment are not caught (that would
+   need a database lock), so let one person run the imports.
 6. **Spot-check** the dashboard counts against the sheet, a shared sale (both coordinators
    see it), a custom plan and a cancelled or refunded project.
 
@@ -566,6 +570,9 @@ If trial accounts must go too, use the reset instead of the wipe:
 | Cancelled / refunded | The office marks a project refunded with remarks: it leaves the active pipeline and KPIs, its balance stops counting as outstanding, and *Reinstate* brings it back |
 | Custom plan | Create a *Custom plan* ("Inverter + panel"): no KSEB estimate, one *Handover* step, *Mark handed over* completes it |
 | Check file | Onboarding → *Check file* on a sample sheet reports coordinator matches and warnings, and creates nothing |
+| Duplicate upload | Import a sheet, then *Check file* / *Import* the same sheet again: a popup says it was already uploaded, and *Skip* imports nothing new |
+| Reports | *Reports* shows last month's figures with growth; *Download PDF* and the three CSVs open; a coordinator gets no Reports menu |
+| Services report | *Reports → Services* lists every engineer with their completed visits and a Total row |
 
 ---
 
