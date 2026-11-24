@@ -3,16 +3,20 @@ import { parseCsv } from "@/lib/csv";
 import { formatCurrency } from "@/lib/format";
 import { CoordinatorDirectory } from "./coordinator-match";
 import { planImport, validateImportHeaders, type ImportPlan, type ImportRow } from "./import";
+import { duplicateMessage, importedAgainWarning, type ExistingSale } from "./import-duplicates";
 import {
+  IMPORT_COUNT_LABELS,
   IMPORT_COUNT_STATUSES,
   IMPORT_INITIAL,
   chunk,
   checkedState,
+  duplicateChoiceState,
   importError,
   importedMessage,
   isImportRowStatus,
   isOutcomeStatus,
   readyMessage,
+  shownCountStatuses,
   summarizeImport,
   type ImportOutcome,
 } from "./import-results";
@@ -92,29 +96,46 @@ describe("chunk", () => {
 });
 
 describe("row statuses", () => {
-  it("knows the four a result can show", () => {
-    expect(["ready", "imported", "skipped", "failed", "ok"].map(isImportRowStatus)).toEqual([
-      true,
-      true,
-      true,
-      true,
-      false,
-    ]);
+  it("knows the five a result can show", () => {
+    expect(
+      ["ready", "duplicate", "imported", "skipped", "failed", "ok"].map(isImportRowStatus),
+    ).toEqual([true, true, true, true, true, false]);
   });
 
-  it("takes only the three the RPC reports from an outcome — never 'ready'", () => {
-    expect(["imported", "skipped", "failed", "ready", "ok"].map(isOutcomeStatus)).toEqual([
-      true,
-      true,
-      true,
-      false,
-      false,
-    ]);
+  it("takes only the three the RPC reports from an outcome — never 'ready' or 'duplicate'", () => {
+    expect(
+      ["imported", "skipped", "failed", "ready", "duplicate", "ok"].map(isOutcomeStatus),
+    ).toEqual([true, true, true, false, false, false]);
   });
 
-  it("shows Ready and Failed for a check, never Imported or Skipped", () => {
-    expect(IMPORT_COUNT_STATUSES.check).toEqual(["ready", "failed"]);
+  it("shows Ready, Already in and Failed for a check, never Imported or Skipped", () => {
+    expect(IMPORT_COUNT_STATUSES.check).toEqual(["ready", "duplicate", "failed"]);
     expect(IMPORT_COUNT_STATUSES.import).toEqual(["imported", "skipped", "failed"]);
+  });
+
+  it("words each count", () => {
+    expect(IMPORT_COUNT_LABELS).toEqual({
+      ready: "ready",
+      duplicate: "already in the system",
+      imported: "imported",
+      skipped: "skipped",
+      failed: "failed",
+    });
+  });
+
+  it("shows the already-in count only when there are such rows", () => {
+    const counts = { ...IMPORT_INITIAL.counts };
+    expect(shownCountStatuses({ mode: "check", counts })).toEqual(["ready", "failed"]);
+    expect(shownCountStatuses({ mode: "check", counts: { ...counts, duplicate: 2 } })).toEqual([
+      "ready",
+      "duplicate",
+      "failed",
+    ]);
+    expect(shownCountStatuses({ mode: "import", counts: { ...counts, duplicate: 2 } })).toEqual([
+      "imported",
+      "skipped",
+      "failed",
+    ]);
   });
 });
 
@@ -137,6 +158,12 @@ describe("the notes of a check", () => {
   it("start empty, and an error run has none", () => {
     expect(IMPORT_INITIAL.notes).toEqual([]);
     expect(importError("nope").notes).toEqual([]);
+  });
+
+  it("carry no duplicates warning to begin with, nor after an error", () => {
+    expect(IMPORT_INITIAL.duplicates).toBeNull();
+    expect(IMPORT_INITIAL.counts.duplicate).toBe(0);
+    expect(importError("nope").duplicates).toBeNull();
   });
 });
 
@@ -321,7 +348,7 @@ describe("summarizeImport", () => {
     );
     expect(state.ran).toBe(true);
     expect(state.mode).toBe("import");
-    expect(state.counts).toEqual({ ready: 0, imported: 1, skipped: 1, failed: 2 });
+    expect(state.counts).toEqual({ ready: 0, duplicate: 0, imported: 1, skipped: 1, failed: 2 });
     expect(state.results.map((r) => [r.row, r.status])).toEqual([
       [2, "imported"],
       [3, "failed"],
@@ -469,7 +496,7 @@ describe("summarizeImport", () => {
         ),
         outcomes({ row_no: 3, status: "imported", message: null }),
       );
-      expect(state.counts).toEqual({ ready: 0, imported: 1, skipped: 0, failed: 1 });
+      expect(state.counts).toEqual({ ready: 0, duplicate: 0, imported: 1, skipped: 0, failed: 1 });
       const rows = rowsOf(state.retryCsv);
       expect(rows[0]).toEqual([
         "client_name",
@@ -509,7 +536,7 @@ describe("checkedState", () => {
     const state = checkedState(plan(csv));
     expect(state.ran).toBe(true);
     expect(state.mode).toBe("check");
-    expect(state.counts).toEqual({ ready: 2, imported: 0, skipped: 0, failed: 2 });
+    expect(state.counts).toEqual({ ready: 2, duplicate: 0, imported: 0, skipped: 0, failed: 2 });
     expect(state.results.map((r) => [r.row, r.status])).toEqual([
       [2, "ready"],
       [3, "failed"],
@@ -577,5 +604,179 @@ describe("checkedState", () => {
   it("remembers whether existing consumer numbers will be skipped", () => {
     expect(checkedState(plan(csv)).skipExisting).toBe(true);
     expect(checkedState(plan(csv), { skipExisting: false }).skipExisting).toBe(false);
+  });
+});
+
+describe("rows already in the system", () => {
+  const CSV = [
+    "client_name,plant_capacity,total_cost,order_date,coordinator",
+    "Vijayakumar R,3kW,195000,2026-06-15,Rahul",
+    "No Capacity,,1000,2026-06-15,Rahul",
+    "Meera Nair,5kW,310000,2026-06-15,Priya",
+    "Santhi kumari,3kW,195000,2026-06-16,Rahul",
+  ].join("\n");
+
+  const SALE: ExistingSale = {
+    id: "wo-1",
+    clientName: "R.Vijayakumar",
+    orderDate: "2026-06-15",
+    createdAt: "2026-06-20T06:00:00Z",
+    coordinatorNames: ["Rahul Menon"],
+    totalCost: 195000,
+  };
+  const SANTHI: ExistingSale = {
+    ...SALE,
+    id: "wo-2",
+    clientName: "Santhikumari",
+    orderDate: "2026-06-16",
+  };
+  const matches = new Map([
+    [2, SALE],
+    [5, SANTHI],
+  ]);
+
+  describe("in a check", () => {
+    it("marks them, says which sale each matches, and counts them apart from ready", () => {
+      const state = checkedState(plan(CSV), { duplicates: matches });
+      expect(state.mode).toBe("check");
+      expect(state.counts).toEqual({ ready: 1, duplicate: 2, imported: 0, skipped: 0, failed: 1 });
+      expect(state.results.map((r) => [r.row, r.status])).toEqual([
+        [2, "duplicate"],
+        [3, "failed"],
+        [4, "ready"],
+        [5, "duplicate"],
+      ]);
+      expect(state.results[0].message).toBe(duplicateMessage(SALE));
+      expect(state.results[0].message).toMatch(
+        /^Already in the system — R\.Vijayakumar, added on 20 Jun 2026/,
+      );
+    });
+
+    it("keeps a matching row's own warnings — they matter if it is imported anyway", () => {
+      const planned = plan(
+        "client_name,plant_capacity,total_cost,coordinator\nSanthi kumari,3kW,195000,Rahul",
+      );
+      const state = checkedState(planned, {
+        duplicates: new Map([[2, { ...SANTHI, orderDate: TODAY }]]),
+      });
+      expect(state.results[0].warnings).toEqual([`order_date is blank — today (${TODAY}) will be used`]);
+    });
+
+    it("opens the warning with what was found, to be acknowledged", () => {
+      const state = checkedState(plan(CSV), { duplicates: matches });
+      expect(state.duplicates).toEqual({
+        kind: "check",
+        count: 2,
+        byNameOnly: 0,
+        valid: 3,
+        addedOn: ["2026-06-20"],
+        names: ["Vijayakumar R", "Santhi kumari"],
+      });
+    });
+
+    it("says which rows were matched by name alone, row by row and in the warning", () => {
+      const byName = { ...SANTHI, orderDate: "2025-03-01", byNameOnly: true };
+      const state = checkedState(plan(CSV), { duplicates: new Map([[2, SALE], [5, byName]]) });
+      expect(state.results[3].message).toBe(duplicateMessage(byName));
+      expect(state.results[3].message).toMatch(/^Already in the system — a sale with this name \(no order date/);
+      expect(state.duplicates).toMatchObject({ count: 2, byNameOnly: 1 });
+    });
+
+    it("has no warning when nothing matches", () => {
+      expect(checkedState(plan(CSV)).duplicates).toBeNull();
+      expect(checkedState(plan(CSV), { duplicates: new Map() }).duplicates).toBeNull();
+    });
+
+    it("does not offer them for download: they are not something to fix", () => {
+      const rows = rowsOf(checkedState(plan(CSV), { duplicates: matches }).retryCsv);
+      expect(rows.slice(1).map((r) => r[0])).toEqual(["No Capacity"]);
+    });
+  });
+
+  describe("an import that stopped for the choice", () => {
+    it("reports the rows as a check — nothing was written — and asks", () => {
+      const state = duplicateChoiceState(plan(CSV), { duplicates: matches, skipExisting: false });
+      expect(state.mode).toBe("check");
+      expect(state.counts).toMatchObject({ imported: 0, skipped: 0, duplicate: 2, ready: 1 });
+      expect(state.duplicates).toMatchObject({ kind: "confirm", count: 2, valid: 3 });
+      expect(state.skipExisting).toBe(false);
+    });
+  });
+
+  describe("skipped as chosen", () => {
+    it("are skipped without an outcome — they were never sent — and say which sale they match", () => {
+      const state = summarizeImport(plan(CSV), outcomes({ row_no: 4, status: "imported", message: null }), {
+        duplicates: { matches, choice: "skip" },
+      });
+      expect(state.counts).toEqual({ ready: 0, duplicate: 0, imported: 1, skipped: 2, failed: 1 });
+      expect(state.results.map((r) => [r.row, r.status])).toEqual([
+        [2, "skipped"],
+        [3, "failed"],
+        [4, "imported"],
+        [5, "skipped"],
+      ]);
+      expect(state.results[0].message).toBe(duplicateMessage(SALE));
+      expect(state.results[3].message).toBe(duplicateMessage(SANTHI));
+      // A finished import asks nothing.
+      expect(state.duplicates).toBeNull();
+    });
+
+    it("go in the rows-to-fix download with the sale they match as the reason", () => {
+      const state = summarizeImport(plan(CSV), outcomes({ row_no: 4, status: "imported", message: null }), {
+        duplicates: { matches, choice: "skip" },
+      });
+      const rows = rowsOf(state.retryCsv);
+      expect(rows.slice(1).map((r) => [r[0], r[5]])).toEqual([
+        ["Vijayakumar R", duplicateMessage(SALE)],
+        ["No Capacity", "plant_capacity is required"],
+        ["Santhi kumari", duplicateMessage(SANTHI)],
+      ]);
+    });
+
+    it("are skipped even when the run stopped early — they were never meant to be sent", () => {
+      const state = summarizeImport(plan(CSV), outcomes(), {
+        duplicates: { matches, choice: "skip" },
+        notRunReason: "Not imported — the import stopped before this row.",
+        error: "Nothing was imported.",
+      });
+      expect(state.results.map((r) => r.status)).toEqual(["skipped", "failed", "failed", "skipped"]);
+      expect(state.results[2].message).toBe("Not imported — the import stopped before this row.");
+    });
+  });
+
+  describe("imported anyway", () => {
+    it("are imported, with the sale they duplicate on record under the message", () => {
+      const state = summarizeImport(
+        plan(CSV),
+        outcomes(
+          { row_no: 2, status: "imported", message: null },
+          { row_no: 4, status: "imported", message: null },
+          { row_no: 5, status: "skipped", message: "Consumer number 1 already exists (Santhikumari)" },
+        ),
+        { duplicates: { matches, choice: "include" } },
+      );
+      expect(state.counts).toEqual({ ready: 0, duplicate: 0, imported: 2, skipped: 1, failed: 1 });
+      expect(state.results[0].warnings).toEqual([importedAgainWarning(SALE)]);
+      expect(state.results[0].warnings[0]).toMatch(/^Imported again as chosen — this sale was/);
+      expect(state.results[2].warnings).toEqual([]);
+      // The database's own skip (consumer number) still says what it says.
+      expect(state.results[3]).toMatchObject({
+        status: "skipped",
+        message: "Consumer number 1 already exists (Santhikumari)",
+        warnings: [],
+      });
+      expect(state.duplicates).toBeNull();
+    });
+
+    it("put a match by name alone on record as one", () => {
+      const byName = { ...SALE, orderDate: "2025-03-01", byNameOnly: true };
+      const state = summarizeImport(plan(CSV), outcomes({ row_no: 2, status: "imported", message: null }), {
+        duplicates: { matches: new Map([[2, byName]]), choice: "include" },
+      });
+      expect(state.results[0].warnings).toEqual([importedAgainWarning(byName)]);
+      expect(state.results[0].warnings[0]).toMatch(
+        /^Imported again as chosen — a sale with this name was already in the system \(no order date in the sheet to compare\): R\.Vijayakumar, ordered 1 Mar 2025,/,
+      );
+    });
   });
 });
