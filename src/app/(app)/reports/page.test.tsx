@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { formatCurrency } from "@/lib/format";
+import { formatCurrency, formatCurrencyWhole } from "@/lib/format";
 import type { ReportData, ReportSale } from "@/lib/domain/reports";
 import type { DashboardMetrics } from "@/server/data";
 
@@ -168,7 +168,9 @@ describe("Reports page — sections", () => {
   it("shows the headline figures for the month", async () => {
     await renderPage();
     const value = document.querySelector<HTMLElement>('[data-kpi="salesValue"]')!;
-    expect(value).toHaveTextContent(formatCurrency(300000));
+    // The headline is in whole rupees; the comparisons keep the paise.
+    expect(value).toHaveTextContent(formatCurrencyWhole(300000));
+    expect(value).not.toHaveTextContent(formatCurrency(300000));
     // 1–24 Oct had ₹2,00,000.
     expect(value).toHaveTextContent("▲ up 50.0% vs 1–24 Oct 2026");
   });

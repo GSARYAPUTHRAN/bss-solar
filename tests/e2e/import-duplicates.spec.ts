@@ -163,6 +163,11 @@ test.describe("on a phone", () => {
     await submit(page, csv.replace(`${stamp} Latha`, `${stamp} Latha Nair`), /^import projects$/i);
     const dialog = page.getByRole("dialog", { name: /some of these sales are already in the system/i });
     await expect(dialog).toBeVisible();
+    // The dialog zooms in from 95% as it opens; measure once that has finished, or a
+    // 40px button reads as ~39.6px (as on CI's slower runners).
+    await dialog.evaluate((el) =>
+      Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)),
+    );
 
     const box = await dialog.boundingBox();
     if (!box) throw new Error("the dialog is not on the screen");
@@ -173,8 +178,10 @@ test.describe("on a phone", () => {
     ).toBe(true);
 
     for (const button of await dialog.getByRole("button").all()) {
+      // Layout height, not the on-screen box, so no transform can shave it.
+      const height = await button.evaluate((el) => (el as HTMLElement).offsetHeight);
+      expect(height).toBeGreaterThanOrEqual(40);
       const b = await button.boundingBox();
-      expect(b?.height ?? 0).toBeGreaterThanOrEqual(40);
       expect((b?.x ?? 0) + (b?.width ?? 0)).toBeLessThanOrEqual(360);
     }
 
