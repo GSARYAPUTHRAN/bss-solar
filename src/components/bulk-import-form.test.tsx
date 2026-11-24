@@ -4,9 +4,11 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { CoordinatorDirectory } from "@/lib/domain/coordinator-match";
 import { planImport } from "@/lib/domain/import";
+import type { ExistingSale } from "@/lib/domain/import-duplicates";
 import {
   IMPORT_INITIAL,
   checkedState,
+  duplicateChoiceState,
   summarizeImport,
   type ImportState,
 } from "@/lib/domain/import-results";
@@ -74,7 +76,10 @@ describe("BulkImportForm — skip existing", () => {
       name: /skip rows whose consumer number already exists/i,
     });
     expect(skip).toBeChecked();
-    expect(skip).toHaveAccessibleDescription(/rows without a consumer number are imported again/i);
+    expect(skip).toHaveAccessibleDescription(
+      /rows without a consumer number are recognised only by customer name and order date/i,
+    );
+    expect(skip).toHaveAccessibleDescription(/import asks before writing those again/i);
     expect(skip).toHaveAccessibleDescription(/upload the failed-rows download/i);
     expect(skip).not.toHaveAccessibleDescription(/makes re-uploading safe/i);
   });
@@ -446,5 +451,176 @@ describe("BulkImportForm — an import's results", () => {
 
     expect(screen.queryByText("Anand Kumar")).not.toBeInTheDocument();
     expect(screen.getByText("Meera Nair")).toBeVisible();
+  });
+});
+
+describe("BulkImportForm — sales already in the system", () => {
+  // Anand Kumar (row 2) is in the system already; Meera Nair (row 3) fails; Joseph Mathew (row 4) is new.
+  const SALE: ExistingSale = {
+    id: "wo-1",
+    clientName: "Anand Kumar",
+    orderDate: "2025-01-10",
+    createdAt: "2026-11-08T05:00:00Z",
+    coordinatorNames: ["Rahul Menon"],
+    totalCost: 195000,
+  };
+  const MATCHES = new Map([[2, SALE]]);
+
+  async function press(name: RegExp, user: ReturnType<typeof renderForm>) {
+    await user.click(screen.getByRole("button", { name }));
+  }
+
+  it("opens no warning when nothing matches", async () => {
+    action.mockResolvedValue(checkedState(planned()));
+    const user = renderForm();
+    setCsv(CSV);
+    await press(/check file/i, user);
+    await screen.findByRole("heading", { name: /nothing was imported/i });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  describe("after Check file", () => {
+    async function checked() {
+      // A fresh result per request, as the server sends.
+      action.mockImplementation(async () => checkedState(planned(), { duplicates: MATCHES }));
+      const user = renderForm();
+      setCsv(CSV);
+      await press(/check file/i, user);
+      return user;
+    }
+
+    it("opens the warning by itself, and OK closes it for good", async () => {
+      const user = await checked();
+      const dialog = await screen.findByRole("dialog", {
+        name: "Some of these sales are already in the system",
+      });
+      expect(dialog).toHaveAccessibleDescription(
+        /^1 of 2 rows matches a sale already in the system \(same customer and order date\)\. It was added on 8 Nov 2026\.$/,
+      );
+      await user.click(within(dialog).getByRole("button", { name: "OK" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(action).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks the rows and counts them apart, as something to filter by", async () => {
+      const user = await checked();
+      await user.click(await screen.findByRole("button", { name: "OK" }));
+      const filter = screen.getByRole("group", { name: /filter results/i });
+      expect(
+        within(filter).getAllByRole("button").map((b) => b.textContent?.replace(/\s+/g, " ").trim()),
+      ).toEqual(["1 ready", "1 already in the system", "1 failed"]);
+      expect(screen.getByText(/^Already in the system — Anand Kumar, added on 8 Nov 2026/)).toBeVisible();
+      expect(screen.getByText(/import projects asks whether to skip them or import them again/i)).toBeVisible();
+
+      await user.click(within(filter).getByRole("button", { name: /already in the system/i }));
+      expect(screen.getByText("Anand Kumar")).toBeVisible();
+      expect(screen.queryByText("Joseph Mathew")).not.toBeInTheDocument();
+    });
+
+    it("opens again for the next result", async () => {
+      const user = await checked();
+      await user.click(await screen.findByRole("button", { name: "OK" }));
+      await press(/check file/i, user);
+      expect(await screen.findByRole("dialog")).toBeVisible();
+    });
+  });
+
+  describe("after Import projects stopped for a choice", () => {
+    async function stopped() {
+      action.mockResolvedValueOnce(duplicateChoiceState(planned(), { duplicates: MATCHES }));
+      const user = renderForm();
+      setCsv(CSV);
+      await user.click(screen.getByRole("checkbox", { name: /skip rows whose consumer number/i }));
+      await press(/^import projects$/i, user);
+      const dialog = await screen.findByRole("dialog", {
+        name: "Some of these sales are already in the system",
+      });
+      return { user, dialog };
+    }
+
+    it("says nothing was imported, behind the dialog too", async () => {
+      const { user, dialog } = await stopped();
+      expect(within(dialog).getByText("Nothing has been imported yet.")).toBeVisible();
+      await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(
+        screen.getByRole("heading", {
+          name: "Nothing was imported — some sales are already in the system",
+        }),
+      ).toBeVisible();
+      expect(screen.getByText(/press import projects again to choose/i)).toBeVisible();
+    });
+
+    it("skipping sends the same import again, saying to skip them", async () => {
+      const { user, dialog } = await stopped();
+      await user.click(
+        within(dialog).getByRole("button", {
+          name: "Skip the 1 already in the system and import the other 1",
+        }),
+      );
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expect(action).toHaveBeenCalledTimes(2);
+      const first = posted(0);
+      const again = posted(1);
+      expect(again.get("intent")).toBe("import");
+      expect(again.get("duplicates")).toBe("skip");
+      expect(again.get("csv")).toBe(CSV);
+      expect(again.get("csv")).toBe(first.get("csv"));
+      expect(again.get("default_coordinator_id")).toBe(first.get("default_coordinator_id"));
+      expect(again.get("skip_existing")).toBe("false");
+      // The first request asked nothing of the duplicates: the server stopped to ask.
+      expect(first.has("duplicates")).toBe(false);
+    });
+
+    it("importing all sends it again with duplicates=include, only once ticked", async () => {
+      const { user, dialog } = await stopped();
+      const all = within(dialog).getByRole("button", { name: "Import all 2 anyway" });
+      expect(all).toBeDisabled();
+      await user.click(
+        within(dialog).getByRole("checkbox", { name: /i understand this creates duplicate sales/i }),
+      );
+      await user.click(all);
+      expect(action).toHaveBeenCalledTimes(2);
+      expect(posted(1).get("duplicates")).toBe("include");
+      expect(posted(1).get("intent")).toBe("import");
+    });
+
+    it("shows Importing… while the choice is sent", async () => {
+      let finish: (state: ImportState) => void = () => {};
+      const { user, dialog } = await stopped();
+      action.mockReturnValueOnce(new Promise<ImportState>((resolve) => (finish = resolve)));
+      await user.click(within(dialog).getByRole("button", { name: /^skip the 1/i }));
+      expect(await screen.findByRole("button", { name: /importing…/i })).toBeDisabled();
+      finish(IMPORT_INITIAL);
+      expect(await screen.findByRole("button", { name: /^import projects$/i })).toBeEnabled();
+    });
+
+    it("cancelling or Escape sends nothing; Import projects asks afresh", async () => {
+      const { user, dialog } = await stopped();
+      await user.keyboard("{Escape}");
+      expect(dialog).not.toBeInTheDocument();
+      expect(action).toHaveBeenCalledTimes(1);
+
+      action.mockResolvedValueOnce(duplicateChoiceState(planned(), { duplicates: MATCHES }));
+      await press(/^import projects$/i, user);
+      expect(await screen.findByRole("dialog")).toBeVisible();
+      expect(posted(1).has("duplicates")).toBe(false);
+    });
+
+    it("shows the import's results once a choice went through, with no dialog", async () => {
+      const { user, dialog } = await stopped();
+      action.mockResolvedValueOnce(
+        summarizeImport(planned(), new Map([[4, { row_no: 4, status: "imported", message: null }]]), {
+          duplicates: { matches: MATCHES, choice: "skip" },
+        }),
+      );
+      await user.click(within(dialog).getByRole("button", { name: /^skip the 1/i }));
+      await screen.findByRole("heading", { name: /^results$/i });
+      const filter = screen.getByRole("group", { name: /filter results/i });
+      expect(
+        within(filter).getAllByRole("button").map((b) => b.textContent?.replace(/\s+/g, " ").trim()),
+      ).toEqual(["1 imported", "1 skipped", "1 failed"]);
+      expect(screen.getByText(/^Already in the system — Anand Kumar/)).toBeVisible();
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
   });
 });

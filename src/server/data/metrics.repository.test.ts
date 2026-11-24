@@ -78,3 +78,24 @@ describe("metricsRepository.dashboard", () => {
     expect(metrics.refundedProjects).toBe(0);
   });
 });
+
+describe("metricsRepository.dashboardOrThrow", () => {
+  it("maps the same figures as dashboard()", async () => {
+    expect(await metricsRepository.dashboardOrThrow()).toEqual(await metricsRepository.dashboard());
+    expect(rpc).toHaveBeenCalledWith("dashboard_metrics");
+  });
+
+  it("throws, instead of reading as zeros, when the figures cannot be read", async () => {
+    response = { data: null, error: { message: "statement timeout" } };
+    await expect(metricsRepository.dashboardOrThrow()).rejects.toThrow(
+      "Could not read the business figures: statement timeout",
+    );
+  });
+
+  it("throws when the query returns no row", async () => {
+    response = { data: null, error: null };
+    await expect(metricsRepository.dashboardOrThrow()).rejects.toThrow(/no row returned/);
+    // The dashboard itself still opens, on zeros.
+    expect((await metricsRepository.dashboard()).activeProjects).toBe(0);
+  });
+});

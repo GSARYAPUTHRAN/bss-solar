@@ -185,7 +185,21 @@ function csvCell(value: string): string {
  * Cells are written verbatim — deliberately no spreadsheet-formula escaping:
  * this is used to hand an admin back their own data for correction and
  * re-upload, and prefixing values such as "+91 98470 11111" would corrupt them.
+ * A download that is only read (a report) escapes its free-text cells with
+ * `spreadsheetText` before they get here.
  */
 export function toCsv(rows: readonly (readonly string[])[]): string {
   return rows.map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+/**
+ * Free text (a name, a reference) made safe for a report CSV opened in Excel:
+ * a cell starting with = + - @, a tab or a carriage return is run as a formula
+ * there, quotes or not — "=HYPERLINK(…)" typed as a client name would become a
+ * live link. Such text gets a leading apostrophe and stays text. Only for free
+ * text: numbers keep their minus sign, and a file meant for re-upload must
+ * carry exactly what was typed.
+ */
+export function spreadsheetText(value: string): string {
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
 }

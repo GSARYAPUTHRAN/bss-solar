@@ -4,6 +4,14 @@ import { CANCELLATION } from "./cancellation";
 import type { CoordinatorMatch } from "./coordinator-match";
 import { coordinatorsLabel } from "./coordinators";
 import { IMPORT_ERROR_COLUMN, type ImportPlan, type ImportRow } from "./import";
+import {
+  duplicateMessage,
+  duplicateNotice,
+  importedAgainWarning,
+  type DuplicateChoice,
+  type DuplicateMatch,
+  type DuplicateNotice,
+} from "./import-duplicates";
 import { paymentSummary, withLedger } from "./payment";
 import { round2 } from "./rounding";
 import { completionLabel, stageLabel } from "./plan";
@@ -18,8 +26,12 @@ import { completionLabel, stageLabel } from "./plan";
  * export async functions.
  */
 
-/** `ready` is a checked row that would import; the rest are what a run reports. */
-export const IMPORT_ROW_STATUSES = ["ready", "imported", "skipped", "failed"] as const;
+/**
+ * `ready` is a checked row that would import; `duplicate` a checked row that
+ * matches a sale already in the system (`import-duplicates`); the rest are what
+ * a run reports.
+ */
+export const IMPORT_ROW_STATUSES = ["ready", "duplicate", "imported", "skipped", "failed"] as const;
 export type ImportRowStatus = (typeof IMPORT_ROW_STATUSES)[number];
 
 export function isImportRowStatus(value: string): value is ImportRowStatus {
@@ -36,11 +48,32 @@ export function isOutcomeStatus(value: string): value is ImportOutcomeStatus {
 /** Check file validates and writes nothing; Import projects writes. */
 export type ImportMode = "check" | "import";
 
-/** The counts each mode shows, in order — a check can neither import nor skip. */
+/** The counts each mode can show, in order — a check can neither import nor skip. */
 export const IMPORT_COUNT_STATUSES: Record<ImportMode, readonly ImportRowStatus[]> = {
-  check: ["ready", "failed"],
+  check: ["ready", "duplicate", "failed"],
   import: ["imported", "skipped", "failed"],
 };
+
+/** What follows a count's number: "2 ready", "1 already in the system". */
+export const IMPORT_COUNT_LABELS: Record<ImportRowStatus, string> = {
+  ready: "ready",
+  duplicate: "already in the system",
+  imported: "imported",
+  skipped: "skipped",
+  failed: "failed",
+};
+
+/**
+ * The counts a run shows: its mode's, with "already in the system" only when
+ * there are such rows — most checks have none, and a 0 would only distract.
+ */
+export function shownCountStatuses(
+  state: Pick<ImportState, "mode" | "counts">,
+): ImportRowStatus[] {
+  return IMPORT_COUNT_STATUSES[state.mode].filter(
+    (status) => status !== "duplicate" || state.counts.duplicate > 0,
+  );
+}
 
 export interface ImportRowResult {
   /** The line of the sheet the row starts on (the first line is 1; blank lines count). */
@@ -48,7 +81,7 @@ export interface ImportRowResult {
   client: string;
   status: ImportRowStatus;
   message: string;
-  /** Worth a look, shown under the message; only on rows that are ready or in. */
+  /** Worth a look, shown under the message; only on valid rows (ready, already in, imported). */
   warnings: string[];
 }
 
@@ -67,15 +100,24 @@ export interface ImportState {
   notes: string[];
   /** Whether "skip rows whose consumer number exists" was on for the run. */
   skipExisting: boolean;
+  /**
+   * Rows matching sales already in the system, for the warning dialog: set by
+   * a check that found some, and by an import that stopped — writing nothing —
+   * for the admin to choose. Null otherwise.
+   */
+  duplicates: DuplicateNotice | null;
   error?: string;
 }
 
 const NO_COUNTS: Record<ImportRowStatus, number> = {
   ready: 0,
+  duplicate: 0,
   imported: 0,
   skipped: 0,
   failed: 0,
 };
+
+const NO_MATCHES: ReadonlyMap<number, DuplicateMatch> = new Map();
 
 export const IMPORT_INITIAL: ImportState = {
   ran: false,
@@ -87,6 +129,7 @@ export const IMPORT_INITIAL: ImportState = {
   warnings: [],
   notes: [],
   skipExisting: true,
+  duplicates: null,
 };
 
 /** A run that stopped before any row was attempted. */
@@ -177,6 +220,10 @@ export function readyMessage(
  * Merge validation and RPC outcomes into the results, in sheet order. A valid
  * row with no outcome was never sent (the run stopped early) — `notRunReason`
  * says why.
+ *
+ * `duplicates` are the rows that matched a sale already in the system and what
+ * the admin chose: skipped ones were never sent and say which sale they match;
+ * ones imported anyway carry that as a warning.
  */
 export function summarizeImport(
   plan: ImportPlan,
@@ -185,12 +232,23 @@ export function summarizeImport(
     notRunReason,
     error,
     skipExisting = true,
-  }: { notRunReason?: string; error?: string; skipExisting?: boolean } = {},
+    duplicates,
+  }: {
+    notRunReason?: string;
+    error?: string;
+    skipExisting?: boolean;
+    duplicates?: { matches: ReadonlyMap<number, DuplicateMatch>; choice: DuplicateChoice };
+  } = {},
 ): ImportState {
   const results = plan.rows.map((row): ImportRowResult => {
     const { rowNo, client, parsed } = row;
     const base = { row: rowNo, client, warnings: [] as string[] };
     if (!parsed.ok) return { ...base, status: "failed", message: parsed.error };
+
+    const existing = duplicates?.matches.get(rowNo);
+    if (existing && duplicates?.choice === "skip") {
+      return { ...base, status: "skipped", message: duplicateMessage(existing) };
+    }
 
     const outcome = outcomes.get(rowNo);
     if (!outcome) {
@@ -208,7 +266,7 @@ export function summarizeImport(
         ...base,
         status,
         message: importedMessage(parsed.data, row.coordinators, row.defaulted),
-        warnings: row.warnings,
+        warnings: existing ? [...row.warnings, importedAgainWarning(existing)] : row.warnings,
       };
     }
     return {
@@ -218,38 +276,78 @@ export function summarizeImport(
     };
   });
 
-  return stateOf("import", plan, results, { error, skipExisting });
+  return stateOf("import", plan, results, { error, skipExisting, duplicates: null });
 }
 
-/**
- * The outcome of Check file: every row validated, nothing written. Valid rows
- * are `ready`; the failed rows' download works exactly as after an import.
- */
-export function checkedState(
+/** A validated plan as Check file reports it, the matches marked `duplicate`. */
+function validatedState(
   plan: ImportPlan,
-  { skipExisting = true }: { skipExisting?: boolean } = {},
+  skipExisting: boolean,
+  matches: ReadonlyMap<number, DuplicateMatch>,
+  kind: DuplicateNotice["kind"],
 ): ImportState {
   const results = plan.rows.map((row): ImportRowResult => {
     const { rowNo, client, parsed } = row;
     if (!parsed.ok) {
       return { row: rowNo, client, status: "failed", message: parsed.error, warnings: [] };
     }
+    const existing = matches.get(rowNo);
     return {
       row: rowNo,
       client,
-      status: "ready",
-      message: readyMessage(parsed.data, row.coordinators, row.defaulted),
+      status: existing ? "duplicate" : "ready",
+      message: existing
+        ? duplicateMessage(existing)
+        : readyMessage(parsed.data, row.coordinators, row.defaulted),
       warnings: row.warnings,
     };
   });
-  return stateOf("check", plan, results, { skipExisting });
+  return stateOf("check", plan, results, {
+    skipExisting,
+    duplicates: duplicateNotice(plan, matches, kind),
+  });
+}
+
+/**
+ * The outcome of Check file: every row validated, nothing written. Valid rows
+ * are `ready`, or `duplicate` when they match a sale already in the system
+ * (`duplicates`, from `findDuplicates`) — then the notice opens the warning.
+ * The failed rows' download works exactly as after an import.
+ */
+export function checkedState(
+  plan: ImportPlan,
+  {
+    skipExisting = true,
+    duplicates = NO_MATCHES,
+  }: { skipExisting?: boolean; duplicates?: ReadonlyMap<number, DuplicateMatch> } = {},
+): ImportState {
+  return validatedState(plan, skipExisting, duplicates, "check");
+}
+
+/**
+ * Import projects found rows already in the system and was not told what to do
+ * with them, so it wrote NOTHING: the rows are reported as a check would (it is
+ * one — nothing was written), and the notice asks the admin to choose.
+ */
+export function duplicateChoiceState(
+  plan: ImportPlan,
+  {
+    skipExisting = true,
+    duplicates,
+  }: { skipExisting?: boolean; duplicates: ReadonlyMap<number, DuplicateMatch> },
+): ImportState {
+  return validatedState(plan, skipExisting, duplicates, "confirm");
 }
 
 function stateOf(
   mode: ImportMode,
   plan: ImportPlan,
   results: ImportRowResult[],
-  { error, skipExisting }: { error?: string; skipExisting: boolean },
+  {
+    error,
+    skipExisting,
+    duplicates,
+  }: { error?: string; skipExisting: boolean; duplicates: DuplicateNotice | null },
 ): ImportState {
   const counts = { ...NO_COUNTS };
   for (const r of results) counts[r.status] += 1;
@@ -264,6 +362,7 @@ function stateOf(
     warnings: plan.warnings,
     notes: plan.notes,
     skipExisting,
+    duplicates,
     error,
   };
 }
@@ -271,7 +370,9 @@ function stateOf(
 /**
  * The rows that did not go in, with their cells exactly as uploaded and the
  * reason in `import_error` — fix, then upload the same file again. Null when
- * every row was imported (or, in a check, is ready).
+ * every row was imported (or, in a check, is ready or already in the system —
+ * neither is something to fix). A row skipped as already in the system is in
+ * it, with the sale it matched as the reason.
  */
 export function retryCsv(plan: ImportPlan, results: readonly ImportRowResult[]): string | null {
   const reasons = new Map(

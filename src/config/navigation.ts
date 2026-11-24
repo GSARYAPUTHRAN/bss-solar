@@ -4,6 +4,7 @@ import type { UserRole } from "@/lib/types";
 /** Icon keys are resolved to components client-side (see nav-icons.tsx). */
 export type NavIcon =
   | "dashboard"
+  | "reports"
   | "work-orders"
   | "projects"
   | "tickets"
@@ -29,6 +30,13 @@ export const MODULES: ModuleNav[] = [
     href: "/",
     label: "Dashboard",
     icon: "dashboard",
+    roles: ["admin"],
+  },
+  {
+    // Monthly management report + services summary. Office only.
+    href: "/reports",
+    label: "Reports",
+    icon: "reports",
     roles: ["admin"],
   },
   {

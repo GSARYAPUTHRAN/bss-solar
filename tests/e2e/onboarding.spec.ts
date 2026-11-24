@@ -177,8 +177,15 @@ test("admin bulk imports projects with staged payments, KSEB and incentive colum
     expect(body).not.toContain(loanClient);
   });
 
-  await test.step("re-uploading the same file skips what is already in", async () => {
+  await test.step("re-uploading the same file is caught, and its consumer numbers still skip it", async () => {
     await importCsv(page, csv);
+    // Same customers on the same order dates: the import stops and asks, writing nothing.
+    const dialog = page.getByRole("dialog", { name: /this sheet was already uploaded/i });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText(/nothing new to import/i);
+    // Imported anyway, the consumer numbers still keep the projects from going in twice.
+    await dialog.getByRole("checkbox", { name: /i understand this creates duplicate sales/i }).click();
+    await dialog.getByRole("button", { name: /^import all 2 anyway$/i }).click();
     await expect(page.getByRole("button", { name: /^0 imported$/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /^2 skipped$/i })).toBeVisible();
     await expect(page.getByText(/already exists/i).first()).toBeVisible();
