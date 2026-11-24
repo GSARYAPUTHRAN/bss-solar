@@ -54,14 +54,19 @@ function n(value: number | string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export const metricsRepository = {
-  /** Single aggregate query for the dashboard KPIs (see dashboard_metrics RPC). */
-  async dashboard(): Promise<DashboardMetrics> {
-    const supabase = await createClient();
-    const { data, error } = await supabase.rpc("dashboard_metrics").single();
-    if (error || !data) return EMPTY;
-    const row = data as MetricsRow;
-    return {
+/**
+ * Single aggregate query for the KPIs (see dashboard_metrics RPC): the figures,
+ * or why they could not be read. It returns rather than throws, so that
+ * `dashboard()` can fall back to zeros without a try/catch — one would also
+ * swallow the errors Next.js throws from `cookies()` inside `createClient()`.
+ */
+async function readDashboard(): Promise<{ metrics: DashboardMetrics } | { error: string }> {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("dashboard_metrics").single();
+  if (error || !data) return { error: error?.message ?? "no row returned" };
+  const row = data as MetricsRow;
+  return {
+    metrics: {
       totalWorkOrders: n(row.total_work_orders),
       pendingApprovals: n(row.pending_approvals),
       activeProjects: n(row.active_projects),
@@ -75,6 +80,24 @@ export const metricsRepository = {
       incentivePending: n(row.incentive_pending),
       cancelledProjects: n(row.cancelled_projects),
       refundedProjects: n(row.refunded_projects),
-    };
+    },
+  };
+}
+
+export const metricsRepository = {
+  /** The dashboard KPIs; zeros when they cannot be read, so the dashboard still opens. */
+  async dashboard(): Promise<DashboardMetrics> {
+    const read = await readDashboard();
+    return "metrics" in read ? read.metrics : EMPTY;
+  },
+
+  /**
+   * The same figures for a page that must not print zeros it never read — the
+   * monthly report and its PDF: a failed read throws, to the error page.
+   */
+  async dashboardOrThrow(): Promise<DashboardMetrics> {
+    const read = await readDashboard();
+    if ("error" in read) throw new Error(`Could not read the business figures: ${read.error}`);
+    return read.metrics;
   },
 };

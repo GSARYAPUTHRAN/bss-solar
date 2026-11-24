@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  BarChart3,
   LayoutDashboard,
   ClipboardList,
   KanbanSquare,
@@ -13,6 +14,7 @@ import type { NavIcon } from "@/config/navigation";
 
 export const NAV_ICONS: Record<NavIcon, LucideIcon> = {
   dashboard: LayoutDashboard,
+  reports: BarChart3,
   "work-orders": ClipboardList,
   projects: KanbanSquare,
   tickets: Wrench,

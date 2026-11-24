@@ -10,12 +10,24 @@ describe("navForRole", () => {
     expect(hrefsFor("admin")).toEqual(MODULES.map((m) => m.href));
     expect(hrefsFor("admin")).toEqual([
       "/",
+      "/reports",
       "/work-orders",
       "/projects",
       "/tickets",
       "/team",
       "/onboarding",
     ]);
+  });
+
+  it("puts Reports right after the Dashboard, for the office only", () => {
+    const reports = MODULES.find((m) => m.href === "/reports");
+    expect(reports).toEqual({
+      href: "/reports",
+      label: "Reports",
+      icon: "reports",
+      roles: ["admin"],
+    });
+    expect(hrefsFor("superadmin")).toContain("/reports");
   });
 
   it("restricts coordinators to the sales pipeline", () => {
@@ -35,6 +47,7 @@ describe("navForRole", () => {
   it("does not leak office modules to field roles", () => {
     for (const role of ["coordinator", "service_engineer"] as const) {
       expect(hrefsFor(role)).not.toContain("/");
+      expect(hrefsFor(role)).not.toContain("/reports");
       expect(hrefsFor(role)).not.toContain("/team");
       expect(hrefsFor(role)).not.toContain("/onboarding");
     }
