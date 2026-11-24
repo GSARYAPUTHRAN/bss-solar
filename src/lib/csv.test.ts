@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decodeCsvBytes, parseCsv, parseCsvRecords, toCsv } from "./csv";
+import { decodeCsvBytes, parseCsv, parseCsvRecords, spreadsheetText, toCsv } from "./csv";
 
 describe("parseCsv", () => {
   it("parses simple rows", () => {
@@ -291,5 +291,36 @@ describe("toCsv", () => {
     ];
     // The third row has a newline in a cell, so the last one starts on line 5.
     expect(parseCsv(toCsv(rows))).toEqual({ rows, lines: [1, 2, 3, 5] });
+  });
+
+  it("writes formula-looking text as typed: the failed-rows file goes back to the importer", () => {
+    const rows = [["=SUM(A1)", "-5 kW", "@home", "\tTab"]];
+    expect(parseCsv(toCsv(rows))).toEqual({ rows, lines: [1] });
+  });
+});
+
+describe("spreadsheetText", () => {
+  it.each([
+    ['=HYPERLINK("http://x.example","Click")', `'=HYPERLINK("http://x.example","Click")`],
+    ["+91 98470 11111", "'+91 98470 11111"],
+    ["-2+3", "'-2+3"],
+    ["@SUM(A1:A9)", "'@SUM(A1:A9)"],
+    ["\t=1+1", "'\t=1+1"],
+    ["\r=1+1", "'\r=1+1"],
+  ])("makes %j text a spreadsheet will not run", (value, safe) => {
+    expect(spreadsheetText(value)).toBe(safe);
+  });
+
+  it.each(["Anand", "", "Rahul Menon, Priya Suresh", "UPI 123 = paid", "a-b", "'=already text"])(
+    "leaves %j as it is",
+    (value) => {
+      expect(spreadsheetText(value)).toBe(value);
+    },
+  );
+
+  it("survives RFC-4180 quoting: the cell still reads back with its apostrophe", () => {
+    const cell = spreadsheetText('=1+1,"x"');
+    expect(toCsv([[cell]])).toBe(`"'=1+1,""x"""`);
+    expect(parseCsv(toCsv([[cell]]))).toEqual({ rows: [[`'=1+1,"x"`]], lines: [1] });
   });
 });
