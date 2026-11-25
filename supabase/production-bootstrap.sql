@@ -31,8 +31,8 @@ where id = (
 returning id, full_name, role;
 
 -- ---------- Super Admin (highest privilege) ---------------------------------
--- The single account allowed to DELETE users, projects and work orders, on top
--- of everything an admin can do.
+-- The single top account: everything an admin can do, and the only one who may
+-- delete an admin (admins may delete too for now — see can_delete()).
 --
 -- This role is IMMUTABLE from the application: nobody — not an admin, not even
 -- the Super Admin — can grant, revoke or reassign it through the UI. A database

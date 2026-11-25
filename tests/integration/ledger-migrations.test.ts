@@ -6,8 +6,9 @@ import { rolledBack, serviceClient, USERS } from "./helpers";
 import { createFixtures, uniqueTag } from "./fixtures";
 
 /**
- * The three 2026-11-04 migrations are idempotent and keep their promises when
- * replayed over a database that already has them (CI re-applies migrations; a
+ * The three 2026-11-04 migrations, and the 2026-11-25 office-deletes one, are
+ * idempotent and keep their promises when replayed over a database that
+ * already has them (CI re-applies migrations; a
  * hand-run must be safe too). Each is replayed twice inside a transaction that
  * is rolled back, so the stored database is never touched.
  */
@@ -101,6 +102,7 @@ describe.each([
   ["20261104120000", "the purposes migration"],
   ["20261104120100", "the ledger-adjustments and instalments migration"],
   ["20261104120200", "the import v4 migration"],
+  ["20261125120000", "the office-deletes and deletion-log migration"],
 ])("re-running %s", (prefix, what) => {
   it(`${what} changes nothing, twice over`, async () => {
     await fx.approvedProject({

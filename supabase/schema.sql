@@ -18,9 +18,10 @@
 create extension if not exists "uuid-ossp";
 
 -- ============ ENUMS ============
--- 'superadmin' is a single privileged account that owns destructive actions
--- (deleting users, projects, work orders and payments); 'admin' keeps
--- everything else. A 'service_engineer' works only the service tickets
+-- 'superadmin' is a single privileged account above 'admin': its seat is
+-- immutable from the app and only it may delete an admin or change an admin's
+-- role. Who may delete records at all is can_delete() (the Super Admin and,
+-- for now, the Admin). A 'service_engineer' works only the service tickets
 -- assigned to them.
 create type user_role as enum ('admin', 'coordinator', 'superadmin', 'service_engineer');
 create type work_order_status as enum ('pending', 'approved', 'rejected');
@@ -111,7 +112,7 @@ returns boolean language sql security definer stable set search_path = public as
   );
 $$;
 
--- Is the caller THE SuperAdmin? (gates every delete)
+-- Is the caller THE SuperAdmin? (the only one who may delete an admin)
 create or replace function is_superadmin()
 returns boolean language sql security definer stable set search_path = public as $$
   select exists (
@@ -119,6 +120,20 @@ returns boolean language sql security definer stable set search_path = public as
     where id = auth.uid() and role::text = 'superadmin'
   );
 $$;
+
+-- May the caller delete records? The one DB switch for who may delete. To make
+-- deletes Super Admin-only again, change the list to ('superadmin') in a new
+-- migration and drop 'admin' from DELETE_ROLES in src/lib/domain/role.ts.
+create or replace function can_delete()
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (
+    select 1 from profiles
+    where id = auth.uid() and role::text in ('admin', 'superadmin')
+  );
+$$;
+grant execute on function can_delete() to anon, authenticated, service_role;
+comment on function can_delete() is
+  'The one DB switch for who may delete. To make deletes Super Admin-only again, change the list to (''superadmin'') in a new migration and drop ''admin'' from DELETE_ROLES in src/lib/domain/role.ts.';
 
 create or replace function current_user_role()
 returns user_role language sql security definer stable set search_path = public as $$
@@ -692,6 +707,120 @@ revoke insert, update on push_subscriptions from anon, authenticated;
 grant select, delete on push_subscriptions to authenticated;
 grant select, insert, update, delete on push_subscriptions to service_role;
 
+-- ============ DELETION LOG ============
+-- Every delete made by a signed-in user, with a full snapshot of the row, who
+-- did it and when; cascaded children carry the same tx, so a sale and
+-- everything that went with it read as one event: its project (with the ids of
+-- the service tickets that were linked to it), milestones, ledger, the people
+-- who shared it and their incentives. Wipe and reset scripts,
+-- service-role clean-ups and SQL run by the owner (no auth.uid()) are not
+-- logged. Rows are recovered with SQL from the snapshot; there is no restore
+-- button. Deleters read it; nobody writes it through the API (the trigger is a
+-- definer function, and the team page's service role logs the accounts it
+-- deletes through the auth admin API).
+create table deleted_records (
+  id bigint generated always as identity primary key,
+  -- work_orders | projects | project_milestones | payments | service_tickets
+  -- | work_order_coordinators | coordinator_incentives
+  -- | coordinator_incentive_payments | profiles
+  table_name text not null,
+  -- The row's id; work_order_coordinators and coordinator_incentives (no id)
+  -- as '<work_order_id>:<coordinator_id>'.
+  record_id text not null,
+  -- to_jsonb(old): everything needed to put the row back with SQL. A project's
+  -- also lists the service tickets linked to it (service_ticket_ids).
+  snapshot jsonb not null,
+  deleted_by uuid references profiles(id) on delete set null,
+  -- The actor's name when they deleted it (survives the actor's own deletion).
+  deleted_by_name text,
+  deleted_at timestamptz not null default now(),
+  -- Groups a delete with its cascades (one transaction).
+  tx bigint not null default txid_current()
+);
+create index idx_deleted_records_deleted_at on deleted_records (deleted_at desc);
+create index idx_deleted_records_tx on deleted_records (tx);
+comment on table deleted_records is
+  'Every delete made by a signed-in user, with a full snapshot of the row (written by log_deletion()): work orders, projects (with service_ticket_ids, the tickets linked at the time), milestones, payments, service tickets, who shared a deleted sale, incentives, instalments and profiles. Rows of one delete share its tx. Restore with SQL from the snapshot (DEPLOY.md, "Restoring a deleted sale").';
+
+revoke all on deleted_records from anon, authenticated;
+revoke all on sequence deleted_records_id_seq from anon, authenticated;
+grant select on deleted_records to authenticated;
+grant all on deleted_records to service_role;
+
+-- One row per deleted row, cascaded children included (auth.uid() is still the
+-- caller's inside a cascade). Only for a signed-in user. The actor's profile
+-- may be gone by the time this runs (deleted in the same statement): the row
+-- is still logged, with their id and name left empty.
+-- Who shared a sale is logged only when the sale goes with them: taking
+-- someone off a sale that stays is an edit, not a delete. A project's service
+-- tickets stay but lose their link (on delete set null), so its snapshot also
+-- lists which were linked (service_ticket_ids); its trigger runs BEFORE the
+-- delete for that reason, ahead of the SET NULL.
+create or replace function log_deletion()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_uid uuid := auth.uid();
+  v_old jsonb := to_jsonb(old);
+  v_by uuid;
+  v_name text;
+begin
+  if v_uid is not null
+     and not (tg_table_name = 'work_order_coordinators' and exists (
+       select 1 from work_orders w where w.id = (v_old ->> 'work_order_id')::uuid
+     )) then
+    if tg_table_name = 'projects' then
+      v_old := v_old || jsonb_build_object('service_ticket_ids', coalesce(
+        (select jsonb_agg(t.id order by t.id)
+           from service_tickets t
+          where t.project_id = (v_old ->> 'id')::uuid),
+        '[]'::jsonb));
+    end if;
+    select p.id, p.full_name into v_by, v_name from profiles p where p.id = v_uid;
+    insert into deleted_records (table_name, record_id, snapshot, deleted_by, deleted_by_name)
+    values (
+      tg_table_name,
+      case
+        when tg_table_name in ('coordinator_incentives', 'work_order_coordinators')
+          then (v_old ->> 'work_order_id') || ':' || (v_old ->> 'coordinator_id')
+        else v_old ->> 'id'
+      end,
+      v_old,
+      v_by,
+      v_name
+    );
+  end if;
+  -- A BEFORE trigger hands the row back: NULL would silently skip the delete.
+  if tg_when = 'BEFORE' then
+    return old;
+  end if;
+  return null;
+end;
+$$;
+create trigger t_work_orders_log_delete after delete on work_orders
+  for each row execute function log_deletion();
+-- BEFORE, to read the project's tickets ahead of the SET NULL that unlinks
+-- them. It fires for a project deleted with its sale too, and a delete that
+-- fails takes its log row with it.
+create trigger t_projects_log_delete before delete on projects
+  for each row execute function log_deletion();
+create trigger t_project_milestones_log_delete after delete on project_milestones
+  for each row execute function log_deletion();
+create trigger t_payments_log_delete after delete on payments
+  for each row execute function log_deletion();
+create trigger t_service_tickets_log_delete after delete on service_tickets
+  for each row execute function log_deletion();
+-- An incentive row goes with its membership; one without an amount is noise.
+create trigger t_coordinator_incentives_log_delete after delete on coordinator_incentives
+  for each row when (old.amount is not null) execute function log_deletion();
+-- Only with its sale (see log_deletion()).
+create trigger t_work_order_coordinators_log_delete after delete on work_order_coordinators
+  for each row execute function log_deletion();
+create trigger t_coordinator_incentive_payments_log_delete
+  after delete on coordinator_incentive_payments
+  for each row execute function log_deletion();
+create trigger t_profiles_log_delete after delete on profiles
+  for each row execute function log_deletion();
+
 -- ============ updated_at AUTO-TOUCH ============
 create or replace function touch_updated_at()
 returns trigger language plpgsql as $$
@@ -719,14 +848,25 @@ alter table notification_dedupe enable row level security;
 alter table push_subscriptions enable row level security;
 alter table work_order_coordinators enable row level security;
 alter table coordinator_incentives enable row level security;
+alter table deleted_records enable row level security;
 
 -- PROFILES: user reads own; admin reads all; user updates own (never role — see
--- guard_profile_role). DELETE is SuperAdmin-only.
+-- guard_profile_role, which also leaves an Admin's role to the Super Admin, so
+-- an Admin cannot demote another Admin to delete them). DELETE: a deleter
+-- (can_delete()), never the Super Admin's seat, never yourself, and an Admin
+-- deletes coordinators and engineers only (never another Admin). The team page
+-- deletes through the auth admin API (service role), where the app's
+-- teamDeleteAuthority applies the same rules.
 create policy profiles_select_self on profiles for select using (id = auth.uid() or is_admin());
 create policy profiles_update_self on profiles for update using (id = auth.uid()) with check (id = auth.uid());
 create policy profiles_admin_insert on profiles for insert with check (is_admin());
 create policy profiles_admin_update on profiles for update using (is_admin()) with check (is_admin());
-create policy profiles_superadmin_delete on profiles for delete using (is_superadmin());
+create policy profiles_delete on profiles for delete using (
+  can_delete()
+  and role::text <> 'superadmin'
+  and id <> auth.uid()
+  and (is_superadmin() or role::text in ('coordinator', 'service_engineer'))
+);
 -- Partners (people who share a sale) see each other's profile row — name, role,
 -- phone, created_at — nobody else's.
 create policy profiles_select_partners on profiles for select using (
@@ -756,18 +896,18 @@ create policy wo_insert on work_orders for insert
 create policy wo_update on work_orders for update
   using ((select is_admin()) or id in (select my_work_order_ids()))
   with check ((select is_admin()) or id in (select my_work_order_ids()));
-create policy wo_delete on work_orders for delete using (is_superadmin());
+create policy wo_delete on work_orders for delete using (can_delete());
 
 -- PROJECTS: every coordinator of the sale reads them (their own incentive lives
 -- in coordinator_incentives, read-only); admin writes (only admin creates via
--- approval); DELETE is SuperAdmin-only.
+-- approval); a deleter (can_delete()) deletes.
 create policy proj_select on projects for select using (
   (select is_admin()) or work_order_id in (select my_work_order_ids())
 );
 create policy proj_admin_insert on projects for insert with check (is_admin());
 create policy proj_admin_update on projects for update
   using (is_admin()) with check (is_admin());
-create policy proj_superadmin_delete on projects for delete using (is_superadmin());
+create policy proj_delete on projects for delete using (can_delete());
 
 -- MILESTONES: visible to the project's coordinators + admin; admin writes
 create policy ms_select on project_milestones for select using (
@@ -788,16 +928,16 @@ create policy ticket_engineer_update on service_tickets for update
   using (assigned_to = auth.uid() and is_service_engineer())
   with check (assigned_to = auth.uid() and is_service_engineer());
 
--- PAYMENTS: the office records and corrects; only the SuperAdmin deletes; a
--- coordinator reads the payments on their work orders (every coordinator of the
--- sale).
+-- PAYMENTS: the office records and corrects; a deleter (can_delete()) deletes;
+-- a coordinator reads the payments on their work orders (every coordinator of
+-- the sale).
 create policy payment_select on payments for select using (
   (select is_admin()) or work_order_id in (select my_work_order_ids())
 );
 create policy payment_admin_insert on payments for insert with check (is_admin());
 create policy payment_admin_update on payments for update
   using (is_admin()) with check (is_admin());
-create policy payment_superadmin_delete on payments for delete using (is_superadmin());
+create policy payment_delete on payments for delete using (can_delete());
 
 -- SALE TEAMS AND INCENTIVES: a sale's team is visible to its members; an
 -- incentive only to the office and the person it belongs to (RLS cannot hide
@@ -835,6 +975,9 @@ create policy push_select_own on push_subscriptions for select
 create policy push_delete_own on push_subscriptions for delete
   using (user_id = auth.uid());
 
+-- DELETION LOG: deleters read it; no write policy (see the table).
+create policy deleted_records_select on deleted_records for select using (can_delete());
+
 -- ============ SECURITY & DATA-INTEGRITY GUARDS ============
 -- Guards allow server-side contexts (service-role key / superuser: auth.uid()
 -- is NULL) and admins; only a logged-in NON-admin is restricted.
@@ -844,6 +987,10 @@ create policy push_delete_own on push_subscriptions for delete
 -- an admin, not even the SuperAdmin themselves — can grant or revoke it. Only a
 -- server-side context (service-role / migration superuser, auth.uid() IS NULL)
 -- can, which is the deliberate provisioning path (production-bootstrap.sql).
+-- Only the Super Admin changes an Admin's role: otherwise an Admin could demote
+-- another Admin and then delete them, or change their sign-in. Nobody changes
+-- their own role either (the app refuses it too): an Admin is caught by that
+-- rule, the Super Admin by the seat rule, everyone else by the first check.
 -- Two integrity rules apply in EVERY context, the service role included: a
 -- coordinator who owns or shares work orders never becomes a service engineer,
 -- and an engineer hands over open tickets before changing role.
@@ -858,6 +1005,11 @@ begin
 
     if new.role::text = 'superadmin' or old.role::text = 'superadmin' then
       raise exception 'The SuperAdmin role cannot be granted or revoked from the application'
+        using errcode = '42501';
+    end if;
+
+    if old.role::text = 'admin' and not public.is_superadmin() then
+      raise exception 'Only the Super Admin can change an admin''s role'
         using errcode = '42501';
     end if;
   end if;
@@ -1919,6 +2071,89 @@ end;
 $$;
 revoke execute on function account_directory() from public, anon;
 grant execute on function account_directory() to authenticated, service_role;
+
+-- Deletes the given sales in one statement (all or nothing) and returns the ids
+-- that went. SECURITY INVOKER: wo_delete decides, so a caller who may not
+-- delete removes nothing and gets '{}'. Ids that are already gone are skipped.
+create or replace function delete_work_orders(p_ids uuid[])
+returns uuid[] language plpgsql security invoker set search_path = public as $$
+declare
+  v_deleted uuid[];
+begin
+  if cardinality(p_ids) > 500 then
+    raise exception 'At most 500 sales can be deleted at once' using errcode = '22023';
+  end if;
+  with gone as (
+    delete from work_orders w where w.id = any (p_ids) returning w.id
+  )
+  select coalesce(array_agg(gone.id), '{}') into v_deleted from gone;
+  return v_deleted;
+end;
+$$;
+revoke execute on function delete_work_orders(uuid[]) from public, anon;
+grant execute on function delete_work_orders(uuid[]) to authenticated, service_role;
+
+-- "Delete an incentive": the agreed amount and every instalment paid against
+-- it. The incentive row itself belongs to the membership and stays, with no
+-- amount. Office only (can_delete()). The instalments are logged by their own
+-- trigger; the agreed amount is logged here, since no row is deleted for it.
+create or replace function delete_coordinator_incentive(
+  p_work_order_id uuid,
+  p_coordinator_id uuid
+)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_row coordinator_incentives;
+begin
+  if not can_delete() then
+    raise exception 'Only the office can delete an incentive' using errcode = '42501';
+  end if;
+
+  select * into v_row
+  from coordinator_incentives i
+  where i.work_order_id = p_work_order_id and i.coordinator_id = p_coordinator_id
+  for update;
+  if not found then
+    raise exception 'That incentive was not found' using errcode = 'P0002';
+  end if;
+
+  -- Instalments first: the agreed amount can never drop below what has been
+  -- paid out of it.
+  delete from coordinator_incentive_payments p
+  where p.work_order_id = p_work_order_id and p.coordinator_id = p_coordinator_id;
+
+  if v_row.amount is not null then
+    insert into deleted_records (table_name, record_id, snapshot, deleted_by, deleted_by_name)
+    select 'coordinator_incentives',
+           p_work_order_id::text || ':' || p_coordinator_id::text,
+           to_jsonb(v_row), p.id, p.full_name
+    from profiles p
+    where p.id = auth.uid();
+  end if;
+
+  -- No amount, no paid date (coordinator_incentives_paid_needs_amount).
+  update coordinator_incentives i
+     set amount = null, paid_on = null
+   where i.work_order_id = p_work_order_id and i.coordinator_id = p_coordinator_id;
+end;
+$$;
+revoke execute on function delete_coordinator_incentive(uuid, uuid) from public, anon;
+grant execute on function delete_coordinator_incentive(uuid, uuid) to authenticated, service_role;
+
+-- The latest deletes, newest first: the tx of each (at most 200), so that
+-- Recently deleted reads every row of a delete, however many one bulk
+-- clean-up logged. SECURITY INVOKER: the log's own policy decides, so anyone
+-- who may not read it gets nothing.
+create or replace function recent_deletion_txs(p_limit int default 50)
+returns setof bigint language sql stable security invoker set search_path = public as $$
+  select r.tx
+  from deleted_records r
+  group by r.tx
+  order by max(r.deleted_at) desc, max(r.id) desc
+  limit least(greatest(coalesce(p_limit, 50), 1), 200);
+$$;
+revoke execute on function recent_deletion_txs(int) from public, anon;
+grant execute on function recent_deletion_txs(int) to authenticated, service_role;
 
 -- Marks the caller's own notifications read; NULL = every unread one.
 create or replace function mark_notifications_read(p_ids uuid[] default null)

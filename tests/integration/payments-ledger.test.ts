@@ -4,8 +4,8 @@ import { createFixtures, must } from "./fixtures";
 
 /**
  * Who may touch the payments ledger, enforced by RLS (migration
- * 20261010120200): the office records and corrects payments; only the
- * SuperAdmin deletes one (every destructive action is theirs); a coordinator
+ * 20261010120200): the office records and corrects payments; a deleter
+ * (can_delete(): the SuperAdmin and, for now, the Admin) deletes one; a coordinator
  * reads the payments on their own work orders and nothing else; a service
  * engineer sees no money at all.
  */
@@ -80,7 +80,7 @@ describe("the office", () => {
     );
   });
 
-  it("cannot delete a payment as a plain admin (RLS removes nothing)", async () => {
+  it("deletes a payment as an admin (deletes are the office's)", async () => {
     const id = await fx.payment(workOrderId);
     const admin = await signedInAs(USERS.admin);
     const { data, error } = await admin
@@ -89,8 +89,8 @@ describe("the office", () => {
       .eq("id", id)
       .select("id");
     expect(error).toBeNull();
-    expect(data ?? []).toHaveLength(0);
-    expect(await paymentExists(id)).toBe(true);
+    expect(data ?? []).toHaveLength(1);
+    expect(await paymentExists(id)).toBe(false);
   });
 
   it("deletes a payment as the SuperAdmin", async () => {

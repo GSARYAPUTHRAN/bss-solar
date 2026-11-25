@@ -319,3 +319,49 @@ export function createFixtures(db: Db = serviceClient()) {
 }
 
 export type Fixtures = ReturnType<typeof createFixtures>;
+
+/**
+ * Throwaway sign-ins for suites that delete people, created through the auth
+ * admin API (as the team page does) and removed by `cleanup()` whatever a test
+ * left of them. The role is set by the service role (no auth.uid()), the
+ * provisioning path guard_profile_role allows — never 'superadmin'.
+ */
+export function createAccounts(db: Db = serviceClient()) {
+  const ids = new Set<string>();
+
+  async function account(
+    role: "coordinator" | "service_engineer" | "admin" = "coordinator",
+  ): Promise<{ id: string; email: string; password: string; fullName: string }> {
+    const tag = uniqueTag();
+    const email = `disposable-${tag}@bsssolar.test`;
+    const password = "Disposable@12345";
+    const fullName = `Disposable ${tag}`;
+    const created = await db.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { full_name: fullName },
+    });
+    if (created.error || !created.data.user) {
+      throw new Error(`disposable account: ${created.error?.message ?? "no user"}`);
+    }
+    const id = created.data.user.id;
+    ids.add(id);
+    if (role !== "coordinator") {
+      must(
+        await db.from("profiles").update({ role }).eq("id", id).select("id"),
+        "disposable account role",
+      );
+    }
+    return { id, email, password, fullName };
+  }
+
+  async function cleanup(): Promise<void> {
+    // An account whose profile a test deleted still has its sign-in; one the
+    // test deleted outright is simply not found.
+    for (const id of ids) await db.auth.admin.deleteUser(id);
+    ids.clear();
+  }
+
+  return { account, cleanup };
+}

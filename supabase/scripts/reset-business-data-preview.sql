@@ -47,7 +47,7 @@ checks as (
   select 4, false, 'the Super Admin is kept',
     case when exists (select 1 from accounts where kept and role = 'superadmin')
          then null
-         else 'no Super Admin would remain: deleting records stays unavailable until production-bootstrap.sql appoints one'
+         else 'no Super Admin would remain: the Super Admin''s own powers (such as deleting an admin account or changing an admin''s role) stay unavailable until production-bootstrap.sql appoints one'
     end
 ),
 report as (
@@ -83,6 +83,7 @@ report as (
     ('project_milestones', (select count(*) from public.project_milestones)),
     ('projects', (select count(*) from public.projects)),
     ('work_orders', (select count(*) from public.work_orders)),
+    ('deleted_records', (select count(*) from public.deleted_records)),
     ('push_subscriptions (accounts not kept)',
       (select count(*) from public.push_subscriptions s
        where s.user_id not in (select id from accounts where kept)))

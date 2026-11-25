@@ -196,7 +196,7 @@ update public.profiles
   set role = 'admin', phone = '+91 471 2439322'
   where id = '00000000-0000-0000-0000-000000000001';
 
--- The single SuperAdmin (owns deletes for users / projects / work orders).
+-- The single SuperAdmin (the only one who may delete an admin; see can_delete()).
 update public.profiles
   set role = 'superadmin', phone = '+91 471 2439300'
   where id = '00000000-0000-0000-0000-000000000006';

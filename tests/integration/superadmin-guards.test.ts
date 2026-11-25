@@ -2,13 +2,16 @@ import { describe, it, expect, afterAll, beforeEach } from "vitest";
 import { signedInAs, serviceClient, USERS } from "./helpers";
 
 /**
- * The SuperAdmin owns every destructive action. These pin the two halves of that
- * contract at the database level, where it is actually enforced:
+ * Deletes belong to the office: can_delete() (migration 20261125120000) lets
+ * the SuperAdmin and, for now, the Admin delete work orders, projects and
+ * people. These pin that contract at the database level, where it is actually
+ * enforced:
  *
- *   - a plain admin (and a coordinator) cannot DELETE users, projects or work
- *     orders — RLS filters the rows away, so the statement removes nothing;
- *   - the SuperAdmin can, and the seat itself cannot be duplicated or quietly
- *     taken over by an admin.
+ *   - a coordinator cannot DELETE users, projects or work orders — RLS filters
+ *     the rows away, so the statement removes nothing;
+ *   - the office can (office-deletes.test.ts covers who may delete whom), and
+ *     the SuperAdmin seat itself cannot be duplicated or quietly taken over by
+ *     an admin.
  */
 const svc = serviceClient();
 
@@ -41,37 +44,47 @@ async function cleanup(workOrderId: string) {
   await svc.from("work_orders").delete().eq("id", workOrderId);
 }
 
-describe("delete is SuperAdmin-only", () => {
-  it("an admin cannot delete a work order", async () => {
-    const { workOrderId } = await makeFixture("Admin Delete Attempt");
+describe("deletes are the office's", () => {
+  it("an admin can delete a work order (cascading its project)", async () => {
+    const { workOrderId, projectId } = await makeFixture("Admin Delete");
     try {
       const admin = await signedInAs(USERS.admin);
-      const { error } = await admin
+      const { data: deleted, error } = await admin
         .from("work_orders")
         .delete()
         .eq("id", workOrderId)
         .select("id");
-      // RLS filters the row out: no error, but nothing is removed.
       expect(error).toBeNull();
+      expect(deleted ?? []).toHaveLength(1);
 
       const { data } = await svc
         .from("work_orders")
         .select("id")
         .eq("id", workOrderId);
-      expect(data ?? []).toHaveLength(1);
+      expect(data ?? []).toHaveLength(0);
+      const project = await svc.from("projects").select("id").eq("id", projectId);
+      expect(project.data ?? []).toHaveLength(0);
     } finally {
       await cleanup(workOrderId);
     }
   });
 
-  it("an admin cannot delete a project", async () => {
+  it("an admin can delete a project (the work order stays)", async () => {
     const { workOrderId, projectId } = await makeFixture("Admin Project Delete");
     try {
       const admin = await signedInAs(USERS.admin);
-      await admin.from("projects").delete().eq("id", projectId);
+      const { data: deleted, error } = await admin
+        .from("projects")
+        .delete()
+        .eq("id", projectId)
+        .select("id");
+      expect(error).toBeNull();
+      expect(deleted ?? []).toHaveLength(1);
 
       const { data } = await svc.from("projects").select("id").eq("id", projectId);
-      expect(data ?? []).toHaveLength(1);
+      expect(data ?? []).toHaveLength(0);
+      const wo = await svc.from("work_orders").select("id").eq("id", workOrderId);
+      expect(wo.data ?? []).toHaveLength(1);
     } finally {
       await cleanup(workOrderId);
     }
@@ -93,9 +106,14 @@ describe("delete is SuperAdmin-only", () => {
     }
   });
 
-  it("an admin cannot delete a profile", async () => {
-    const admin = await signedInAs(USERS.admin);
-    await admin.from("profiles").delete().eq("id", USERS.sneha.id);
+  it("a coordinator cannot delete a profile", async () => {
+    const rahul = await signedInAs(USERS.rahul);
+    const { data: deleted } = await rahul
+      .from("profiles")
+      .delete()
+      .eq("id", USERS.sneha.id)
+      .select("id");
+    expect(deleted ?? []).toHaveLength(0);
 
     const { data } = await svc
       .from("profiles")
@@ -168,7 +186,7 @@ describe("delete is SuperAdmin-only", () => {
     expect(incentives.data ?? []).toEqual([]);
   });
 
-  it("nobody below the SuperAdmin can delete a sale's coordinators or incentives", async () => {
+  it("nobody deletes a sale's coordinators or incentives directly — not even the office (no grant)", async () => {
     const { workOrderId } = await makeFixture("Admin Shared Delete");
     try {
       const admin = await signedInAs(USERS.admin);

@@ -777,7 +777,7 @@ describe("who may see and write instalments (RLS)", () => {
     expect(await instalments(workOrderId, PRIYA)).toHaveLength(1);
   });
 
-  it("the office can remove one (it is not SuperAdmin-only, unlike a ledger payment)", async () => {
+  it("the office can remove one", async () => {
     const { workOrderId } = await fx.approvedProject();
     await fx.incentive(workOrderId, RAHUL, { amount: 5000 });
     await pay(workOrderId, RAHUL, { amount: 1000, paid_on: "2026-10-01" });
