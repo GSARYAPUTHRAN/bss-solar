@@ -10,6 +10,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth", () => ({
   requireAdmin: vi.fn(),
+  requireDeleter: vi.fn(),
   requireSuperAdmin: vi.fn(),
 }));
 vi.mock("@/server/notifications", () => ({ notify: vi.fn() }));
@@ -31,7 +32,7 @@ vi.mock("@/lib/format", async (importOriginal) => ({
 }));
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, requireSuperAdmin } from "@/lib/auth";
+import { requireAdmin, requireDeleter } from "@/lib/auth";
 import { notify } from "@/server/notifications";
 import { paymentsRepository } from "@/server/data/payments.repository";
 import { workOrdersRepository } from "@/server/data/work-orders.repository";
@@ -126,7 +127,7 @@ const WRITE_OFF = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(requireAdmin).mockResolvedValue(ADMIN);
-  vi.mocked(requireSuperAdmin).mockResolvedValue({ ...ADMIN, role: "superadmin" });
+  vi.mocked(requireDeleter).mockResolvedValue(ADMIN);
   workOrders.byId.mockResolvedValue(WORK_ORDER);
   payments.listForWorkOrder.mockResolvedValue([STAGE_1]);
   payments.byId.mockResolvedValue(STAGE_1);
@@ -715,10 +716,41 @@ describe("updatePayment", () => {
 });
 
 describe("deletePayment", () => {
-  it("is SuperAdmin-only", async () => {
-    vi.mocked(requireSuperAdmin).mockRejectedValue(new Error("REDIRECT:/"));
-    await expect(deletePayment(form({ id: "pay-1" }))).rejects.toThrow("REDIRECT:/");
+  it("is for deleters only: a refused guard deletes nothing", async () => {
+    vi.mocked(requireDeleter).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deletePayment(form({ id: "pay-1" }))).rejects.toThrow("REDIRECT:/work-orders");
+    expect(payments.byId).not.toHaveBeenCalled();
     expect(payments.remove).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", { ...ADMIN, role: "superadmin" } as Profile],
+  ])("lets %s delete a ledger entry", async (_who, profile) => {
+    vi.mocked(requireDeleter).mockResolvedValue(profile);
+    await expect(deletePayment(form({ id: "pay-1", work_order_id: "wo-1" }))).rejects.toThrow(
+      /^REDIRECT:\/projects\/proj-1\?flash=Payment%20deleted\./,
+    );
+    expect(payments.remove).toHaveBeenCalledWith("pay-1");
+  });
+
+  it("deletes from the work order's page when the sale has no project yet", async () => {
+    workOrders.byId.mockResolvedValue({ ...WORK_ORDER, project: null } as WorkOrder);
+    await expect(deletePayment(form({ id: "pay-1", work_order_id: "wo-1" }))).rejects.toThrow(
+      /^REDIRECT:\/work-orders\/wo-1\?flash=Payment%20deleted\./,
+    );
+    expect(payments.remove).toHaveBeenCalledWith("pay-1");
+    expect(revalidatePath).toHaveBeenCalledWith("/work-orders/wo-1");
+  });
+
+  it("explains a delete the database refused, on the ledger's page", async () => {
+    payments.remove.mockResolvedValue({
+      error: "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+    });
+    await expect(deletePayment(form({ id: "pay-1", work_order_id: "wo-1" }))).rejects.toThrow(
+      /^REDIRECT:\/projects\/proj-1\?flash=Nothing%20was%20deleted.*&flashType=error$/,
+    );
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 
   it("deletes and lands back on the project's ledger", async () => {

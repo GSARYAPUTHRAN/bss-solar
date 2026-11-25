@@ -172,12 +172,20 @@ describe("paymentsRepository — writing the ledger", () => {
     });
   });
 
-  it("says so when a delete touched nothing — only the SuperAdmin can", async () => {
+  it("says so when a delete touched nothing — gone already, or not the caller's to delete", async () => {
     result = { data: [], error: null };
     expect(await paymentsRepository.remove("pay-1")).toEqual({
-      error: "Nothing was deleted — only the SuperAdmin can delete.",
+      error: "Nothing was deleted — it may already be gone, or your role cannot delete it.",
     });
+    expect(recorded).toContainEqual(["delete", "payments"]);
+    expect(recorded).toContainEqual(["eq", "id", "pay-1"]);
+    expect(recorded).toContainEqual(["select", "id"]);
     result = { data: [{ id: "pay-1" }], error: null };
     expect(await paymentsRepository.remove("pay-1")).toEqual({ error: null });
+  });
+
+  it("passes a delete's own error on", async () => {
+    result = { data: null, error: { message: "connection reset" } };
+    expect(await paymentsRepository.remove("pay-1")).toEqual({ error: "connection reset" });
   });
 });

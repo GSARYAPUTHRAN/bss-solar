@@ -1,7 +1,12 @@
 import { cache } from "react";
 import { redirect } from "next/navigation";
 import { homeForRole } from "@/config/navigation";
-import { OFFICE_ROLES, TICKET_ROLES, WORK_ORDER_ROLES } from "@/lib/domain/role";
+import {
+  DELETE_ROLES,
+  OFFICE_ROLES,
+  TICKET_ROLES,
+  WORK_ORDER_ROLES,
+} from "@/lib/domain/role";
 import { createClient } from "@/lib/supabase/server";
 import type { Profile, UserRole } from "./types";
 
@@ -40,9 +45,22 @@ export async function requireAdmin(): Promise<Profile> {
   return requireRole(...OFFICE_ROLES);
 }
 
-/** The single privileged account that owns every destructive action. */
+/**
+ * The single account at the top of the hierarchy. No delete uses it any more —
+ * deletes ask `requireDeleter` — but it stays for anything that is the Super
+ * Admin's alone.
+ */
 export async function requireSuperAdmin(): Promise<Profile> {
   return requireRole("superadmin");
+}
+
+/**
+ * Whoever may delete: DELETE_ROLES (lib/domain/role.ts), whose database twin is
+ * `can_delete()`. Every delete action uses this guard, so the role list is the
+ * one switch.
+ */
+export async function requireDeleter(): Promise<Profile> {
+  return requireRole(...DELETE_ROLES);
 }
 
 /** The sales pipeline (/work-orders, /projects): coordinators + office. */

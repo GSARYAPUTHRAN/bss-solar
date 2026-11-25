@@ -25,9 +25,10 @@ export interface PaymentInput {
 }
 
 /**
- * The payments ledger. RLS decides who sees and changes what (migration
- * 20261010120200): the office records and corrects, only the SuperAdmin
- * deletes, a coordinator reads the entries on their own work orders. A write
+ * The payments ledger. RLS decides who sees and changes what (migrations
+ * 20261010120200, 20261125120000): the office records and corrects, deleters
+ * (`can_delete()`) delete, a coordinator reads the entries on their own work
+ * orders. A write
  * filtered out by RLS affects zero rows WITHOUT raising, so every write checks
  * the affected rows and reports instead of claiming a false success.
  */
@@ -103,7 +104,7 @@ export const paymentsRepository = {
       .select("id");
     if (error) return { error: error.message };
     if (!data || data.length === 0) {
-      return { error: "Nothing was deleted — only the SuperAdmin can delete." };
+      return { error: "Nothing was deleted — it may already be gone, or your role cannot delete it." };
     }
     return { error: null };
   },

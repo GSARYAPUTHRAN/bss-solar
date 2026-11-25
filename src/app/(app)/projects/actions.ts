@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin, requireSuperAdmin } from "@/lib/auth";
+import { requireAdmin, requireDeleter } from "@/lib/auth";
 import { projectsRepository, workOrdersRepository } from "@/server/data";
 import type {
   MilestoneSlice,
@@ -254,14 +254,12 @@ export async function updateProjectSettings(formData: FormData) {
   redirect(withFlash(back, "Project settings saved."));
 }
 
-/** The coordinator of the sale the form names, or why not. */
+/** The coordinator of the sale with this id, or why not. */
 function personOf(
   project: ProjectBrief,
-  formData: FormData,
+  coordinatorId: string,
 ): ActionResult<SaleCoordinator> {
-  const person = project.coordinators.find(
-    (c) => c.id === text(formData.get("coordinator_id")),
-  );
+  const person = project.coordinators.find((c) => c.id === coordinatorId);
   return person ? ok(person) : fail("That person is not a coordinator on this project.");
 }
 
@@ -305,7 +303,7 @@ export async function updateCoordinatorIncentive(
   const project = await projectsRepository.brief(text(formData.get("project_id")));
   if (!project) return fail(PROJECT_GONE);
 
-  const person = personOf(project, formData);
+  const person = personOf(project, text(formData.get("coordinator_id")));
   if (!person.ok) return person;
 
   const parsed = parseIncentiveSetting({ amount: str(formData.get("amount")) });
@@ -356,7 +354,7 @@ export async function recordIncentivePayment(
   const project = await projectsRepository.brief(text(formData.get("project_id")));
   if (!project) return fail(PROJECT_GONE);
 
-  const person = personOf(project, formData);
+  const person = personOf(project, text(formData.get("coordinator_id")));
   if (!person.ok) return person;
 
   const input = instalmentFields(formData);
@@ -464,6 +462,44 @@ export async function deleteIncentivePayment(
   return ok({
     message: `${formatCurrency(payment.amount)} payment removed for ${person.full_name}.`,
   });
+}
+
+/**
+ * Delete one coordinator's incentive: the agreed amount and every instalment
+ * paid against it, in one transaction (`delete_coordinator_incentive`) —
+ * deleters only (DELETE_ROLES). The person stays on the sale with no incentive:
+ * an incentive belongs to their place on the sale. Called with its arguments
+ * (not a form), so both are checked as untrusted input.
+ */
+export async function deleteCoordinatorIncentive(
+  projectId: string,
+  coordinatorId: string,
+): Promise<ActionResult<{ message: string }>> {
+  await requireDeleter();
+
+  const project =
+    typeof projectId === "string" && projectId
+      ? await projectsRepository.brief(projectId)
+      : null;
+  if (!project) return fail(PROJECT_GONE);
+
+  const person = personOf(project, typeof coordinatorId === "string" ? coordinatorId : "");
+  if (!person.ok) return person;
+
+  const name = person.data.full_name;
+  const incentive = person.data.incentive;
+  if (!incentive || (incentive.amount === null && incentive.payments.length === 0)) {
+    return fail(`${name} has no incentive on this sale to delete.`);
+  }
+
+  const { error } = await projectsRepository.deleteCoordinatorIncentive(
+    project.work_order_id,
+    person.data.id,
+  );
+  if (error) return fail(error);
+
+  revalidateProject(project.id);
+  return ok({ message: `Incentive deleted for ${name}.` });
 }
 
 /**
@@ -594,15 +630,16 @@ export async function reinstateProject(
 }
 
 /**
- * Destructive — SuperAdmin only. Removes the project and its milestones; service
- * tickets keep their history with a null project.
+ * Destructive — deleters only (DELETE_ROLES: the Super Admin and, for now, the
+ * Admin). Removes the project and its milestones; service tickets keep their
+ * history with a null project.
  *
  * The backing work order is returned to `pending` so the schema invariant
  * "approved work order ⇒ has a project" holds. Re-approving it rebuilds a fresh
  * project with its milestones.
  */
 export async function deleteProject(formData: FormData) {
-  await requireSuperAdmin();
+  await requireDeleter();
   const project = await loadProject(text(formData.get("project_id")));
 
   const { error } = await projectsRepository.remove(project.id);

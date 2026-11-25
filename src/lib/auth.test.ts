@@ -16,11 +16,13 @@ import {
   requireProfile,
   requireRole,
   requireAdmin,
+  requireDeleter,
   requireSuperAdmin,
   requireTicketRole,
   requireWorkOrderRole,
 } from "./auth";
 import { createClient } from "@/lib/supabase/server";
+import { canDeleteRole } from "@/lib/domain/role";
 import type { Profile, UserRole } from "./types";
 
 const mockedCreateClient = vi.mocked(createClient);
@@ -141,6 +143,12 @@ const MATRIX: [string, Guard, Record<UserRole, string | null>][] = [
     { admin: "/", superadmin: null, coordinator: "/work-orders", service_engineer: "/tickets" },
   ],
   [
+    // Admins delete too, for now (DELETE_ROLES); field roles never do.
+    "requireDeleter",
+    requireDeleter,
+    { admin: null, superadmin: null, coordinator: "/work-orders", service_engineer: "/tickets" },
+  ],
+  [
     "requireWorkOrderRole",
     requireWorkOrderRole,
     { admin: null, superadmin: null, coordinator: null, service_engineer: "/tickets" },
@@ -171,6 +179,20 @@ describe.each(MATRIX)("%s", (_name, guard, expected) => {
     mockedCreateClient.mockResolvedValue(fakeSupabase({ user: null }));
     await expect(guard()).rejects.toThrow("REDIRECT:/login");
   });
+});
+
+describe("requireDeleter follows the one switch", () => {
+  it.each(["admin", "superadmin", "coordinator", "service_engineer"] as UserRole[])(
+    "admits %s exactly when DELETE_ROLES does",
+    async (role) => {
+      signInAs(role);
+      const admitted = await requireDeleter().then(
+        () => true,
+        () => false,
+      );
+      expect(admitted).toBe(canDeleteRole(role));
+    },
+  );
 });
 
 describe("guard redirects never loop", () => {

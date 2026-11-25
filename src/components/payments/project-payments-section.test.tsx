@@ -259,7 +259,7 @@ describe("ProjectPaymentsSection — who may do what", () => {
     expect(screen.queryByRole("button", { name: /write off balance/i })).not.toBeInTheDocument();
   });
 
-  it("gives only the SuperAdmin a delete, worded for what is deleted", async () => {
+  it("gives a delete only to a viewer who may delete (canDelete), worded for what is deleted", async () => {
     vi.mocked(paymentsRepository.listForWorkOrder).mockResolvedValue([
       STAGE_1,
       entry({ id: "pay-r", amount: 10000, purpose: "refund", paid_on: "2026-09-25" }),

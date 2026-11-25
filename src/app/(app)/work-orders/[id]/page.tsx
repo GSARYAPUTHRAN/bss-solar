@@ -10,15 +10,10 @@ import {
 import { requireWorkOrderRole } from "@/lib/auth";
 import { profilesRepository, workOrdersRepository } from "@/server/data";
 import { paymentsRepository } from "@/server/data/payments.repository";
-import {
-  approveWorkOrder,
-  rejectWorkOrder,
-  deleteWorkOrder,
-} from "../actions";
+import { approveWorkOrder, rejectWorkOrder } from "../actions";
 import { Page, PageHeader, Section, Field, FieldGrid, FormError } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { SubmitButton } from "@/components/submit-button";
-import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Separator } from "@/components/ui/separator";
 import { CoordinatorNames } from "@/components/coordinator-names";
 import {
@@ -30,16 +25,18 @@ import {
 import { AddressLink, PhoneLink } from "@/components/tickets/contact-links";
 import { AdvanceLine } from "@/components/payments/advance-line";
 import { ContractSummary } from "@/components/payments/contract-summary";
+import { LedgerEntryDelete } from "@/components/payments/ledger-entry-delete";
 import { PaymentLedger } from "@/components/payments/payment-ledger";
 import { PAYMENTS_ANCHOR } from "@/components/payments/project-payments-section";
 import { CancellationBanner } from "@/components/work-orders/cancellation-banner";
 import { CoordinatorsDialog } from "@/components/work-orders/coordinators-dialog";
+import { DeleteSaleButton } from "@/components/work-orders/delete-sale-button";
 import { KsebFeesEstimate } from "@/components/work-orders/kseb-fees-estimate";
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/format";
 import { isSaleCoordinator, teamAuthority } from "@/lib/domain/coordinators";
 import { amount, ledgerTotals, withLedger } from "@/lib/domain/payment";
-import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
+import { canDeleteRole, isOfficeRole } from "@/lib/domain/role";
 import { linkedProjectNote } from "@/lib/domain/work-order-list";
 
 export const metadata = { title: "Work Order" };
@@ -65,7 +62,7 @@ export default async function WorkOrderDetailPage({
   const project = wo.project;
   const cancellation = project?.cancellation ?? null;
   const isAdmin = isOfficeRole(profile.role);
-  const isSuperAdmin = isSuperAdminRole(profile.role);
+  const canDelete = canDeleteRole(profile.role);
   // Everyone on the sale may edit it; RLS returns nothing for anyone else, so
   // reaching this page at all means the order is theirs (or they are the office).
   const canEdit = isAdmin || isSaleCoordinator(wo, profile.id);
@@ -202,7 +199,17 @@ export default async function WorkOrderDetailPage({
           />
           <AdvanceLine amount={amount(wo.advance_amount)} details={wo} />
           {payments.length > 0 ? (
-            <PaymentLedger payments={payments} compact />
+            <PaymentLedger
+              payments={payments}
+              compact
+              // With a project, entries are corrected and deleted on its page (the
+              // link below); until then, a deleter can delete one here.
+              renderActions={
+                canDelete && !project
+                  ? (p) => <LedgerEntryDelete payment={p} workOrderId={wo.id} />
+                  : undefined
+              }
+            />
           ) : (
             <p className="text-sm text-muted-foreground">
               No instalments recorded after the advance yet.
@@ -275,17 +282,14 @@ export default async function WorkOrderDetailPage({
                 </form>
               )}
               <div className="flex-1" />
-              {isSuperAdmin && (
-                <ConfirmSubmit
-                  action={deleteWorkOrder}
-                  fields={{ id: wo.id }}
-                  triggerLabel="Delete"
-                  triggerVariant="ghost"
-                  triggerClassName="h-10 text-destructive hover:text-destructive md:h-8"
-                  title="Delete this work order?"
-                  description="This permanently removes the work order, its payments ledger, its coordinators' incentives (paid and unpaid) and any linked project and milestones. This cannot be undone."
-                  confirmLabel="Delete work order"
-                  loadingText="Deleting…"
+              {canDelete && (
+                <DeleteSaleButton
+                  sale={{
+                    id: wo.id,
+                    clientName: wo.client_name,
+                    hasProject: Boolean(project),
+                    ledgerEntries: payments.length,
+                  }}
                 />
               )}
             </div>

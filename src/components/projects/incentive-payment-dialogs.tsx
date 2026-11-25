@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import {
+  deleteCoordinatorIncentive,
   deleteIncentivePayment,
   recordIncentivePayment,
   updateIncentivePayment,
@@ -313,6 +314,99 @@ function RemoveForm({
       <DialogFooter>
         <CancelButton />
         <SubmitButton destructive pending={pending} label="Remove payment" loading="Removing…" />
+      </DialogFooter>
+    </form>
+  );
+}
+
+/** The incentive a delete would remove: the agreed amount and every instalment. */
+type DeletableIncentive = Pick<CoordinatorIncentive, "amount" | "paid"> & {
+  payments: readonly unknown[];
+};
+
+/**
+ * What deleting a person's incentive removes, in the words its confirmation
+ * uses: "This removes the agreed amount of ₹6,000 and its 2 payments (₹4,000)."
+ */
+export function incentiveDeleteDescription(name: string, incentive: DeletableIncentive): string {
+  const count = incentive.payments.length;
+  const payments = `${count} payment${count === 1 ? "" : "s"} (${formatCurrency(incentive.paid)})`;
+  const removes =
+    incentive.amount === null
+      ? `the ${payments} recorded against it`
+      : count > 0
+        ? `the agreed amount of ${formatCurrency(incentive.amount)} and its ${payments}`
+        : `the agreed amount of ${formatCurrency(incentive.amount)}`;
+  return `This removes ${removes}. ${name} stays on the sale with no incentive. This cannot be undone.`;
+}
+
+/**
+ * Delete one person's incentive on the sale — the agreed amount and every
+ * instalment paid against it, in one go. Deleters only (`canDeleteRole`): the
+ * section renders it when the page says so, and `deleteCoordinatorIncentive`
+ * checks the role again. The person stays on the sale.
+ */
+export function DeleteIncentiveDialog({
+  projectId,
+  payee,
+  incentive,
+}: {
+  projectId: string;
+  payee: Payee;
+  incentive: DeletableIncentive;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-10 text-destructive hover:text-destructive md:size-8"
+          aria-label={`Delete ${payee.full_name}'s incentive`}
+        >
+          <Trash2 />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {payee.full_name}&apos;s incentive?</DialogTitle>
+          <DialogDescription>
+            {incentiveDeleteDescription(payee.full_name, incentive)}
+          </DialogDescription>
+        </DialogHeader>
+        <DeleteIncentiveForm
+          projectId={projectId}
+          coordinatorId={payee.id}
+          onSaved={() => setOpen(false)}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DeleteIncentiveForm({
+  projectId,
+  coordinatorId,
+  onSaved,
+}: {
+  projectId: string;
+  coordinatorId: string;
+  onSaved: () => void;
+}) {
+  // Called with its arguments, not the form: the form only confirms.
+  const { error, pending, onSubmit } = useProjectAction(
+    () => deleteCoordinatorIncentive(projectId, coordinatorId),
+    onSaved,
+  );
+  return (
+    <form onSubmit={onSubmit} className="space-y-4" aria-busy={pending}>
+      <FormError message={error} />
+      <DialogFooter>
+        <CancelButton />
+        <SubmitButton destructive pending={pending} label="Delete incentive" loading="Deleting…" />
       </DialogFooter>
     </form>
   );

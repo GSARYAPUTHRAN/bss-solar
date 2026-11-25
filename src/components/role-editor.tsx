@@ -16,6 +16,33 @@ import { updateUserRole } from "@/app/(app)/team/actions";
 import { ROLE_LABELS, isSuperAdminRole, roleOptions } from "@/lib/domain/role";
 import type { UserRole } from "@/lib/types";
 
+/**
+ * A role shown, not offered — where the viewer may not change it
+ * (`roleChangeAuthority`): their own, another admin's for an admin, and the
+ * Super Admin's for everyone. `reason` says why, on hover.
+ */
+export function RoleBadge({ role, reason }: { role: UserRole; reason?: string }) {
+  // The Super Admin seat is the top of the hierarchy and is immutable from the
+  // app — nobody, including the Super Admin, can change it here.
+  if (isSuperAdminRole(role)) {
+    return (
+      <Badge
+        variant="outline"
+        className="gap-1.5 border-amber-300 font-medium text-amber-800 dark:border-amber-500/40 dark:text-amber-300"
+        title="Set directly on the database — not editable here"
+      >
+        <ShieldCheck className="h-3.5 w-3.5" />
+        {ROLE_LABELS.superadmin}
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="font-medium" title={reason}>
+      {ROLE_LABELS[role]}
+    </Badge>
+  );
+}
+
 export function RoleEditor({
   userId,
   role,
@@ -29,21 +56,9 @@ export function RoleEditor({
   const [pending, startTransition] = useTransition();
   const { trackPromise } = useLoading();
 
-  // The Super Admin seat is the top of the hierarchy and is immutable from the
-  // app — nobody, including the Super Admin, can change it here. Render it as a
-  // locked badge rather than a control that would only be rejected on submit.
-  if (isSuperAdminRole(role)) {
-    return (
-      <Badge
-        variant="outline"
-        className="gap-1.5 border-amber-300 font-medium text-amber-800 dark:border-amber-500/40 dark:text-amber-300"
-        title="Set directly on the database — not editable here"
-      >
-        <ShieldCheck className="h-3.5 w-3.5" />
-        {ROLE_LABELS.superadmin}
-      </Badge>
-    );
-  }
+  // Render the immutable seat as a locked badge rather than a control that
+  // would only be rejected on submit.
+  if (isSuperAdminRole(role)) return <RoleBadge role={role} />;
 
   return (
     <div className="flex items-center gap-2">

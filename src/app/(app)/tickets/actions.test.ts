@@ -21,13 +21,15 @@ vi.mock("@/server/data", () => ({
     engineerTicket: vi.fn(),
     update: vi.fn(),
     setStatus: vi.fn(),
+    remove: vi.fn(),
   },
 }));
 
+import { revalidatePath } from "next/cache";
 import { requireAdmin, requireTicketRole } from "@/lib/auth";
 import { notify } from "@/server/notifications";
 import { profilesRepository, ticketsRepository } from "@/server/data";
-import { setTicketStatus, updateTicket } from "./actions";
+import { deleteTicket, setTicketStatus, updateTicket } from "./actions";
 
 const tickets = vi.mocked(ticketsRepository);
 
@@ -190,5 +192,63 @@ describe("setTicketStatus", () => {
     expect(announced()).toEqual([
       expect.objectContaining({ type: "ticket.status_changed", actorId: "eng-1" }),
     ]);
+  });
+});
+
+describe("deleteTicket", () => {
+  const revalidated = () => vi.mocked(revalidatePath).mock.calls.map(([path]) => path);
+  const remove = vi.mocked(ticketsRepository.remove);
+
+  function body(id = "t1"): FormData {
+    const fd = new FormData();
+    fd.set("id", id);
+    return fd;
+  }
+
+  beforeEach(() => {
+    remove.mockResolvedValue({ projectId: "p1", error: null });
+  });
+
+  it("is office-only: a refused guard deletes nothing", async () => {
+    vi.mocked(requireAdmin).mockRejectedValue(new Error("REDIRECT:/tickets"));
+    await expect(deleteTicket(body())).rejects.toThrow("REDIRECT:/tickets");
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", { ...ADMIN, role: "superadmin" } as Profile],
+  ])("lets %s delete a ticket", async (_who, profile) => {
+    vi.mocked(requireAdmin).mockResolvedValue(profile);
+    await expect(deleteTicket(body())).rejects.toThrow("REDIRECT:/tickets?flash=Ticket%20deleted.");
+    expect(remove).toHaveBeenCalledWith("t1");
+  });
+
+  it("refreshes the tickets, the ticket's project and the dashboard", async () => {
+    await expect(deleteTicket(body())).rejects.toThrow(/flash=/);
+    expect(revalidated()).toEqual(expect.arrayContaining(["/tickets", "/projects/p1", "/"]));
+  });
+
+  it("refreshes no project for a ticket that had none", async () => {
+    remove.mockResolvedValue({ projectId: null, error: null });
+    await expect(deleteTicket(body())).rejects.toThrow(/flash=/);
+    expect(revalidated().filter((path) => path.startsWith("/projects"))).toEqual([]);
+    expect(revalidated()).toEqual(expect.arrayContaining(["/tickets", "/"]));
+  });
+
+  it("says so when the ticket was already deleted, on the list (it has no page)", async () => {
+    remove.mockResolvedValue({ projectId: null, error: "That ticket was already deleted." });
+    await expect(deleteTicket(body())).rejects.toThrow(
+      "REDIRECT:/tickets?flash=That%20ticket%20was%20already%20deleted.&flashType=error",
+    );
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("shows any other refusal on the ticket's page", async () => {
+    remove.mockResolvedValue({ projectId: null, error: "permission denied" });
+    await expect(deleteTicket(body())).rejects.toThrow(
+      "REDIRECT:/tickets/t1?error=permission%20denied",
+    );
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 });

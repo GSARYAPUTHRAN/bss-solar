@@ -11,6 +11,7 @@ type Call = [string, ...unknown[]];
 let recorded: Call[];
 let tableData: unknown;
 let rpcResult: { data: unknown; error: { code?: string; message: string } | null };
+let deleteResult: { data: unknown; error: { message: string } | null };
 
 /** A thenable builder: every method is recorded and chains; awaiting resolves. */
 function builder(first: Call, result: () => unknown) {
@@ -46,6 +47,7 @@ vi.mock("@/lib/supabase/server", () => ({
         builder(["insert", table, payload], () => ({ data: tableData, error: null })),
       update: (payload: unknown) =>
         builder(["update", table, payload], () => ({ data: tableData, error: null })),
+      delete: () => builder(["delete", table], () => deleteResult),
     }),
     rpc: (fn: string, args: unknown) => builder(["rpc", fn, args], () => rpcResult),
   })),
@@ -79,6 +81,7 @@ beforeEach(() => {
   recorded = [];
   tableData = [];
   rpcResult = { data: [], error: null };
+  deleteResult = { data: [], error: null };
 });
 
 describe("workOrdersRepository.page — filters", () => {
@@ -451,6 +454,115 @@ describe("workOrdersRepository.setCoordinators", () => {
       added: [],
       removed: [],
       error: null,
+    });
+  });
+});
+
+describe("workOrdersRepository.remove", () => {
+  it("deletes that one sale and asks for the removed row back", async () => {
+    deleteResult = { data: [{ id: "wo-1" }], error: null };
+    expect(await workOrdersRepository.remove("wo-1")).toEqual({ error: null });
+    expect(recorded).toEqual([
+      ["delete", "work_orders"],
+      ["eq", "id", "wo-1"],
+      ["select", "id"],
+    ]);
+  });
+
+  it("says so when nothing was removed — gone already, or not the caller's to delete", async () => {
+    deleteResult = { data: [], error: null };
+    expect(await workOrdersRepository.remove("wo-1")).toEqual({
+      error: "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+    });
+    deleteResult = { data: null, error: null };
+    expect((await workOrdersRepository.remove("wo-1")).error).toMatch(/^Nothing was deleted/);
+  });
+
+  it("passes the database's error on", async () => {
+    deleteResult = { data: null, error: { message: "permission denied" } };
+    expect(await workOrdersRepository.remove("wo-1")).toEqual({ error: "permission denied" });
+  });
+});
+
+describe("workOrdersRepository.removeMany", () => {
+  it("deletes them all in one call to delete_work_orders", async () => {
+    rpcResult = { data: ["wo-1", "wo-2"], error: null };
+    expect(await workOrdersRepository.removeMany(["wo-1", "wo-2"])).toEqual({
+      deleted: ["wo-1", "wo-2"],
+      error: null,
+    });
+    expect(recorded).toEqual([["rpc", "delete_work_orders", { p_ids: ["wo-1", "wo-2"] }]]);
+  });
+
+  it("reports only the sales actually removed", async () => {
+    rpcResult = { data: ["wo-2"], error: null };
+    expect((await workOrdersRepository.removeMany(["wo-1", "wo-2"])).deleted).toEqual(["wo-2"]);
+  });
+
+  it("reads an empty answer (nothing the caller may delete) as nothing removed", async () => {
+    rpcResult = { data: [], error: null };
+    expect(await workOrdersRepository.removeMany(["wo-1"])).toEqual({ deleted: [], error: null });
+    rpcResult = { data: null, error: null };
+    expect(await workOrdersRepository.removeMany(["wo-1"])).toEqual({ deleted: [], error: null });
+  });
+
+  it("passes the database's refusal on, with nothing removed", async () => {
+    rpcResult = {
+      data: null,
+      error: { code: "22023", message: "At most 500 work orders can be deleted at once" },
+    };
+    expect(await workOrdersRepository.removeMany(["wo-1"])).toEqual({
+      deleted: [],
+      error: "At most 500 work orders can be deleted at once",
+    });
+  });
+});
+
+describe("workOrdersRepository.existingIds", () => {
+  it("asks which of the ids are still work orders, by id only", async () => {
+    tableData = [{ id: "wo-2" }];
+    expect(await workOrdersRepository.existingIds(["wo-1", "wo-2"])).toEqual({
+      ids: ["wo-2"],
+      error: null,
+    });
+    expect(recorded).toEqual([
+      ["select", "work_orders", "id", undefined],
+      ["in", "id", ["wo-1", "wo-2"]],
+    ]);
+  });
+
+  it("asks nothing for no ids, and each id once", async () => {
+    expect(await workOrdersRepository.existingIds([])).toEqual({ ids: [], error: null });
+    expect(recorded).toEqual([]);
+    await workOrdersRepository.existingIds(["wo-1", "wo-1"]);
+    expect(recorded).toContainEqual(["in", "id", ["wo-1"]]);
+  });
+
+  it("splits a long list into slices of 100, so the URL stays short", async () => {
+    const ids = Array.from({ length: 250 }, (_, i) => `wo-${i}`);
+    tableData = [{ id: "wo-0" }];
+    const { ids: found } = await workOrdersRepository.existingIds(ids);
+    const slices = recorded.filter(([name]) => name === "in").map(([, , list]) => list);
+    expect(slices.map((list) => (list as string[]).length)).toEqual([100, 100, 50]);
+    expect(slices.flat()).toEqual(ids);
+    // Each slice answered with wo-0 here: what the slices found is put together.
+    expect(found).toEqual(["wo-0", "wo-0", "wo-0"]);
+  });
+
+  it("is an error, not a shorter list, when a read fails", async () => {
+    vi.mocked(await import("@/lib/supabase/server")).createClient.mockImplementationOnce(
+      async () =>
+        ({
+          from: () => ({
+            select: () => ({
+              in: async () => ({ data: null, error: { message: "statement timeout" } }),
+            }),
+          }),
+        }) as never,
+    );
+    expect(await workOrdersRepository.existingIds(["wo-1"])).toEqual({
+      ids: [],
+      error: "statement timeout",
     });
   });
 });

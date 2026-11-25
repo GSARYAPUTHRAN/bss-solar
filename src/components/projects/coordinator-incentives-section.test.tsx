@@ -8,6 +8,7 @@ const actions = vi.hoisted(() => ({
   recordIncentivePayment: vi.fn(),
   updateIncentivePayment: vi.fn(),
   deleteIncentivePayment: vi.fn(),
+  deleteCoordinatorIncentive: vi.fn(),
 }));
 vi.mock("@/app/(app)/projects/actions", () => actions);
 
@@ -52,9 +53,17 @@ const PRIYA: ProjectCoordinator = {
   },
 };
 
-function renderSection(coordinators: ProjectCoordinator[] = [RAVI, ABHIJITH]) {
+function renderSection(
+  coordinators: ProjectCoordinator[] = [RAVI, ABHIJITH],
+  canDelete?: boolean,
+) {
   return render(
-    <CoordinatorIncentivesSection projectId="p1" coordinators={coordinators} today={TODAY} />,
+    <CoordinatorIncentivesSection
+      projectId="p1"
+      coordinators={coordinators}
+      today={TODAY}
+      canDelete={canDelete}
+    />,
   );
 }
 
@@ -292,5 +301,56 @@ describe("CoordinatorIncentivesSection — instalments", () => {
     const formData = actions.deleteIncentivePayment.mock.calls[0][1] as FormData;
     expect(formData.get("payment_id")).toBe("pay-1");
     expect(formData.get("project_id")).toBe("p1");
+  });
+});
+
+describe("CoordinatorIncentivesSection — deleting an incentive", () => {
+  const deleteOf = (name: string) =>
+    within(blockOf(name)).queryByRole("button", { name: `Delete ${name}'s incentive` });
+
+  it("is not offered unless the page says the viewer may delete", () => {
+    renderSection([RAVI, PRIYA]);
+    expect(screen.queryByRole("button", { name: /incentive$/i })).not.toBeInTheDocument();
+  });
+
+  it("is offered to a deleter on everyone with an amount or payments — not on an unset one", () => {
+    renderSection([RAVI, ABHIJITH, PRIYA], true);
+    expect(deleteOf("Ravi Kumar")).toBeInTheDocument();
+    expect(deleteOf("Priya Suresh")).toBeInTheDocument();
+    expect(deleteOf("Abhijith Nair")).toBeNull();
+  });
+
+  it("is offered for payments left without an agreed amount", () => {
+    const orphaned = { ...PRIYA.incentive, amount: null } as ProjectCoordinator["incentive"];
+    renderSection([{ ...PRIYA, incentive: orphaned }], true);
+    expect(deleteOf("Priya Suresh")).toBeInTheDocument();
+  });
+
+  it("is not offered for a person whose incentive the viewer cannot see", () => {
+    renderSection([{ ...RAVI, incentive: null }], true);
+    expect(deleteOf("Ravi Kumar")).toBeNull();
+  });
+
+  it("says what goes, then deletes that person's incentive", async () => {
+    const user = userEvent.setup();
+    actions.deleteCoordinatorIncentive.mockResolvedValue({
+      ok: true,
+      data: { message: "Incentive deleted for Priya Suresh." },
+    });
+    renderSection([RAVI, PRIYA], true);
+
+    const trigger = deleteOf("Priya Suresh");
+    if (!trigger) throw new Error("no delete for Priya");
+    await user.click(trigger);
+    const dialog = await screen.findByRole("dialog", { name: "Delete Priya Suresh's incentive?" });
+    expect(dialog).toHaveTextContent(
+      `This removes the agreed amount of ${formatCurrency(6000)} and its 2 payments (${formatCurrency(4000)}).`,
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Delete incentive" }));
+
+    await waitFor(() =>
+      expect(actions.deleteCoordinatorIncentive).toHaveBeenCalledWith("p1", "c3"),
+    );
+    expect(toast.success).toHaveBeenCalledWith("Incentive deleted for Priya Suresh.");
   });
 });
