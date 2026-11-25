@@ -17,7 +17,7 @@ describe("privilege-escalation guards", () => {
     await svc
       .from("profiles")
       .update({ role: "coordinator" })
-      .eq("id", USERS.rahul.id);
+      .in("id", [USERS.rahul.id, USERS.priya.id]);
     await svc.from("profiles").update({ role: "admin" }).eq("id", USERS.admin.id);
   });
 
@@ -48,7 +48,16 @@ describe("privilege-escalation guards", () => {
       .eq("id", USERS.priya.id);
     expect(up.error).toBeNull();
 
-    const down = await admin
+    // Taking the office role away again is the Super Admin's call
+    // (guard_profile_role): an admin may not demote another admin.
+    const refused = await admin
+      .from("profiles")
+      .update({ role: "coordinator" })
+      .eq("id", USERS.priya.id);
+    expect(refused.error?.code).toBe("42501");
+
+    const su = await signedInAs(USERS.superadmin);
+    const down = await su
       .from("profiles")
       .update({ role: "coordinator" })
       .eq("id", USERS.priya.id);

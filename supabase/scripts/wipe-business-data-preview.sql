@@ -13,7 +13,8 @@ with params as (
     array[
       'notification_dedupe', 'notifications', 'coordinator_incentive_payments',
       'coordinator_incentives', 'work_order_coordinators', 'payments',
-      'service_tickets', 'project_milestones', 'projects', 'work_orders'
+      'service_tickets', 'project_milestones', 'projects', 'work_orders',
+      'deleted_records'
     ]::text[] as business_tables,
     array['profiles', 'push_subscriptions']::text[] as kept_tables
 ),

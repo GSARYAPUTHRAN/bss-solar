@@ -383,7 +383,7 @@ describe("who may record and read them", () => {
     ).toBe(5000);
   });
 
-  it("only the SuperAdmin deletes a refund or a write-off", async () => {
+  it("the office (an admin or the SuperAdmin) deletes a refund or a write-off", async () => {
     const { workOrderId } = await fx.approvedProject();
     const refund = await fx.payment(workOrderId, {
       amount: 5000,
@@ -395,22 +395,27 @@ describe("who may record and read them", () => {
       notes: "Waived",
     });
     const admin = await signedInAs(USERS.admin);
-    for (const id of [refund, writeOff]) {
-      const refused = await admin
-        .from("payments")
-        .delete()
-        .eq("id", id)
-        .select("id");
-      expect(refused.data ?? []).toHaveLength(0);
-    }
-    const superadmin = await signedInAs(USERS.superadmin);
-    const gone = await superadmin
+    const byAdmin = await admin
       .from("payments")
       .delete()
-      .in("id", [refund, writeOff])
+      .eq("id", refund)
       .select("id");
-    expect(gone.error).toBeNull();
-    expect(gone.data).toHaveLength(2);
+    expect(byAdmin.error).toBeNull();
+    expect(byAdmin.data).toEqual([{ id: refund }]);
+    const superadmin = await signedInAs(USERS.superadmin);
+    const bySuperadmin = await superadmin
+      .from("payments")
+      .delete()
+      .eq("id", writeOff)
+      .select("id");
+    expect(bySuperadmin.error).toBeNull();
+    expect(bySuperadmin.data).toEqual([{ id: writeOff }]);
+    expect(
+      must(
+        await svc.from("payments").select("id").in("id", [refund, writeOff]),
+        "after",
+      ),
+    ).toEqual([]);
   });
 });
 

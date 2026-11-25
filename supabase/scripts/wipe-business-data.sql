@@ -1,10 +1,12 @@
 -- ============================================================================
 -- BSS Solar — WIPE: delete ALL business data and KEEP every account.
 -- Work orders, projects and milestones, payments, service tickets, who shares
--- each sale, the coordinators' incentives (and their instalments) and every
--- notification go; the
+-- each sale, the coordinators' incentives (and their instalments), every
+-- notification and the deletion log (deleted_records: it holds snapshots of
+-- business rows) go; the
 -- accounts (sign-ins, names, roles) and each person's push subscriptions
 -- stay, so the team does not have to be set up again before the next import.
+-- The wipe runs without a signed-in user, so its own deletes are not logged.
 --
 -- Irreversible: take a backup first, and run wipe-business-data-preview.sql
 -- to see exactly what goes. Nothing is deleted unless you type the phrase
@@ -21,10 +23,12 @@ declare
   -- Emptied completely, children before parents so each count is exact (the
   -- foreign keys would cascade anyway). A table added later must be listed
   -- here, or in kept_tables, deliberately: the script refuses to run otherwise.
+  -- The deletion log goes last, after every delete that could add to it.
   business_tables constant text[] := array[
     'notification_dedupe', 'notifications', 'coordinator_incentive_payments',
     'coordinator_incentives', 'work_order_coordinators', 'payments',
-    'service_tickets', 'project_milestones', 'projects', 'work_orders'
+    'service_tickets', 'project_milestones', 'projects', 'work_orders',
+    'deleted_records'
   ];
 
   -- Never touched: the accounts' profiles and each user's push devices.

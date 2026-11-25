@@ -18,11 +18,14 @@ declare
   ]::text[];
 
   -- Wiped completely, children before parents so each count is exact (the
-  -- foreign keys would cascade anyway).
+  -- foreign keys would cascade anyway). The deletion log (snapshots of business
+  -- rows) goes last; the reset runs without a signed-in user, so its own
+  -- deletes are not logged.
   business_tables constant text[] := array[
     'notification_dedupe', 'notifications', 'coordinator_incentive_payments',
     'coordinator_incentives', 'work_order_coordinators', 'payments',
-    'service_tickets', 'project_milestones', 'projects', 'work_orders'
+    'service_tickets', 'project_milestones', 'projects', 'work_orders',
+    'deleted_records'
   ];
 
   wanted text[];
@@ -74,7 +77,7 @@ begin
     select 1 from public.profiles p
     where p.id = any (keep_ids) and p.role::text = 'superadmin'
   ) then
-    raise warning 'No Super Admin is kept: deleting records stays unavailable until production-bootstrap.sql appoints one.';
+    raise warning 'No Super Admin is kept: the Super Admin''s own powers (such as deleting an admin account or changing an admin''s role) stay unavailable until production-bootstrap.sql appoints one.';
   end if;
 
   -- -------------------------------------------------------------------------
@@ -87,7 +90,8 @@ begin
     public.coordinator_incentives, public.coordinator_incentive_payments,
     public.projects, public.project_milestones,
     public.service_tickets, public.payments, public.notifications,
-    public.notification_dedupe, public.push_subscriptions, public.profiles
+    public.notification_dedupe, public.push_subscriptions, public.profiles,
+    public.deleted_records
     in exclusive mode;
 
   -- -------------------------------------------------------------------------
@@ -147,6 +151,7 @@ select 'table', t.name, t.row_count::text
 from (values
   ('coordinator_incentive_payments', (select count(*) from public.coordinator_incentive_payments)),
   ('coordinator_incentives', (select count(*) from public.coordinator_incentives)),
+  ('deleted_records', (select count(*) from public.deleted_records)),
   ('notification_dedupe', (select count(*) from public.notification_dedupe)),
   ('notifications', (select count(*) from public.notifications)),
   ('payments', (select count(*) from public.payments)),
