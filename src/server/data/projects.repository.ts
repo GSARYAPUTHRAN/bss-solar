@@ -27,6 +27,7 @@ import {
   isProjectStatusFilter,
   type ProjectSortColumn,
 } from "@/lib/domain/project-list";
+import { deleteRolesLabel } from "@/lib/domain/role";
 import { oneToOne } from "./embeds";
 import type {
   CoordinatorIncentive,
@@ -580,7 +581,7 @@ export const projectsRepository = {
       .select("id");
     if (error) return { error: error.message };
     if (!data || data.length === 0) {
-      return { error: "Nothing was deleted — only the SuperAdmin can delete." };
+      return { error: "Nothing was deleted — it may already be gone, or your role cannot delete it." };
     }
     return { error: null };
   },
@@ -695,6 +696,31 @@ export const projectsRepository = {
       return { error: "That payment was not found, or you cannot change it." };
     }
     return { error: null };
+  },
+
+  /**
+   * Delete one person's agreed incentive with every instalment paid against it
+   * (`delete_coordinator_incentive`, one transaction): the amount is cleared and
+   * the instalments removed. The person stays on the sale — an incentive belongs
+   * to a membership. Deleters only; the database refuses anyone else.
+   */
+  async deleteCoordinatorIncentive(
+    workOrderId: string,
+    coordinatorId: string,
+  ): Promise<WriteResult> {
+    const supabase = await createClient();
+    const { error } = await supabase.rpc("delete_coordinator_incentive", {
+      p_work_order_id: workOrderId,
+      p_coordinator_id: coordinatorId,
+    });
+    if (!error) return { error: null };
+    if (error.code === "P0002") {
+      return { error: "That incentive was not found — the person may no longer be on this sale." };
+    }
+    if (error.code === "42501") {
+      return { error: `Only ${deleteRolesLabel()} can delete an incentive.` };
+    }
+    return { error: error.message };
   },
 
   /** Remove an instalment (a mistaken one): the incentive is owed again. */

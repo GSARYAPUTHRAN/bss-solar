@@ -62,6 +62,9 @@ export type TicketSummary = Pick<
 
 const NOT_FOUND = "This ticket no longer exists, or you no longer have access to it.";
 
+/** A delete that removed no row: the ticket is gone already. */
+export const TICKET_ALREADY_DELETED = "That ticket was already deleted.";
+
 export interface TicketCreateInput {
   project_id: string | null;
   /** Optional — assigned by a DB sequence/trigger when omitted. */
@@ -315,12 +318,22 @@ export const ticketsRepository = {
     return { error: data && data.length > 0 ? null : NOT_FOUND };
   },
 
-  async remove(id: string): Promise<{ error: string | null }> {
+  /**
+   * Hard-delete a ticket (office only, by RLS). A refused or repeated delete
+   * removes no row without raising, so the row count is checked. `projectId` is
+   * the project the ticket was on, for the caller to refresh.
+   */
+  async remove(id: string): Promise<{ projectId: string | null; error: string | null }> {
     const supabase = await createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("service_tickets")
       .delete()
-      .eq("id", id);
-    return { error: error?.message ?? null };
+      .eq("id", id)
+      .select("id, project_id");
+    if (error) return { projectId: null, error: error.message };
+    if (!data || data.length === 0) {
+      return { projectId: null, error: TICKET_ALREADY_DELETED };
+    }
+    return { projectId: data[0].project_id ?? null, error: null };
   },
 };

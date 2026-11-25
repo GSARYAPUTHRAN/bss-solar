@@ -29,3 +29,5 @@ export { loadContract } from "./contract";
 export type { LoadedContract } from "./contract";
 export { notificationsRepository } from "./notifications.repository";
 export type { PushSubscriptionInput } from "./notifications.repository";
+export { duplicatesRepository } from "./duplicates.repository";
+export { deletionLogRepository } from "./deletion-log.repository";

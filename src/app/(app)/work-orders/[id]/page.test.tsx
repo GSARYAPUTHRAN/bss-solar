@@ -4,6 +4,7 @@
 // it for a sale with every kind of entry in its ledger.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 vi.mock("next/navigation", () => ({
   notFound: vi.fn(() => {
@@ -23,7 +24,14 @@ vi.mock("../actions", () => ({
   approveWorkOrder: vi.fn(),
   rejectWorkOrder: vi.fn(),
   deleteWorkOrder: vi.fn(),
+  deleteWorkOrders: vi.fn(),
   setWorkOrderCoordinators: vi.fn(),
+}));
+vi.mock("@/app/(app)/payments/actions", () => ({
+  recordPayment: vi.fn(),
+  updatePayment: vi.fn(),
+  deletePayment: vi.fn(),
+  writeOffBalance: vi.fn(),
 }));
 
 import { requireWorkOrderRole } from "@/lib/auth";
@@ -35,6 +43,7 @@ import type { WorkOrderDetail } from "@/server/data/work-orders.repository";
 import WorkOrderDetailPage from "./page";
 
 const ADMIN = { id: "admin-1", role: "admin", full_name: "BSS Admin" } as Profile;
+const SUPERADMIN = { id: "super-1", role: "superadmin", full_name: "BSS SuperAdmin" } as Profile;
 const RAHUL = { id: "c1", role: "coordinator", full_name: "Rahul Menon" } as Profile;
 
 function entry(overrides: Partial<Payment> & Pick<Payment, "id" | "amount">): Payment {
@@ -211,3 +220,66 @@ describe("the work order's page — payments", () => {
     await expect(renderPage(RAHUL, null)).rejects.toThrow("NOT_FOUND");
   });
 });
+
+describe("the work order's page — deleting", () => {
+  /** The same sale before approval: no project yet. */
+  const PENDING = { ...WORK_ORDER, status: "pending", project: null } as unknown as WorkOrderDetail;
+
+  it("offers the office Delete, saying everything that goes with the sale", async () => {
+    const user = userEvent.setup();
+    await renderPage(ADMIN);
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete this work order?" });
+    expect(dialog).toHaveAccessibleDescription(
+      "This permanently deletes the sale Gopinathan Pillai, its project and milestones, 5 ledger entries and every coordinator's incentive. Service tickets stay but lose their link to the project. This cannot be undone.",
+    );
+    expect(within(dialog).getByRole("button", { name: "Delete work order" })).toBeInTheDocument();
+  });
+
+  it("offers the Super Admin the same Delete", async () => {
+    await renderPage(SUPERADMIN);
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("never offers a coordinator a delete", async () => {
+    await renderPage(RAHUL);
+    expect(screen.queryByRole("button", { name: /^delete/i })).not.toBeInTheDocument();
+  });
+
+  it("with a project, sends ledger deletes to the project page", async () => {
+    await renderPage(ADMIN);
+    expect(screen.queryByRole("button", { name: /^delete (stage|refund|kseb)/i })).toBeNull();
+    expect(
+      screen.getByRole("link", { name: /record or correct payments on the project/i }),
+    ).toHaveAttribute("href", "/projects/proj-1#payments");
+  });
+
+  it("before a project exists, lets a deleter delete a ledger entry here", async () => {
+    const user = userEvent.setup();
+    await renderPage(ADMIN, PENDING);
+
+    // Each entry once in the desktop table and once in the phone cards.
+    expect(screen.getAllByRole("button", { name: "Delete stage 1 payment" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Delete refund" })).toHaveLength(2);
+    expect(screen.queryByRole("link", { name: /record or correct payments/i })).toBeNull();
+
+    await user.click(screen.getAllByRole("button", { name: "Delete refund" })[0]);
+    expect(await screen.findByRole("dialog", { name: "Delete this refund?" })).toBeInTheDocument();
+  });
+
+  it("says less about a pending sale: it has no project or tickets yet", async () => {
+    const user = userEvent.setup();
+    await renderPage(ADMIN, PENDING);
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    expect(await screen.findByRole("dialog")).toHaveAccessibleDescription(
+      "This permanently deletes the sale Gopinathan Pillai, 5 ledger entries and every coordinator's incentive. This cannot be undone.",
+    );
+  });
+
+  it("gives a coordinator no ledger delete on a pending sale either", async () => {
+    await renderPage(RAHUL, PENDING);
+    expect(screen.queryByRole("button", { name: /^delete/i })).toBeNull();
+  });
+});
+

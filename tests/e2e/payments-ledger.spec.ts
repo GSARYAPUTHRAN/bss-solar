@@ -101,11 +101,14 @@ test("the office records instalments in any number of stages", async ({ page }) 
   await dialog.getByRole("button", { name: /cancel/i }).click();
   await expect(section.getByText("TOO MUCH")).toHaveCount(0);
 
-  // A plain admin may correct an entry but never delete one.
+  // The office corrects an entry, and a deleter (Admin or Super Admin) may also
+  // delete one — office-deletes.spec.ts goes through with it.
   await expect(
     section.getByRole("button", { name: /edit stage 1 payment/i }),
   ).toBeVisible();
-  await expect(section.getByRole("button", { name: /^delete stage/i })).toHaveCount(0);
+  await expect(
+    section.getByRole("button", { name: /^delete stage 1 payment$/i }),
+  ).toBeVisible();
 });
 
 test("a coordinator sees their project's ledger read-only", async ({ page }) => {

@@ -10,6 +10,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth", () => ({
   requireAdmin: vi.fn(),
+  requireDeleter: vi.fn(),
   requireSuperAdmin: vi.fn(),
   requireWorkOrderRole: vi.fn(),
 }));
@@ -24,6 +25,8 @@ vi.mock("@/server/data/work-orders.repository", () => ({
     setStatus: vi.fn(),
     setCoordinators: vi.fn(),
     remove: vi.fn(),
+    removeMany: vi.fn(),
+    existingIds: vi.fn(),
   },
 }));
 vi.mock("@/server/data/projects.repository", () => ({
@@ -43,7 +46,8 @@ vi.mock("@/server/data/profiles.repository", () => ({
   },
 }));
 
-import { requireAdmin, requireWorkOrderRole } from "@/lib/auth";
+import { revalidatePath } from "next/cache";
+import { requireAdmin, requireDeleter, requireWorkOrderRole } from "@/lib/auth";
 import { notify } from "@/server/notifications";
 import {
   paymentsRepository,
@@ -56,6 +60,8 @@ import { CONTRACT_TERMS_LOCKED_ERROR, PLAN_FIXED_ERROR } from "@/server/forms/wo
 import {
   approveWorkOrder,
   createWorkOrder,
+  deleteWorkOrder,
+  deleteWorkOrders,
   rejectWorkOrder,
   setWorkOrderCoordinators,
   updateWorkOrder,
@@ -1190,5 +1196,309 @@ describe("approve / reject", () => {
       "REDIRECT:/work-orders/wo-1?error=permission%20denied",
     );
     expect(notify).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteWorkOrder", () => {
+  const SUPERADMIN = { ...ADMIN, role: "superadmin" } as Profile;
+  const revalidated = () => vi.mocked(revalidatePath).mock.calls.map(([path]) => path);
+
+  beforeEach(() => {
+    vi.mocked(requireDeleter).mockResolvedValue(ADMIN);
+    workOrders.remove.mockResolvedValue({ error: null });
+  });
+
+  it("is for deleters only: a refused guard deletes nothing", async () => {
+    vi.mocked(requireDeleter).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deleteWorkOrder(form({ id: "wo-1" }))).rejects.toThrow("REDIRECT:/work-orders");
+    expect(workOrders.remove).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", SUPERADMIN],
+  ])("lets %s delete a sale and lands on the work orders", async (_who, profile) => {
+    vi.mocked(requireDeleter).mockResolvedValue(profile);
+    await expect(deleteWorkOrder(form({ id: "wo-1" }))).rejects.toThrow(
+      "REDIRECT:/work-orders?flash=Work%20order%20deleted.",
+    );
+    expect(workOrders.remove).toHaveBeenCalledWith("wo-1");
+  });
+
+  it("lands on the projects list when deleted from the project page", async () => {
+    await expect(deleteWorkOrder(form({ id: "wo-1", back: "projects" }))).rejects.toThrow(
+      "REDIRECT:/projects?flash=Sale%20deleted.",
+    );
+    expect(workOrders.remove).toHaveBeenCalledWith("wo-1");
+  });
+
+  it.each(["", "tickets", "/projects", "https://example.com"])(
+    "ignores any other back (%j)",
+    async (back) => {
+      await expect(deleteWorkOrder(form({ id: "wo-1", back }))).rejects.toThrow(
+        "REDIRECT:/work-orders?flash=Work%20order%20deleted.",
+      );
+    },
+  );
+
+  it("refreshes the sale, the lists, the reports, the clean-up page and the dashboard", async () => {
+    await expect(deleteWorkOrder(form({ id: "wo-1" }))).rejects.toThrow(/flash=/);
+    expect(revalidated()).toEqual(
+      expect.arrayContaining([
+        "/work-orders",
+        "/work-orders/wo-1",
+        "/work-orders/duplicates",
+        "/projects",
+        "/reports",
+        "/",
+      ]),
+    );
+  });
+
+  it("shows a refusal from the project page back on that project", async () => {
+    const PROJECT = "20000000-0000-4000-8000-000000000001";
+    workOrders.remove.mockResolvedValue({ error: "Nothing was deleted." });
+    await expect(
+      deleteWorkOrder(form({ id: "wo-1", back: "projects", project_id: PROJECT })),
+    ).rejects.toThrow(`REDIRECT:/projects/${PROJECT}?error=${encodeURIComponent("Nothing was deleted.")}`);
+  });
+
+  it("ignores a project id that is not an id, and stays on the sale's page", async () => {
+    workOrders.remove.mockResolvedValue({ error: "Nothing was deleted." });
+    await expect(
+      deleteWorkOrder(form({ id: "wo-1", back: "projects", project_id: "../team" })),
+    ).rejects.toThrow(`REDIRECT:/work-orders/wo-1?error=${encodeURIComponent("Nothing was deleted.")}`);
+  });
+
+  it("explains a delete that removed nothing, on the sale's page", async () => {
+    workOrders.remove.mockResolvedValue({
+      error: "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+    });
+    await expect(deleteWorkOrder(form({ id: "wo-1", back: "projects" }))).rejects.toThrow(
+      `REDIRECT:/work-orders/wo-1?error=${encodeURIComponent(
+        "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+      )}`,
+    );
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+});
+
+describe("deleteWorkOrders", () => {
+  const id = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+  const revalidated = () => vi.mocked(revalidatePath).mock.calls.map(([path]) => path);
+
+  beforeEach(() => {
+    vi.mocked(requireDeleter).mockResolvedValue(ADMIN);
+    workOrders.removeMany.mockImplementation(async (ids: string[]) => ({
+      deleted: ids,
+      error: null,
+    }));
+  });
+
+  it("is for deleters only: a refused guard deletes nothing", async () => {
+    vi.mocked(requireDeleter).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deleteWorkOrders([id(1)])).rejects.toThrow("REDIRECT:/work-orders");
+    expect(workOrders.removeMany).not.toHaveBeenCalled();
+  });
+
+  it("deletes every sale asked for in one call and says how many went", async () => {
+    await expect(deleteWorkOrders([id(1), id(2), id(3)])).resolves.toEqual({
+      ok: true,
+      deleted: 3,
+      requested: 3,
+    });
+    expect(workOrders.removeMany).toHaveBeenCalledTimes(1);
+    expect(workOrders.removeMany).toHaveBeenCalledWith([id(1), id(2), id(3)]);
+  });
+
+  it("asks for each sale once, however often it was sent", async () => {
+    await expect(deleteWorkOrders([id(1), id(1), id(2), id(1)])).resolves.toEqual({
+      ok: true,
+      deleted: 2,
+      requested: 2,
+    });
+    expect(workOrders.removeMany).toHaveBeenCalledWith([id(1), id(2)]);
+  });
+
+  it("reports a partial delete as done — the rest were already gone", async () => {
+    workOrders.removeMany.mockResolvedValue({ deleted: [id(2)], error: null });
+    await expect(deleteWorkOrders([id(1), id(2)])).resolves.toEqual({
+      ok: true,
+      deleted: 1,
+      requested: 2,
+    });
+    expect(revalidated()).toContain("/work-orders/duplicates");
+  });
+
+  it("is an error when nothing was deleted — gone already, or the database refused the role", async () => {
+    // delete_work_orders runs as the caller: RLS refusing removes nothing, silently.
+    workOrders.removeMany.mockResolvedValue({ deleted: [], error: null });
+    await expect(deleteWorkOrders([id(1), id(2)])).resolves.toEqual({
+      ok: false,
+      error: "Nothing was deleted — they may already be gone, or your role cannot delete them.",
+    });
+    // Still refreshed: a page whose sales were already gone must catch up.
+    expect(revalidated()).toContain("/work-orders/duplicates");
+  });
+
+  it("refreshes the lists, the clean-up page, the reports and the dashboard", async () => {
+    await deleteWorkOrders([id(1)]);
+    expect(revalidated()).toEqual(
+      expect.arrayContaining(["/work-orders", "/work-orders/duplicates", "/projects", "/reports", "/"]),
+    );
+  });
+
+  it("refuses an empty selection", async () => {
+    await expect(deleteWorkOrders([])).resolves.toEqual({
+      ok: false,
+      error: "Choose at least one sale to delete.",
+    });
+    expect(workOrders.removeMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses more than 500 sales at once", async () => {
+    const many = Array.from({ length: 501 }, (_, i) => id(i));
+    await expect(deleteWorkOrders(many)).resolves.toEqual({
+      ok: false,
+      error: "At most 500 sales can be deleted at once — select fewer.",
+    });
+    expect(workOrders.removeMany).not.toHaveBeenCalled();
+  });
+
+  it("takes exactly 500", async () => {
+    const most = Array.from({ length: 500 }, (_, i) => id(i));
+    await expect(deleteWorkOrders(most)).resolves.toMatchObject({ ok: true, requested: 500 });
+  });
+
+  it.each([
+    ["a non-uuid", ["wo-1"]],
+    ["one bad id among good ones", [id(1), "1; drop table work_orders"]],
+    ["a non-string", [42 as unknown as string]],
+  ])("refuses %s and deletes nothing", async (_what, ids) => {
+    await expect(deleteWorkOrders(ids)).resolves.toEqual({
+      ok: false,
+      error: "That selection is not valid — reload the page and try again.",
+    });
+    expect(workOrders.removeMany).not.toHaveBeenCalled();
+  });
+
+  it("refuses something that is not a list", async () => {
+    await expect(deleteWorkOrders(null as unknown as string[])).resolves.toEqual({
+      ok: false,
+      error: "Choose the sales to delete.",
+    });
+    expect(workOrders.removeMany).not.toHaveBeenCalled();
+  });
+
+  it("says nothing was deleted when the database refuses, and refreshes nothing", async () => {
+    workOrders.removeMany.mockResolvedValue({ deleted: [], error: "statement timeout" });
+    await expect(deleteWorkOrders([id(1)])).resolves.toEqual({
+      ok: false,
+      error: "Nothing was deleted: statement timeout",
+    });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  describe("the copies the page means to keep", () => {
+    const STALE =
+      "This page is out of date: a copy you meant to keep has already been deleted. Refresh the page and check the selection again.";
+
+    beforeEach(() => {
+      // By default every id asked about still exists.
+      workOrders.existingIds.mockImplementation(async (ids: string[]) => ({ ids, error: null }));
+    });
+
+    it("checks them, then deletes, when each group still has one", async () => {
+      await expect(
+        deleteWorkOrders([id(2), id(4)], [[id(1)], [id(3), id(5)]]),
+      ).resolves.toEqual({ ok: true, deleted: 2, requested: 2 });
+      expect(workOrders.existingIds).toHaveBeenCalledWith([id(1), id(3), id(5)]);
+      expect(workOrders.existingIds.mock.invocationCallOrder[0]).toBeLessThan(
+        workOrders.removeMany.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("deletes nothing when a copy to keep was deleted elsewhere since the page loaded", async () => {
+      // A (kept) went in another tab; the stale page still has B ticked.
+      workOrders.existingIds.mockResolvedValue({ ids: [], error: null });
+      await expect(deleteWorkOrders([id(2)], [[id(1)]])).resolves.toEqual({
+        ok: false,
+        error: STALE,
+      });
+      expect(workOrders.removeMany).not.toHaveBeenCalled();
+      expect(revalidatePath).not.toHaveBeenCalled();
+    });
+
+    it("is satisfied by any one surviving copy of a group", async () => {
+      workOrders.existingIds.mockResolvedValue({ ids: [id(5)], error: null });
+      await expect(deleteWorkOrders([id(2)], [[id(3), id(5)]])).resolves.toMatchObject({
+        ok: true,
+      });
+    });
+
+    it("refuses when one group of several has nothing left", async () => {
+      workOrders.existingIds.mockResolvedValue({ ids: [id(1)], error: null });
+      await expect(deleteWorkOrders([id(2), id(4)], [[id(1)], [id(3)]])).resolves.toEqual({
+        ok: false,
+        error: STALE,
+      });
+      expect(workOrders.removeMany).not.toHaveBeenCalled();
+    });
+
+    it("does not count a copy to keep that is also being deleted", async () => {
+      await expect(deleteWorkOrders([id(1), id(2)], [[id(1)]])).resolves.toEqual({
+        ok: false,
+        error: STALE,
+      });
+      expect(workOrders.removeMany).not.toHaveBeenCalled();
+    });
+
+    it("compares ids whatever their case", async () => {
+      const upper = id(1).toUpperCase();
+      workOrders.existingIds.mockResolvedValue({ ids: [id(1)], error: null });
+      await expect(deleteWorkOrders([id(2)], [[upper]])).resolves.toMatchObject({ ok: true });
+      expect(workOrders.existingIds).toHaveBeenCalledWith([id(1)]);
+    });
+
+    it("deletes nothing when the copies to keep cannot be checked", async () => {
+      workOrders.existingIds.mockResolvedValue({ ids: [], error: "statement timeout" });
+      await expect(deleteWorkOrders([id(2)], [[id(1)]])).resolves.toEqual({
+        ok: false,
+        error: "Nothing was deleted: the copies to keep could not be checked (statement timeout).",
+      });
+      expect(workOrders.removeMany).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing when there is nothing to keep (every copy of a group chosen)", async () => {
+      await expect(deleteWorkOrders([id(1)])).resolves.toMatchObject({ ok: true });
+      await expect(deleteWorkOrders([id(1)], [])).resolves.toMatchObject({ ok: true });
+      expect(workOrders.existingIds).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["not a list", "keep" as unknown],
+      ["null", null],
+      ["a group that is not a list", [id(1)]],
+      ["an empty group", [[]]],
+      ["a non-uuid", [["wo-1"]]],
+      ["a SQL fragment", [[`${id(1)}'); delete from work_orders; --`]]],
+      ["too many ids to check", Array.from({ length: 5001 }, (_, i) => [id(i)])],
+    ])("refuses %s and deletes nothing", async (_what, keep) => {
+      await expect(deleteWorkOrders([id(1)], keep as string[][])).resolves.toEqual({
+        ok: false,
+        error: "That selection is not valid — reload the page and try again.",
+      });
+      expect(workOrders.existingIds).not.toHaveBeenCalled();
+      expect(workOrders.removeMany).not.toHaveBeenCalled();
+    });
+
+    it("takes up to 5000 ids to check", async () => {
+      const keep = Array.from({ length: 50 }, (_, g) =>
+        Array.from({ length: 100 }, (_, i) => id(1000 + g * 100 + i)),
+      );
+      await expect(deleteWorkOrders([id(1)], keep)).resolves.toMatchObject({ ok: true });
+      expect(workOrders.existingIds.mock.calls[0][0]).toHaveLength(5000);
+    });
   });
 });

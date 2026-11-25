@@ -31,13 +31,22 @@ vi.mock("../actions", () => ({
   recordIncentivePayment: vi.fn(),
   updateIncentivePayment: vi.fn(),
   deleteIncentivePayment: vi.fn(),
+  deleteCoordinatorIncentive: vi.fn(),
   setProjectCancellation: vi.fn(),
   reinstateProject: vi.fn(),
 }));
+vi.mock("@/app/(app)/work-orders/actions", () => ({ deleteWorkOrder: vi.fn() }));
 // An async server component of its own; it has its own tests.
 vi.mock("@/components/payments/project-payments-section", () => ({
-  ProjectPaymentsSection: (props: { cancellation?: string | null }) => (
-    <div data-testid="payments" data-cancellation={props.cancellation ?? ""} />
+  ProjectPaymentsSection: (props: {
+    cancellation?: string | null;
+    viewer: { canRecord: boolean; canEdit: boolean; canDelete: boolean };
+  }) => (
+    <div
+      data-testid="payments"
+      data-cancellation={props.cancellation ?? ""}
+      data-can-delete={String(props.viewer.canDelete)}
+    />
   ),
 }));
 
@@ -281,7 +290,6 @@ describe("the office's view of a live solar project", () => {
     );
     expect(screen.getByText("Service Tickets")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /new ticket/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Delete project" })).not.toBeInTheDocument();
   });
 
   it("edits milestones in place and passes the project's state to the payments section", () => {
@@ -540,21 +548,69 @@ describe("a custom plan's project", () => {
   });
 });
 
-describe("the SuperAdmin", () => {
-  it("may delete the project, and is told what happens to the incentives", async () => {
+describe("deleting", () => {
+  it("offers the office Delete project, and says what happens to the incentives", async () => {
     const user = userEvent.setup();
-    await renderPage(SUPERADMIN, project());
+    await renderPage(ADMIN, project());
 
     await user.click(screen.getByRole("button", { name: "Delete project" }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: "Delete this project?" });
+    expect(dialog).toHaveTextContent("Its work order is returned to pending");
     expect(dialog).toHaveTextContent(
       "Coordinator incentives stay with the sale and reappear if it is approved again.",
     );
   });
 
-  it("is the only role that can; an admin is not offered it", async () => {
+  it("offers Delete sale next to it, saying everything that goes with the sale", async () => {
+    const user = userEvent.setup();
+    payments.listForWorkOrder.mockResolvedValue([
+      { id: "a", amount: 50000, purpose: "contract", paid_on: "2026-09-01" },
+      { id: "b", amount: 4720, purpose: "kseb_fees", paid_on: "2026-09-02" },
+    ] as unknown as Payment[]);
     await renderPage(ADMIN, project());
-    expect(screen.queryByRole("button", { name: "Delete project" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Delete sale" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete this sale?" });
+    expect(dialog).toHaveAccessibleDescription(
+      "This permanently deletes the sale Anand Kumar, its project and milestones, 2 ledger entries and every coordinator's incentive. Service tickets stay but lose their link to the project. This cannot be undone.",
+    );
+    expect(within(dialog).getByRole("button", { name: "Delete sale" })).toBeInTheDocument();
+  });
+
+  it("posts the sale's work order with back=projects", async () => {
+    const user = userEvent.setup();
+    const { deleteWorkOrder } = await import("@/app/(app)/work-orders/actions");
+    await renderPage(ADMIN, project());
+
+    await user.click(screen.getByRole("button", { name: "Delete sale" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete this sale?" });
+    await user.click(within(dialog).getByRole("button", { name: "Delete sale" }));
+
+    await vi.waitFor(() => expect(deleteWorkOrder).toHaveBeenCalledTimes(1));
+    const formData = vi.mocked(deleteWorkOrder).mock.calls[0][0] as FormData;
+    expect(formData.get("id")).toBe("wo1");
+    expect(formData.get("back")).toBe("projects");
+  });
+
+  it("gives the office ledger deletes and incentive deletes", async () => {
+    await renderPage(ADMIN, project());
+    expect(screen.getByTestId("payments")).toHaveAttribute("data-can-delete", "true");
+    expect(
+      screen.getByRole("button", { name: "Delete Ravi Kumar's incentive" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers the Super Admin the same", async () => {
+    await renderPage(SUPERADMIN, project());
+    expect(screen.getByRole("button", { name: "Delete project" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete sale" })).toBeInTheDocument();
+    expect(screen.getByTestId("payments")).toHaveAttribute("data-can-delete", "true");
+  });
+
+  it("never offers a coordinator a delete", async () => {
+    await renderPage(RAVI_PROFILE, asSeenByRavi(project()));
+    expect(screen.queryByRole("button", { name: /^delete/i })).not.toBeInTheDocument();
+    expect(screen.getByTestId("payments")).toHaveAttribute("data-can-delete", "false");
   });
 });
 

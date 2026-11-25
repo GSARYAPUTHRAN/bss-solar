@@ -10,6 +10,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth", () => ({
   requireAdmin: vi.fn(),
+  requireDeleter: vi.fn(),
   requireSuperAdmin: vi.fn(),
 }));
 const adminClient = vi.hoisted(() => ({
@@ -29,7 +30,7 @@ vi.mock("@/server/data/profiles.repository", () => ({
 }));
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, requireSuperAdmin } from "@/lib/auth";
+import { requireAdmin, requireDeleter } from "@/lib/auth";
 import { profilesRepository } from "@/server/data";
 import { deleteTeamMember, updateTeamMember, updateUserRole } from "./actions";
 
@@ -49,7 +50,7 @@ const profileWrite = vi.hoisted(() => vi.fn());
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(requireAdmin).mockResolvedValue(ADMIN);
-  vi.mocked(requireSuperAdmin).mockResolvedValue(SUPERADMIN);
+  vi.mocked(requireDeleter).mockResolvedValue(SUPERADMIN);
   profiles.byId.mockResolvedValue(PRIYA);
   profiles.adminCount.mockResolvedValue(2);
   profiles.ownedWorkCount.mockResolvedValue(NOTHING);
@@ -99,9 +100,312 @@ describe("updateUserRole", () => {
     });
     expect(profiles.setRole).toHaveBeenCalledWith("priya-1", "admin");
   });
+
+  describe("an admin's role", () => {
+    const MEERA_ADMIN = { id: "admin-2", role: "admin", full_name: "Meera Pillai" } as Profile;
+
+    beforeEach(() => {
+      profiles.byId.mockResolvedValue(MEERA_ADMIN);
+    });
+
+    it.each(["coordinator", "service_engineer"] as const)(
+      "is not another admin's to change (to %s): demote-then-delete is closed",
+      async (to) => {
+        await expect(updateUserRole("admin-2", to)).resolves.toEqual({
+          ok: false,
+          error: "Only the Super Admin can change an admin's role.",
+        });
+        expect(profiles.setRole).not.toHaveBeenCalled();
+      },
+    );
+
+    it("is refused even though the Super Admin keeps the office staffed", async () => {
+      // Two office accounts besides the target, so the last-admin rule would allow it.
+      profiles.adminCount.mockResolvedValue(3);
+      await expect(updateUserRole("admin-2", "coordinator")).resolves.toMatchObject({ ok: false });
+      expect(profiles.setRole).not.toHaveBeenCalled();
+    });
+
+    it("is the Super Admin's to change", async () => {
+      vi.mocked(requireAdmin).mockResolvedValue(SUPERADMIN);
+      await expect(updateUserRole("admin-2", "coordinator")).resolves.toEqual({
+        ok: true,
+        data: undefined,
+      });
+      expect(profiles.setRole).toHaveBeenCalledWith("admin-2", "coordinator");
+    });
+
+    it("judges by the role the database holds now", async () => {
+      // Priya was promoted since the page loaded: she is an admin now.
+      profiles.byId.mockResolvedValue({ ...PRIYA, role: "admin" } as Profile);
+      await expect(updateUserRole("priya-1", "service_engineer")).resolves.toEqual({
+        ok: false,
+        error: "Only the Super Admin can change an admin's role.",
+      });
+      expect(profiles.setRole).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps the Super Admin seat immutable, whoever asks", async () => {
+    profiles.byId.mockResolvedValue(SUPERADMIN);
+    await expect(updateUserRole("super-1", "admin")).resolves.toEqual({
+      ok: false,
+      error: "The Super Admin role cannot be changed here. It is set directly on the database.",
+    });
+    profiles.byId.mockResolvedValue(PRIYA);
+    vi.mocked(requireAdmin).mockResolvedValue(SUPERADMIN);
+    await expect(updateUserRole("priya-1", "superadmin")).resolves.toEqual({
+      ok: false,
+      error: "The Super Admin role cannot be changed here. It is set directly on the database.",
+    });
+    expect(profiles.setRole).not.toHaveBeenCalled();
+  });
+
+  it("refuses a viewer who is not office even if the guard let them through", async () => {
+    vi.mocked(requireAdmin).mockResolvedValue({
+      id: "coord-9",
+      role: "coordinator",
+      full_name: "Sneha Das",
+    } as Profile);
+    await expect(updateUserRole("priya-1", "service_engineer")).resolves.toEqual({
+      ok: false,
+      error: "Only office staff can change roles.",
+    });
+    expect(profiles.setRole).not.toHaveBeenCalled();
+  });
 });
 
 describe("deleteTeamMember", () => {
+  /** What reaches the deletion log: (row, returned columns) and (column, value). */
+  const logInsert = vi.fn();
+  const logDelete = vi.fn();
+  /** The check, after Auth reports an error, of whether the member is still there. */
+  const profileLookup = vi.fn();
+  const ENGINEER = { id: "eng-1", role: "service_engineer", full_name: "Vineeth Nair" } as Profile;
+  const OTHER_ADMIN = { id: "admin-2", role: "admin", full_name: "Meera Pillai" } as Profile;
+  const SEAT = { id: "super-1", role: "superadmin", full_name: "Boss" } as Profile;
+  /** Priya as the database has her, every column. */
+  const PRIYA_ROW = {
+    ...PRIYA,
+    phone: "9847000003",
+    created_at: "2026-06-01T04:30:00+00:00",
+  } as Profile;
+
+  const refused = (message: string) => `REDIRECT:/team?error=${encodeURIComponent(message)}`;
+
+  function expectNothingDeleted() {
+    expect(logInsert).not.toHaveBeenCalled();
+    expect(adminClient.auth.admin.deleteUser).not.toHaveBeenCalled();
+  }
+
+  beforeEach(() => {
+    profiles.byId.mockResolvedValue(PRIYA_ROW);
+    logInsert.mockReset().mockResolvedValue({ data: { id: 77 }, error: null });
+    logDelete.mockReset().mockResolvedValue({ error: null });
+    // By default the member is still there (Auth's error was a real refusal).
+    profileLookup.mockReset().mockResolvedValue({ data: { id: "priya-1" }, error: null });
+    adminClient.from.mockImplementation((table: string) => {
+      if (table === "profiles") {
+        return {
+          select: (columns: string) => ({
+            eq: (column: string, value: unknown) => ({
+              maybeSingle: () => profileLookup(columns, column, value),
+            }),
+          }),
+        };
+      }
+      if (table !== "deleted_records") throw new Error(`unexpected table ${table}`);
+      return {
+        insert: (row: unknown) => ({
+          select: (columns: string) => ({ single: () => logInsert(row, columns) }),
+        }),
+        delete: () => ({ eq: (column: string, value: unknown) => logDelete(column, value) }),
+      };
+    });
+  });
+
+  it("is for deleters only: a refused guard reads and deletes nothing", async () => {
+    vi.mocked(requireDeleter).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      "REDIRECT:/work-orders",
+    );
+    expect(profiles.byId).not.toHaveBeenCalled();
+    expectNothingDeleted();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", SUPERADMIN],
+  ])("lets %s delete a coordinator, logging who did it first", async (_who, me) => {
+    vi.mocked(requireDeleter).mockResolvedValue(me);
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      `REDIRECT:/team?flash=${encodeURIComponent("Priya Suresh (Coordinator) was deleted.")}`,
+    );
+    expect(adminClient.from).toHaveBeenCalledWith("deleted_records");
+    expect(logInsert).toHaveBeenCalledWith(
+      {
+        table_name: "profiles",
+        record_id: "priya-1",
+        snapshot: {
+          id: "priya-1",
+          full_name: "Priya Suresh",
+          phone: "9847000003",
+          role: "coordinator",
+          created_at: "2026-06-01T04:30:00+00:00",
+        },
+        deleted_by: me.id,
+        deleted_by_name: me.full_name,
+      },
+      "id",
+    );
+    expect(adminClient.auth.admin.deleteUser).toHaveBeenCalledWith("priya-1");
+    // Logged before the account goes, so a delete is never unrecorded.
+    expect(logInsert.mock.invocationCallOrder[0]).toBeLessThan(
+      adminClient.auth.admin.deleteUser.mock.invocationCallOrder[0],
+    );
+    expect(logDelete).not.toHaveBeenCalled();
+    expect(revalidatePath).toHaveBeenCalledWith("/team");
+  });
+
+  it("lets an admin delete a service engineer", async () => {
+    vi.mocked(requireDeleter).mockResolvedValue(ADMIN);
+    profiles.byId.mockResolvedValue(ENGINEER);
+    await expect(deleteTeamMember(form({ user_id: "eng-1" }))).rejects.toThrow(
+      /^REDIRECT:\/team\?flash=/,
+    );
+    expect(adminClient.auth.admin.deleteUser).toHaveBeenCalledWith("eng-1");
+  });
+
+  it("never lets an admin delete another admin", async () => {
+    vi.mocked(requireDeleter).mockResolvedValue(ADMIN);
+    profiles.byId.mockResolvedValue(OTHER_ADMIN);
+    await expect(deleteTeamMember(form({ user_id: "admin-2" }))).rejects.toThrow(
+      refused("Only the Super Admin can delete an admin."),
+    );
+    expectNothingDeleted();
+    expect(profiles.ownedWorkCount).not.toHaveBeenCalled();
+  });
+
+  it("lets the Super Admin delete an admin", async () => {
+    profiles.byId.mockResolvedValue(OTHER_ADMIN);
+    await expect(deleteTeamMember(form({ user_id: "admin-2" }))).rejects.toThrow(
+      `REDIRECT:/team?flash=${encodeURIComponent("Meera Pillai (Admin) was deleted.")}`,
+    );
+    expect(adminClient.auth.admin.deleteUser).toHaveBeenCalledWith("admin-2");
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", SUPERADMIN],
+  ])("never lets %s delete their own account", async (_who, me) => {
+    vi.mocked(requireDeleter).mockResolvedValue(me);
+    profiles.byId.mockResolvedValue(me);
+    await expect(deleteTeamMember(form({ user_id: me.id }))).rejects.toThrow(
+      refused("You cannot delete your own account."),
+    );
+    expectNothingDeleted();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin (as another account)", { ...SUPERADMIN, id: "super-2" } as Profile],
+  ])("never lets %s delete the Super Admin", async (_who, me) => {
+    vi.mocked(requireDeleter).mockResolvedValue(me);
+    profiles.byId.mockResolvedValue(SEAT);
+    await expect(deleteTeamMember(form({ user_id: "super-1" }))).rejects.toThrow(
+      refused("The Super Admin account cannot be deleted here."),
+    );
+    expectNothingDeleted();
+  });
+
+  it("says so when the member is already gone", async () => {
+    profiles.byId.mockResolvedValue(null);
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      refused("That team member no longer exists."),
+    );
+    expectNothingDeleted();
+  });
+
+  it("deletes nothing when the delete cannot be logged", async () => {
+    logInsert.mockResolvedValue({ data: null, error: { message: "permission denied" } });
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      refused(
+        "Could not delete Priya Suresh: the delete could not be logged (permission denied).",
+      ),
+    );
+    expect(adminClient.auth.admin.deleteUser).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("takes the log row back when the account could not be deleted", async () => {
+    adminClient.auth.admin.deleteUser.mockResolvedValue({
+      error: { message: "Database error deleting user" },
+    });
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      refused("Could not delete Priya Suresh: Database error deleting user"),
+    );
+    // Only after checking, with the service role, that she is still there.
+    expect(profileLookup).toHaveBeenCalledWith("id", "id", "priya-1");
+    expect(logDelete).toHaveBeenCalledWith("id", 77);
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("does not look the member up again when the delete simply worked", async () => {
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      /^REDIRECT:\/team\?flash=/,
+    );
+    expect(profileLookup).not.toHaveBeenCalled();
+  });
+
+  it("says so when the log row could not be taken back either", async () => {
+    adminClient.auth.admin.deleteUser.mockResolvedValue({
+      error: { message: "Database error deleting user" },
+    });
+    logDelete.mockResolvedValue({ error: { message: "connection lost" } });
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      refused(
+        "Could not delete Priya Suresh: Database error deleting user (its deletion-log entry could not be removed: connection lost)",
+      ),
+    );
+  });
+
+  it.each([
+    ["answers with an error", () => ({ error: { message: "Gateway Timeout", status: 504 } })],
+    [
+      "throws",
+      () => {
+        throw new TypeError("fetch failed");
+      },
+    ],
+  ])(
+    "keeps the log row and reports the delete when Auth %s but the member is gone",
+    async (_what, reply) => {
+      // The delete went through; only its answer was lost.
+      adminClient.auth.admin.deleteUser.mockImplementation(async () => reply());
+      profileLookup.mockResolvedValue({ data: null, error: null });
+      await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+        `REDIRECT:/team?flash=${encodeURIComponent("Priya Suresh (Coordinator) was deleted.")}`,
+      );
+      expect(logDelete).not.toHaveBeenCalled();
+      expect(revalidatePath).toHaveBeenCalledWith("/team");
+      expect(revalidatePath).toHaveBeenCalledWith("/work-orders/duplicates");
+    },
+  );
+
+  it("keeps the log row and says the outcome is unknown when the member cannot be looked up", async () => {
+    adminClient.auth.admin.deleteUser.mockResolvedValue({
+      error: { message: "Gateway Timeout", status: 504 },
+    });
+    profileLookup.mockResolvedValue({ data: null, error: { message: "connection refused" } });
+    await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
+      refused(
+        "The delete of Priya Suresh may not have finished (Gateway Timeout). Reload the team list to check.",
+      ),
+    );
+    expect(logDelete).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
   it("will not delete a member who only shares a sale, and says how to fix it", async () => {
     profiles.ownedWorkCount.mockResolvedValue(SHARES_ONE_SALE);
     await expect(deleteTeamMember(form({ user_id: "priya-1" }))).rejects.toThrow(
@@ -109,7 +413,7 @@ describe("deleteTeamMember", () => {
         "Priya Suresh still owns or shares 1 work order and 1 project. Take them off those sales (Change coordinators on each work order) or delete that business first.",
       )}`,
     );
-    expect(adminClient.auth.admin.deleteUser).not.toHaveBeenCalled();
+    expectNothingDeleted();
   });
 
   it("deletes a member with nothing attached", async () => {

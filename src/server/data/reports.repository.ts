@@ -1,5 +1,4 @@
 import { createClient } from "@/lib/supabase/server";
-import { RANGE_NOT_SATISFIABLE } from "@/lib/pagination";
 import { addDays } from "@/lib/domain/dates";
 import type {
   ProjectState,
@@ -19,6 +18,7 @@ import type {
   TicketStatus,
   WorkOrderStatus,
 } from "@/lib/types";
+import { ROWS_PER_PAGE, readAllPages, type PageReply } from "./read-all";
 
 /**
  * Reads for the monthly management report (/reports). It only fetches and maps
@@ -31,31 +31,17 @@ import type {
  * Imported by path, not through `index.ts`: only the Reports page uses it.
  */
 
-export const REPORT_PAGE_SIZE = 1000;
-
-/** What one page query resolves to; rows are typed by the caller's `T`. */
-type Reply = {
-  data: unknown;
-  error: { code?: string; message: string } | null;
-};
+export const REPORT_PAGE_SIZE = ROWS_PER_PAGE;
 
 /** Every row of a query, page by page. `page` builds the query for one range. */
-async function readAll<T>(
+function readAll<T>(
   what: string,
-  page: (from: number, to: number) => PromiseLike<Reply>,
+  page: (from: number, to: number) => PromiseLike<PageReply>,
 ): Promise<T[]> {
-  const rows: T[] = [];
-  for (let from = 0; ; from += REPORT_PAGE_SIZE) {
-    const { data, error } = await page(from, from + REPORT_PAGE_SIZE - 1);
-    if (error) {
-      // A page that starts past the end: the previous page was exactly full.
-      if (error.code === RANGE_NOT_SATISFIABLE) return rows;
-      throw new Error(`Could not read ${what} for the report: ${error.message}`);
-    }
-    const batch = (data ?? []) as T[];
-    rows.push(...batch);
-    if (batch.length < REPORT_PAGE_SIZE) return rows;
-  }
+  return readAllPages<T>(
+    page,
+    (message) => new Error(`Could not read ${what} for the report: ${message}`),
+  );
 }
 
 /** numeric/bigint columns may arrive as strings; null means 0. */

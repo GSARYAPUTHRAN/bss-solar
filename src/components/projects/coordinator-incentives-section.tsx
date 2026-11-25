@@ -11,6 +11,7 @@ import type { ProjectCoordinator } from "@/server/data/projects.repository";
 import { IncentiveBadge } from "./incentive-badge";
 import { IncentiveFigures, InstalmentList } from "./incentive-instalments";
 import {
+  DeleteIncentiveDialog,
   InstalmentDialog,
   RemoveInstalmentDialog,
 } from "./incentive-payment-dialogs";
@@ -26,17 +27,24 @@ import { useProjectAction } from "./use-project-action";
  * Stays editable on a cancelled or refunded project on purpose: a cancellation
  * leaves incentives alone, and this is where the office lowers or clears one
  * that will not be paid in full.
+ *
+ * Deleters (`canDelete`, from the page) also get "Delete incentive" on every
+ * person with an amount or instalments: the amount and all its instalments go
+ * in one step, and the person stays on the sale.
  */
 export function CoordinatorIncentivesSection({
   projectId,
   coordinators,
   today,
+  canDelete = false,
   className,
 }: {
   projectId: string;
   coordinators: readonly ProjectCoordinator[];
   /** IST date from the server — an instalment cannot be dated later. */
   today: string;
+  /** The viewer may delete (`canDeleteRole`); the action checks again. */
+  canDelete?: boolean;
   className?: string;
 }) {
   return (
@@ -54,6 +62,7 @@ export function CoordinatorIncentivesSection({
           coordinator={coordinator}
           first={index === 0 && coordinators.length > 1}
           today={today}
+          canDelete={canDelete}
         />
       ))}
     </Section>
@@ -65,18 +74,23 @@ function IncentiveBlock({
   coordinator,
   first,
   today,
+  canDelete,
 }: {
   projectId: string;
   coordinator: ProjectCoordinator;
   /** The one who logged a shared sale. */
   first: boolean;
   today: string;
+  canDelete: boolean;
 }) {
   const { incentive } = coordinator;
   const amount = incentive?.amount ?? null;
   const paid = incentive?.paid ?? 0;
   const pending = incentivePending({ amount, paid });
   const headingId = `incentive-${coordinator.id}`;
+  // Something to delete: an agreed amount, or instalments recorded against one.
+  const deletable =
+    canDelete && incentive !== null && (amount !== null || incentive.payments.length > 0);
 
   return (
     <div
@@ -91,7 +105,16 @@ function IncentiveBlock({
           </span>
           {first && <span className="ml-2 text-xs text-muted-foreground">logged the sale</span>}
         </p>
-        <IncentiveBadge amount={amount} paid={paid} />
+        <div className="flex items-center gap-1">
+          <IncentiveBadge amount={amount} paid={paid} />
+          {deletable && incentive && (
+            <DeleteIncentiveDialog
+              projectId={projectId}
+              payee={coordinator}
+              incentive={incentive}
+            />
+          )}
+        </div>
       </div>
 
       {/* Re-mounted when the saved amount changes, so the input always shows

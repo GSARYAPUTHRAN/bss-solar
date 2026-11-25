@@ -1,12 +1,12 @@
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { CopyX, Plus } from "lucide-react";
 import { requireWorkOrderRole } from "@/lib/auth";
 import { profilesRepository, workOrdersRepository } from "@/server/data";
 import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { WorkOrdersTable } from "@/components/work-orders-table";
-import { isOfficeRole } from "@/lib/domain/role";
+import { canDeleteRole, isOfficeRole } from "@/lib/domain/role";
 
 export const metadata = { title: "Work Orders" };
 
@@ -40,6 +40,14 @@ export default async function WorkOrdersPage({
             : "Sales you logged or share."
         }
       >
+        {/* The duplicate clean-up deletes, so it is for deleters only. */}
+        {canDeleteRole(profile.role) && (
+          <Button asChild variant="outline" className="h-10 md:h-8">
+            <Link href="/work-orders/duplicates">
+              <CopyX className="mr-2 h-4 w-4" /> Find duplicates
+            </Link>
+          </Button>
+        )}
         <Button asChild className="h-10 md:h-8">
           <Link href="/work-orders/new">
             <Plus className="mr-2 h-4 w-4" /> New Work Order

@@ -2,7 +2,13 @@ import { MIN_PASSWORD_LENGTH } from "@/lib/constants";
 import { fail, ok, type ActionResult } from "@/lib/result";
 import type { Profile, UserRole } from "@/lib/types";
 import type { DirectoryAccount } from "./coordinator-match";
-import { isOfficeRole, isServiceEngineerRole, isSuperAdminRole } from "./role";
+import {
+  canDeleteRole,
+  deleteRolesLabel,
+  isOfficeRole,
+  isServiceEngineerRole,
+  isSuperAdminRole,
+} from "./role";
 
 /**
  * Rules for changing who someone is on the team. Each returns the message to
@@ -84,6 +90,48 @@ export function roleChangeBlocker(change: {
   }
 
   return null;
+}
+
+/** Whether a viewer may change a member's role, and if not, what to tell them. */
+export type RoleChangeAuthority = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * What anyone is told about the Super Admin seat: it cannot be granted, revoked
+ * or reassigned from the app (see lib/domain/role.ts).
+ */
+export const SUPERADMIN_IMMUTABLE =
+  "The Super Admin role cannot be changed here. It is set directly on the database.";
+
+/** What an admin is told about another admin's role, which is not theirs to change. */
+export const ADMIN_ROLE_RESERVED = "Only the Super Admin can change an admin's role.";
+
+/**
+ * Whether `viewer` may change `target`'s role at all. The Team table offers the
+ * role picker only where this allows it and `updateUserRole` asks it again, so
+ * the rule lives here once:
+ *
+ *   nobody       their own role, or the Super Admin's (the seat is immutable);
+ *   Super Admin  anyone else's — admins included;
+ *   Admin        coordinators' and engineers' only. Not another admin's: an
+ *                admin demoted to coordinator could then be deleted, or have
+ *                their login changed, by the admin who demoted them;
+ *   anyone else  nobody's.
+ *
+ * What the role may become, and whether that would strand work, is a separate
+ * question (`roleChangeBlocker`), answered on the server with the counts.
+ */
+export function roleChangeAuthority(viewer: Who, target: Who): RoleChangeAuthority {
+  if (!isOfficeRole(viewer.role)) {
+    return { allowed: false, reason: "Only office staff can change roles." };
+  }
+  if (target.id === viewer.id) {
+    return { allowed: false, reason: "You cannot change your own role." };
+  }
+  if (isSuperAdminRole(target.role)) return { allowed: false, reason: SUPERADMIN_IMMUTABLE };
+  if (isOfficeRole(target.role) && !isSuperAdminRole(viewer.role)) {
+    return { allowed: false, reason: ADMIN_ROLE_RESERVED };
+  }
+  return { allowed: true };
 }
 
 // --- Editing a member ----------------------------------------------------------
@@ -312,4 +360,42 @@ export function planTeamEdit(input: {
     profile: Object.keys(profile).length > 0 ? profile : null,
     auth: Object.keys(auth).length > 0 ? auth : null,
   });
+}
+
+// --- Deleting a member ---------------------------------------------------------
+
+/** Whether a viewer may delete a member, and if not, what to tell them. */
+export type TeamDeleteAuthority = { allowed: true } | { allowed: false; reason: string };
+
+/** Field members: the only accounts an admin may delete. */
+const FIELD_ROLES: readonly UserRole[] = ["coordinator", "service_engineer"];
+
+/**
+ * Whether `viewer` may delete `target`. The Team table offers Delete only where
+ * this allows it and `deleteTeamMember` asks it again, so the rule lives here
+ * once. It matches the database's `profiles_delete` policy:
+ *
+ *   nobody       themself, or the Super Admin (the seat is immutable from the app);
+ *   Super Admin  coordinators, engineers and admins;
+ *   Admin        coordinators and engineers only — never another admin
+ *                (while admins are deleters at all; see DELETE_ROLES);
+ *   anyone else  nobody.
+ *
+ * Whether the member still has work attached is a separate question
+ * (`deletionBlocker`), answered on the server with the counts.
+ */
+export function teamDeleteAuthority(viewer: Who, target: Who): TeamDeleteAuthority {
+  if (target.id === viewer.id) {
+    return { allowed: false, reason: "You cannot delete your own account." };
+  }
+  if (isSuperAdminRole(target.role)) {
+    return { allowed: false, reason: "The Super Admin account cannot be deleted here." };
+  }
+  if (!canDeleteRole(viewer.role)) {
+    return { allowed: false, reason: `Only ${deleteRolesLabel()} can delete team members.` };
+  }
+  if (!isSuperAdminRole(viewer.role) && !FIELD_ROLES.includes(target.role)) {
+    return { allowed: false, reason: "Only the Super Admin can delete an admin." };
+  }
+  return { allowed: true };
 }

@@ -191,7 +191,9 @@ test("the office writes off a shortfall, refunds money and records the fee it pa
   await expect(dialog.getByText("Balance due")).toBeVisible();
   await expect(dialog.getByLabel(/amount to write off/i)).toHaveValue("800");
   await expect(dialog.getByRole("note")).toContainText(/closes ₹800\.00 of the balance for good/i);
-  await expect(dialog.getByRole("note")).toContainText(/only the superadmin can undo it/i);
+  await expect(dialog.getByRole("note")).toContainText(
+    /only admin or super admin can undo it, by deleting the entry/i,
+  );
 
   await dialog.getByLabel(/amount to write off/i).fill("900");
   await expect(dialog.getByText(/cannot be more than the ₹800\.00 balance due/i)).toBeVisible();

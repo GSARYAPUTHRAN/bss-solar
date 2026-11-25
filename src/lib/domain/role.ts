@@ -6,13 +6,17 @@ import type { UserRole } from "@/lib/types";
  *   coordinator       field sales; sees only their own work orders/projects.
  *   service_engineer  field service; sees and works only the service tickets
  *                     assigned to them (never work orders, projects or money).
- *   admin             office staff; sees and manages everything except deletes.
- *   superadmin        exactly one account; additionally owns every destructive
- *                     action (deleting users, projects and work orders).
+ *   admin             office staff; sees and manages everything. For now an
+ *                     admin may also delete (see DELETE_ROLES) — coordinators
+ *                     and engineers, never another admin or the Super Admin.
+ *   superadmin        exactly one account; everything an admin can, and the
+ *                     only one who may delete an admin or change an admin's
+ *                     role (see roleChangeAuthority in lib/domain/team.ts).
  *
  * `superadmin` is a strict superset of `admin`, so every admin-gated surface
  * must test with `isOfficeRole`, never `role === "admin"`. The DB mirrors this:
- * `is_admin()` is true for both, and `is_superadmin()` gates DELETE policies.
+ * `is_admin()` is true for both, and `can_delete()` (the twin of DELETE_ROLES)
+ * gates the DELETE policies.
  *
  * The SuperAdmin seat is the top of the hierarchy and is **immutable from the
  * app**: it is never offered in a role picker, and no signed-in user — including
@@ -37,6 +41,31 @@ export const TICKET_ROLES: UserRole[] = ["service_engineer", ...OFFICE_ROLES];
 
 /** Roles that may own a work order (log business). Never an engineer. */
 export const WORK_ORDER_OWNER_ROLES: UserRole[] = WORK_ORDER_ROLES;
+
+/**
+ * Who may delete records (sales, projects, ledger entries, incentives, team
+ * members). This is the ONE switch in TypeScript; its database twin is
+ * `can_delete()` (migration 20261125120000), which every DELETE policy asks.
+ *
+ * Admins hold it for now. To make deletes Super Admin–only again, drop "admin"
+ * here AND change `can_delete()`'s list to ('superadmin') in a new migration —
+ * every guard (`requireDeleter`), button and piece of copy follows this list.
+ */
+export const DELETE_ROLES: UserRole[] = ["admin", "superadmin"];
+
+export function canDeleteRole(role: UserRole): boolean {
+  return DELETE_ROLES.includes(role);
+}
+
+/**
+ * Who may delete, for copy: "Admin or Super Admin" today, "Super Admin" once
+ * admins lose it. Use it instead of naming a role in a sentence about deletes.
+ */
+export function deleteRolesLabel(roles: readonly UserRole[] = DELETE_ROLES): string {
+  const labels = roles.map((role) => ROLE_LABELS[role]);
+  if (labels.length <= 1) return labels.join("");
+  return `${labels.slice(0, -1).join(", ")} or ${labels.at(-1)}`;
+}
 
 export function isOfficeRole(role: UserRole): boolean {
   return OFFICE_ROLES.includes(role);

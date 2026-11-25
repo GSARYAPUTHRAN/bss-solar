@@ -7,6 +7,7 @@ const actions = vi.hoisted(() => ({
   recordIncentivePayment: vi.fn(),
   updateIncentivePayment: vi.fn(),
   deleteIncentivePayment: vi.fn(),
+  deleteCoordinatorIncentive: vi.fn(),
 }));
 vi.mock("@/app/(app)/projects/actions", () => actions);
 
@@ -15,7 +16,12 @@ vi.mock("sonner", () => ({ toast }));
 
 import { formatCurrency, formatDate } from "@/lib/format";
 import type { IncentiveInstalment } from "@/server/data/projects.repository";
-import { InstalmentDialog, RemoveInstalmentDialog } from "./incentive-payment-dialogs";
+import {
+  DeleteIncentiveDialog,
+  InstalmentDialog,
+  RemoveInstalmentDialog,
+  incentiveDeleteDescription,
+} from "./incentive-payment-dialogs";
 
 const TODAY = "2026-10-10";
 const RAVI = { id: "c1", full_name: "Ravi Kumar" };
@@ -266,5 +272,103 @@ describe("RemoveInstalmentDialog", () => {
     await user.click(within(dialog).getByRole("button", { name: "Remove payment" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(/not on this project/);
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+describe("incentiveDeleteDescription", () => {
+  const two = [SECOND, { ...SECOND, id: "pay-1" }];
+
+  it("names the agreed amount and every payment against it", () => {
+    expect(incentiveDeleteDescription("Ravi Kumar", { amount: 6000, paid: 4000, payments: two })).toBe(
+      `This removes the agreed amount of ${formatCurrency(6000)} and its 2 payments (${formatCurrency(4000)}). Ravi Kumar stays on the sale with no incentive. This cannot be undone.`,
+    );
+  });
+
+  it("counts one payment in the singular", () => {
+    expect(
+      incentiveDeleteDescription("Ravi Kumar", { amount: 6000, paid: 2000, payments: [SECOND] }),
+    ).toContain(`and its 1 payment (${formatCurrency(2000)})`);
+  });
+
+  it("says only the amount when nothing has been paid", () => {
+    expect(incentiveDeleteDescription("Ravi Kumar", { amount: 2500, paid: 0, payments: [] })).toBe(
+      `This removes the agreed amount of ${formatCurrency(2500)}. Ravi Kumar stays on the sale with no incentive. This cannot be undone.`,
+    );
+  });
+
+  it("says only the payments when no amount is agreed", () => {
+    expect(
+      incentiveDeleteDescription("Ravi Kumar", { amount: null, paid: 2000, payments: [SECOND] }),
+    ).toBe(
+      `This removes the 1 payment (${formatCurrency(2000)}) recorded against it. Ravi Kumar stays on the sale with no incentive. This cannot be undone.`,
+    );
+  });
+});
+
+describe("DeleteIncentiveDialog", () => {
+  const INCENTIVE = { amount: 6000, paid: 2000, payments: [SECOND] };
+  const triggerName = "Delete Ravi Kumar's incentive";
+
+  function renderDialog() {
+    return render(<DeleteIncentiveDialog projectId="p1" payee={RAVI} incentive={INCENTIVE} />);
+  }
+
+  it("is an icon button named for the person, big enough to tap", () => {
+    renderDialog();
+    expect(screen.getByRole("button", { name: triggerName })).toHaveClass("size-10");
+  });
+
+  it("says what goes, then deletes the person's incentive on this project", async () => {
+    const user = userEvent.setup();
+    actions.deleteCoordinatorIncentive.mockResolvedValue({
+      ok: true,
+      data: { message: "Incentive deleted for Ravi Kumar." },
+    });
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: triggerName }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Ravi Kumar's incentive?" });
+    expect(dialog).toHaveAccessibleDescription(incentiveDeleteDescription("Ravi Kumar", INCENTIVE));
+    expect(actions.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "Delete incentive" }));
+    await waitFor(() => expect(actions.deleteCoordinatorIncentive).toHaveBeenCalledTimes(1));
+    expect(actions.deleteCoordinatorIncentive).toHaveBeenCalledWith("p1", "c1");
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(toast.success).toHaveBeenCalledWith("Incentive deleted for Ravi Kumar.");
+  });
+
+  it("can be backed out of", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(screen.getByRole("button", { name: triggerName }));
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(actions.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it("shows a refusal in the dialog and leaves it open", async () => {
+    const user = userEvent.setup();
+    actions.deleteCoordinatorIncentive.mockResolvedValue({
+      ok: false,
+      error: "Ravi Kumar has no incentive on this sale to delete.",
+    });
+    renderDialog();
+    await user.click(screen.getByRole("button", { name: triggerName }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete incentive" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/no incentive on this sale/);
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("shows a dropped connection in the dialog instead of the error page", async () => {
+    const user = userEvent.setup();
+    actions.deleteCoordinatorIncentive.mockRejectedValue(new TypeError("Failed to fetch"));
+    renderDialog();
+    await user.click(screen.getByRole("button", { name: triggerName }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete incentive" }));
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(/couldn't reach the server/i);
   });
 });

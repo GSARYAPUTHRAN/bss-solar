@@ -15,6 +15,7 @@ const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
 vi.mock("sonner", () => ({ toast }));
 
 import { formatCurrency } from "@/lib/format";
+import { deleteRolesLabel } from "@/lib/domain/role";
 import { WriteOffDialog } from "./write-off-dialog";
 
 const TODAY = "2026-10-10";
@@ -50,7 +51,7 @@ describe("WriteOffDialog — writing a balance off", () => {
     expect(note).toHaveTextContent(`closes ${formatCurrency(800)} of the balance for good`);
     expect(note).toHaveTextContent(/no longer be collected/);
     expect(note).toHaveTextContent(/settled/);
-    expect(note).toHaveTextContent(/only the superadmin can undo it/i);
+    expect(note).toHaveTextContent(`Only ${deleteRolesLabel()} can undo it, by deleting the entry.`);
 
     const amount = screen.getByLabelText(/amount to write off/i);
     await user.clear(amount);
