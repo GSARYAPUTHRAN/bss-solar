@@ -21,10 +21,13 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
 
 - **Auth & RBAC** — Supabase email/password auth with four roles:
   - `superadmin` — **exactly one account**, the highest privilege. Everything an admin
-    can do, plus the only role that can **delete** users, projects, work orders and
-    payments (enforced by RLS, not just the UI). The role itself is not editable from the
-    app by anyone — it is set directly on the database.
-  - `admin` (office staff) — sees and manages all data, but cannot delete.
+    can do, plus the only role that can **delete an admin**. The role itself is not
+    editable from the app by anyone — it is set directly on the database.
+  - `admin` (office staff) — sees and manages all data and, **for now**, may also
+    **delete** sales, projects, ledger entries, incentives, coordinators and service
+    engineers — never another admin or the Super Admin. Who may delete is one switch per
+    layer (enforced by RLS, not just the UI); see [Deleting records](#deleting-records),
+    including how to make deletes Super Admin-only again.
   - `coordinator` (field sales) — sees only the sales they are on: their own, and ones
     they **share** with other coordinators (enforced by RLS).
   - `service_engineer` (field service) — sees **only the service tickets assigned to them**,
@@ -131,6 +134,10 @@ Super Admin mostly use it on a **PC**. Every screen is built for both.
   flagged, a popup says the sheet was already uploaded and when, and **Import** writes
   nothing until the admin chooses to skip those rows (the default) or, after ticking a
   confirmation, to import them again.
+- **Find duplicates** (office, *Work orders → Find duplicates*) — finds sales already
+  entered more than once (the same KSEB consumer number, or the same customer on the same
+  order date), suggests the copy to keep and deletes the extra copies in one go, with a
+  *Recently deleted* log underneath. See [Find duplicates](#find-duplicates).
 - **Dashboard** — KPI cards (single aggregate query) plus recent-activity tables. Cancelled
   and refunded projects are left out of *Active Projects* and the approved pipeline and
   counted in their own tile.
@@ -270,7 +277,8 @@ src/
     bss-logo.tsx               # Official BSS Solar branding
   app/(app)/                   # Authenticated routes
     page.tsx                   # Dashboard
-    work-orders/               # CRM list, detail, create (plan, coordinators)
+    work-orders/               # CRM list, detail, create (plan, coordinators),
+                               # duplicates/ (Find duplicates + Recently deleted)
     projects/                  # Board (default) + list, detail (status, incentives)
     tickets/                   # Service tickets (office table / engineer worklist), detail, edit, create
     notifications/             # Inbox
@@ -287,16 +295,20 @@ public/brand/                  # Official logo assets from bsssolar.com
 
 | Resource | Super Admin | Admin | Coordinator | Service Engineer |
 | -------- | ----------- | ----- | ----------- | ---------------- |
-| Work Orders | Everything + delete | Create/read/update, approve, change who shares a sale | Create + read/**edit** the sales they are on (details, not amounts or status after approval); add partners to their own *pending* order | — |
-| Projects | Everything + delete | Read/update all, approve, cancel / refund / reinstate | Read the sales they are on (a cancelled or refunded one stays visible, read-only) | — |
+| Work Orders | Everything + delete (one, or in bulk from *Find duplicates*) | Create/read/update, approve, change who shares a sale, **+ delete** (one, or in bulk)¹ | Create + read/**edit** the sales they are on (details, not amounts or status after approval); add partners to their own *pending* order | — |
+| Projects | Everything + delete | Read/update all, approve, cancel / refund / reinstate, **+ delete**¹ | Read the sales they are on (a cancelled or refunded one stays visible, read-only) | — |
 | Project Milestones | Update | Update | Read their sales' | — |
-| Payments ledger | Record/edit + delete, write off a balance | Record/edit, write off a balance | Read their sales' | — |
+| Payments ledger | Record/edit + delete, write off a balance | Record/edit, write off a balance, **+ delete**¹ | Read their sales' | — |
 | Feasibility | Set | Set | Read their sales' | — |
-| Incentives | Set + delete with the sale | Set (agreed amount, record / edit instalments) | Read **their own** only, never a partner's | — |
+| Incentives | Set, record / edit / remove instalments, delete an incentive | Same, **delete an incentive**¹ | Read **their own** only, never a partner's | — |
 | Reports (monthly + services) | View + download | View + download | — | — |
 | Service Tickets | Full CRUD | Full CRUD | Read tickets on their sales' projects | Read + set *in progress* / *completed* on **their own** only |
 | Notifications | Own inbox | Own inbox | Own inbox | Own inbox |
-| Team / Profiles | Add + roles + delete + edit anyone | Add + roles + edit (not another admin's or the Super Admin's login) | Read own profile, and the name, role and phone of whoever shares a sale with them | Read own profile only |
+| Team / Profiles | Add + roles + edit anyone; delete coordinators, engineers **and admins** (never the Super Admin seat or themself) | Add + roles (not another admin's role — that is the Super Admin's) + edit (not another admin's or the Super Admin's login); **delete coordinators and engineers**¹ (never an admin, the Super Admin or themself) | Read own profile, and the name, role and phone of whoever shares a sale with them | Read own profile only |
+| Deletion log (`deleted_records`) | Read (*Recently deleted*) | Read¹ | — | — |
+
+¹ For now: admins hold the delete permission until the owner takes it back — see
+[Making deletes Super Admin-only again](#making-deletes-super-admin-only-again).
 
 ### The Super Admin seat
 
@@ -305,20 +317,136 @@ public/brand/                  # Official logo assets from bsssolar.com
   holder's row renders as a locked badge, and no signed-in user — not an admin, not
   even the Super Admin themselves — can grant, revoke or reassign it. A database
   trigger (`guard_profile_role`) rejects any such change independently of the UI.
-- The Super Admin account also cannot be deleted from the app.
+- The Super Admin account cannot be deleted by anyone: the app offers no Delete on its
+  row, and the database's `profiles_delete` policy refuses it too.
 - Appointing or moving the seat is therefore **SQL-only**, via
   [`supabase/production-bootstrap.sql`](supabase/production-bootstrap.sql) — which is
   also the recovery path if the account is lost. The one context the trigger permits
   is a server-side one (`auth.uid()` is `NULL`), matching how every other guard in
   this schema is written.
 - The Super Admin can still manage ordinary roles (admin ↔ coordinator) as usual;
-  immutability is scoped to the seat itself.
-- Deleting a member who still owns or shares work orders or projects is refused
-  (`on delete restrict`); take them off those sales (*Change coordinators* on each work
-  order) or delete that business first. Deleting a work order also deletes its
-  coordinators and their incentives.
-- Deleting a project returns its work order to `pending`, so the invariant
-  "approved work order ⇒ has a project" always holds and it can be approved again.
+  immutability is scoped to the seat itself. Changing an **admin's** role is the Super
+  Admin's alone (`guard_profile_role` refuses anyone else), so an admin cannot demote
+  another admin — and so cannot get round the rule that only the Super Admin deletes admins.
+
+## Deleting records
+
+Deletes are **permanent** and are for the office: the **Super Admin and, for now, the
+Admin** ("deleters"). Coordinators and service engineers delete nothing (a coordinator
+can only clear their own read notifications). Every delete asks for confirmation in a
+dialog that says what goes with it.
+
+| What | Where | Who | What goes with it |
+| ---- | ----- | --- | ----------------- |
+| **A whole sale** (work order) | Work order page → *Delete*; project page → *Delete sale*; *Find duplicates* (many at once) | Deleters | Its project and milestones, every ledger entry (payments, KSEB fees, refunds, write-offs), who shares the sale, and every coordinator's incentive with its instalments. Service tickets stay, but lose their link to the project. |
+| **A project** | Project page → *Delete project* | Deleters | Its milestones. The work order goes back to **pending** (so "approved ⇒ has a project" always holds, and it can be approved again); the ledger, the coordinators and their incentives stay with the sale; service tickets stay. |
+| **A ledger entry** (stage payment, KSEB fee, refund, write-off) | Project page → Payments, the bin on the row; on the work order page while the sale has no project | Deleters | Nothing else. Refused when other entries rely on it: a payment a refund was paid out of, a refund a write-off was sized against. |
+| **A coordinator's incentive** | Project page → Coordinator incentives → *Delete …'s incentive* | Deleters | The agreed amount and **every instalment** paid against it, in one go. The person stays on the sale, with no incentive. |
+| An incentive instalment | Project page → the instalment's *Remove* | Office (admin-level, unchanged) | Nothing else; the incentive's paid state follows. |
+| A service ticket | Ticket page → *Delete ticket* | Office (admin-level, unchanged) | Its service sheet. |
+| **A team member** | Team → the bin on their row | Admin: coordinators and service engineers. Super Admin: also admins. | Their sign-in. Refused while they still own or share a sale or hold open tickets (take them off the sales with *Change coordinators*, reassign the tickets); nobody can delete the Super Admin or their own account. |
+
+The rules are enforced twice: in the app (`requireDeleter()`, `teamDeleteAuthority`) and
+by Row Level Security (`can_delete()` in every DELETE policy, plus the profile limits in
+`profiles_delete`).
+
+### The deletion log
+
+Every delete made by a signed-in person is written to **`deleted_records`** by a trigger:
+the table, the row's id, a **full snapshot of the row** (`to_jsonb`), who deleted it (their
+id and their name at the time, kept even if their account is deleted later) and when.
+Everything removed by one delete — a sale and its project, ledger entries and incentives
+— shares one transaction id (`tx`), so it reads as one event.
+
+- Logged: work orders, projects, milestones, ledger entries, service tickets, incentives
+  (only when an amount was agreed), incentive instalments, team members, and who shared a
+  sale (`work_order_coordinators` — only when the sale itself is deleted; taking someone off
+  a sale that stays is an edit, not a delete). A project's snapshot also lists the service
+  tickets that were linked to it (`service_ticket_ids`), so the links can be put back. A
+  team member is deleted through the auth admin API, so the app writes that row itself.
+- Not logged: notifications; nor anything with no signed-in user behind it — the wipe and
+  reset scripts, SQL run in the SQL Editor, service-role clean-ups.
+- Only deleters can read it (*Recently deleted* on the Find duplicates page shows the last
+  50 deletes: when, who, what, and what went with it). Nobody can write, change or delete
+  it through the API. The wipe and reset scripts empty it with the rest of the business
+  data.
+- There is **no restore button**. A deleted sale can be put back from its snapshot with
+  SQL — see [DEPLOY.md → Restoring a deleted sale](DEPLOY.md#restoring-a-deleted-sale).
+
+### Find duplicates
+
+*Work orders → Find duplicates* (`/work-orders/duplicates`, deleters only — anyone else is
+sent home, and the button is not shown to them) lists every group of sales that look like
+the same sale entered more than once:
+
+- **Same consumer number** — the KSEB consumer number, ignoring spaces, `-`, `/` and `.`.
+  Placeholders with no real digits (*NA*, *N/A*, *Nil*, *0*) never link sales;
+- **Same customer & date** — the same order date and the same customer, names compared
+  loosely as the import does (capitals, punctuation, word order, spacing and run-together
+  initials ignored: *R.Vijayakumar* = *Vijayakumar R*, *Santhi kumari* = *Santhikumari*;
+  a different spelling such as *Vijaykumar* is **not** matched). Two sales with different
+  consumer numbers are never linked this way — they are two connections.
+
+Every sale is checked, whatever its status. In each group the copy to keep is suggested
+(**Keep**): a live copy before a cancelled or refunded one, then the one with the most
+recorded work — the most ledger entries (every kind: payments, KSEB fees, refunds,
+write-offs) and service tickets, the most money received, completed, the furthest project
+stage, approved over pending over rejected — and finally the newest. The other copies are
+ticked, except any that may be a different sale (a name that only matches through another
+copy, or a different consumer number), which start unticked (**Kept**). Values that differ
+from the suggested copy (total, received, coordinators, status, plan, client name, order
+date, consumer number) are highlighted, and ticking the suggested copy turns its badge to
+*Suggested keep — will be deleted*. Client names open in a new tab, so checking a copy
+never loses your ticks; ticks you change are kept when the page refreshes after a delete.
+Review the ticks — **Delete selected** takes every ticked copy on the page, across all
+groups; *Reset selection* puts the suggestion back and *Clear selection* unticks
+everything (over 500, *Select the first 500* helps) — then press it: the confirmation
+totals what goes (sales, projects, ledger entries, tickets that will lose their project
+link), warns in red if every copy of a sale is ticked, and needs *I understand these sales
+are deleted permanently* ticked. All the ticked sales go in **one transaction** (at most
+500 at a time), each with everything a single sale delete takes. If a copy you meant to
+keep was deleted elsewhere since the page loaded (another tab or another person), nothing
+is deleted and the page refreshes so you can check again. *Recently deleted* below lists
+the result.
+
+### Making deletes Super Admin-only again
+
+Admins hold the delete permission **for now**. Taking it back is one switch per layer;
+ship both in the same release:
+
+1. **TypeScript** — in [`src/lib/domain/role.ts`](src/lib/domain/role.ts), drop `"admin"`
+   from `DELETE_ROLES`:
+
+   ```ts
+   export const DELETE_ROLES: UserRole[] = ["superadmin"];
+   ```
+
+   Every guard (`requireDeleter()`), button, the Find duplicates entry and the copy that
+   names who can delete ("Admin or Super Admin" → "Super Admin", built by
+   `deleteRolesLabel()`) follow this list; `teamDeleteAuthority` then refuses every admin.
+2. **Database** — a new migration (and the same change in `supabase/schema.sql`, which CI
+   checks) that narrows `can_delete()`:
+
+   ```sql
+   create or replace function public.can_delete()
+   returns boolean language sql security definer stable set search_path = public as $$
+     select exists (
+       select 1 from profiles
+       where id = auth.uid() and role::text in ('superadmin')
+     );
+   $$;
+   ```
+
+   The DELETE policies, `delete_work_orders()`, `delete_coordinator_incentive()` and who
+   may read the deletion log all ask `can_delete()`, so nothing else changes. Deleting a
+   service ticket and removing a single incentive instalment were admin-level before this
+   switch existed and stay so.
+3. The tests that pin admins deleting then fail and show what to flip — chiefly the unit
+   tests of `role`, `team` and `auth` and of the Team page and table; the integration
+   tests `office-deletes`, `deletion-log`, `superadmin-guards`, `payments-ledger` and
+   `ledger-adjustments`; and the e2e specs `office-deletes`, `duplicate-cleanup`,
+   `superadmin` and `payments-ledger`, which delete as the admin (switch them to the
+   Super Admin, and assert that the admin sees no Delete).
 
 ## Scripts
 
@@ -339,8 +467,9 @@ node scripts/generate-vapid-keys.mjs   # One VAPID key pair for push
 Two scripts for the SQL Editor, each with a read-only preview. Take a backup first.
 
 - [`supabase/scripts/wipe-business-data.sql`](supabase/scripts/wipe-business-data.sql) deletes
-  every work order, project, milestone, payment, ticket, coordinator assignment, incentive and
-  notification and **keeps every account** (and push subscriptions), then restarts the ticket
+  every work order, project, milestone, payment, ticket, coordinator assignment, incentive,
+  notification and the deletion log (`deleted_records`) and **keeps every account** (and push
+  subscriptions), then restarts the ticket
   numbering. It ships locked — type `WIPE ALL BUSINESS DATA` into its `confirm` line to run
   it — and aborts without deleting anything if a table it does not know about exists or no
   office account would remain. Run
@@ -365,8 +494,11 @@ Then make sure the team's accounts exist, **Check file**, and bulk-import. See
 - **Integration tests** exercise real Row Level Security and DB triggers against a
   local Supabase stack — they assert that a coordinator cannot escalate to admin,
   cannot self-approve work orders, tenant data stays isolated, approval seeds the 9
-  milestones, ticket numbers are unique, **deletes are refused for anyone but the
-  Super Admin**, the Super Admin seat cannot be duplicated, hijacked, or changed by
+  milestones, ticket numbers are unique, **deletes are refused for anyone but the office**
+  (Admin and Super Admin; an admin never deletes another admin, and nobody deletes the
+  Super Admin or themself), the bulk delete and the incentive delete are all-or-nothing,
+  **every delete is logged** with its snapshot and who made it (and read only by the
+  office), the Super Admin seat cannot be duplicated, hijacked, or changed by
   anyone signed in (including its holder) while ordinary role management still works,
   a coordinator's edits surface on their project, the SQL payment, capacity and
   feasibility maths agree with `lib/domain/`, service engineers see and change only their
@@ -378,9 +510,12 @@ Then make sure the team's accounts exist, **Check file**, and bulk-import. See
 - **E2E** covers login/RBAC redirects, work-order creation and editing, shared
   coordinators, custom plans, cancelled / refunded projects, the payments ledger, KSEB
   feasibility and per-person incentives, the service engineer's phone workflow, the
-  notification bell and inbox, the bulk import (including *Check file*), the Super
-  Admin-only delete affordances, and the commissioned-but-unpaid dashboard KPI. Every spec owns the data it changes, so
-  the suite can be re-run without resetting the database.
+  notification bell and inbox, the bulk import (including *Check file*), the office's
+  deletes (a sale from its work order or project page, a project, a ledger entry, an
+  incentive, team members — and who is offered Delete on which row), *Find duplicates*
+  (on a desktop and a 360px phone), and the commissioned-but-unpaid dashboard KPI. Every
+  spec owns the data it changes — it deletes only what it created — so the suite can be
+  re-run without resetting the database.
 
 > `E2E_PORT=3711 npm run test:e2e` runs the suite on another port if 3100 is taken.
 - CI (`.github/workflows/ci.yml`) runs all of the above on every PR. See
