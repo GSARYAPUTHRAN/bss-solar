@@ -132,6 +132,48 @@ export type Database = {
           },
         ];
       };
+      deleted_records: {
+        Row: {
+          deleted_at: string;
+          deleted_by: string | null;
+          deleted_by_name: string | null;
+          id: number;
+          record_id: string;
+          snapshot: NonNullable<Json>;
+          table_name: string;
+          tx: number;
+        };
+        ComputedFields: never;
+        Insert: {
+          deleted_at?: string;
+          deleted_by?: string | null;
+          deleted_by_name?: string | null;
+          id?: never;
+          record_id: string;
+          snapshot: NonNullable<Json>;
+          table_name: string;
+          tx?: number;
+        };
+        Update: {
+          deleted_at?: string;
+          deleted_by?: string | null;
+          deleted_by_name?: string | null;
+          id?: never;
+          record_id?: string;
+          snapshot?: NonNullable<Json>;
+          table_name?: string;
+          tx?: number;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "deleted_records_deleted_by_fkey";
+            columns: ["deleted_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       notification_dedupe: {
         Row: {
           created_at: string;
@@ -984,6 +1026,7 @@ export type Database = {
           role: Database["public"]["Enums"]["user_role"];
         }[];
       };
+      can_delete: { Args: Record<PropertyKey, never>; Returns: boolean };
       coordinator_directory: {
         Args: Record<PropertyKey, never>;
         Returns: {
@@ -1014,6 +1057,11 @@ export type Database = {
           total_work_orders: number;
         }[];
       };
+      delete_coordinator_incentive: {
+        Args: { p_coordinator_id: string; p_work_order_id: string };
+        Returns: undefined;
+      };
+      delete_work_orders: { Args: { p_ids: string[] }; Returns: string[] };
       engineer_tickets: {
         Args: Record<PropertyKey, never>;
         Returns: {
@@ -1108,6 +1156,7 @@ export type Database = {
         Returns: string[];
       };
       parse_capacity_kw: { Args: { p_label: string }; Returns: number };
+      recent_deletion_txs: { Args: { p_limit?: number }; Returns: number[] };
       register_push_subscription: {
         Args: {
           p_auth: string;

@@ -32,6 +32,7 @@ import {
   type SummaryIncentive,
 } from "@/components/projects/project-summary-card";
 import { ProjectTicketsSection } from "@/components/projects/project-tickets-section";
+import { DeleteSaleButton } from "@/components/work-orders/delete-sale-button";
 import { isSaleCoordinator } from "@/lib/domain/coordinators";
 import { feasibilityStatus } from "@/lib/domain/kseb";
 import {
@@ -45,7 +46,7 @@ import {
   saleIncentives,
   unpaidIncentives,
 } from "@/lib/domain/project-settings";
-import { isOfficeRole, isSuperAdminRole } from "@/lib/domain/role";
+import { canDeleteRole, isOfficeRole } from "@/lib/domain/role";
 import { formatDate, todayISO } from "@/lib/format";
 
 export default async function ProjectDetailPage({
@@ -59,7 +60,8 @@ export default async function ProjectDetailPage({
   const { id } = await params;
   const { error } = await searchParams;
   const isOffice = isOfficeRole(profile.role);
-  const isSuperAdmin = isSuperAdminRole(profile.role);
+  // Deleters (DELETE_ROLES): the project, the whole sale, ledger entries, incentives.
+  const canDelete = canDeleteRole(profile.role);
 
   // RLS returns nothing to a coordinator who is not on the sale.
   const project = await projectsRepository.byId(id);
@@ -182,20 +184,34 @@ export default async function ProjectDetailPage({
               </SubmitButton>
             </form>
           )}
-          {isSuperAdmin && (
+          {canDelete && (
             <>
               <Separator />
-              <ConfirmSubmit
-                action={deleteProject}
-                fields={{ project_id: project.id }}
-                triggerLabel="Delete project"
-                triggerVariant="ghost"
-                triggerClassName="w-full text-destructive hover:text-destructive"
-                title="Delete this project?"
-                description="This permanently removes the project and its milestones. Its work order is returned to pending so it can be approved again; service tickets are kept. Coordinator incentives stay with the sale and reappear if it is approved again. This cannot be undone."
-                confirmLabel="Delete project"
-                loadingText="Deleting…"
-              />
+              <div className="grid gap-1">
+                <ConfirmSubmit
+                  action={deleteProject}
+                  fields={{ project_id: project.id }}
+                  triggerLabel="Delete project"
+                  triggerVariant="ghost"
+                  triggerClassName="h-10 w-full text-destructive hover:text-destructive md:h-8"
+                  title="Delete this project?"
+                  description="This permanently removes the project and its milestones. Its work order is returned to pending so it can be approved again; service tickets are kept. Coordinator incentives stay with the sale and reappear if it is approved again. This cannot be undone."
+                  confirmLabel="Delete project"
+                  loadingText="Deleting…"
+                />
+                {/* The whole sale: the work order and everything on it, this project included. */}
+                <DeleteSaleButton
+                  back="projects"
+                  projectId={project.id}
+                  triggerClassName="h-10 w-full text-destructive hover:text-destructive md:h-8"
+                  sale={{
+                    id: project.work_order_id,
+                    clientName: wo?.client_name ?? "",
+                    hasProject: true,
+                    ledgerEntries: ledger.length,
+                  }}
+                />
+              </div>
             </>
           )}
         </ProjectSummaryCard>
@@ -233,6 +249,7 @@ export default async function ProjectDetailPage({
             projectId={project.id}
             coordinators={project.coordinators}
             today={today}
+            canDelete={canDelete}
           />
         </div>
       )}
@@ -269,7 +286,7 @@ export default async function ProjectDetailPage({
         advanceAmount={wo?.advance_amount ?? null}
         isCompleted={project.is_completed}
         cancellation={project.cancellation}
-        viewer={{ canRecord: isOffice, canEdit: isOffice, canDelete: isSuperAdmin }}
+        viewer={{ canRecord: isOffice, canEdit: isOffice, canDelete }}
       />
 
       <ProjectClientDetails workOrder={wo} />

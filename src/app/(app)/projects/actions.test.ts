@@ -11,6 +11,7 @@ vi.mock("next/navigation", () => ({
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/auth", () => ({
   requireAdmin: vi.fn(),
+  requireDeleter: vi.fn(),
   requireSuperAdmin: vi.fn(),
 }));
 vi.mock("@/server/notifications", () => ({ notify: vi.fn() }));
@@ -26,6 +27,7 @@ vi.mock("@/server/data/projects.repository", () => ({
     recordIncentivePayment: vi.fn(),
     updateIncentivePayment: vi.fn(),
     deleteIncentivePayment: vi.fn(),
+    deleteCoordinatorIncentive: vi.fn(),
     setCancellation: vi.fn(),
     reinstate: vi.fn(),
     remove: vi.fn(),
@@ -40,12 +42,13 @@ vi.mock("@/lib/format", async (importOriginal) => ({
 }));
 
 import { revalidatePath } from "next/cache";
-import { requireAdmin, requireSuperAdmin } from "@/lib/auth";
+import { requireAdmin, requireDeleter } from "@/lib/auth";
 import { formatCurrency } from "@/lib/format";
 import { notify } from "@/server/notifications";
 import { projectsRepository, workOrdersRepository } from "@/server/data";
 import {
   advanceProject,
+  deleteCoordinatorIncentive,
   deleteIncentivePayment,
   deleteProject,
   recordIncentivePayment,
@@ -145,7 +148,7 @@ const MILESTONES = [
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(requireAdmin).mockResolvedValue(ADMIN);
-  vi.mocked(requireSuperAdmin).mockResolvedValue({ ...ADMIN, role: "superadmin" });
+  vi.mocked(requireDeleter).mockResolvedValue(ADMIN);
   projects.brief.mockResolvedValue(brief());
   projects.milestones.mockResolvedValue([...MILESTONES]);
   projects.updateMilestone.mockResolvedValue({ error: null });
@@ -156,6 +159,7 @@ beforeEach(() => {
   projects.recordIncentivePayment.mockResolvedValue({ error: null });
   projects.updateIncentivePayment.mockResolvedValue({ error: null });
   projects.deleteIncentivePayment.mockResolvedValue({ error: null });
+  projects.deleteCoordinatorIncentive.mockResolvedValue({ error: null });
   projects.setCancellation.mockResolvedValue({ error: null });
   projects.reinstate.mockResolvedValue({ error: null });
   projects.remove.mockResolvedValue({ error: null });
@@ -1173,10 +1177,36 @@ describe("reinstateProject", () => {
 });
 
 describe("deleteProject", () => {
-  it("is SuperAdmin-only", async () => {
-    vi.mocked(requireSuperAdmin).mockRejectedValue(new Error("REDIRECT:/"));
-    await expect(deleteProject(form({ project_id: "p1" }))).rejects.toThrow("REDIRECT:/");
+  it("is for deleters only: a refused guard deletes nothing", async () => {
+    vi.mocked(requireDeleter).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deleteProject(form({ project_id: "p1" }))).rejects.toThrow(
+      "REDIRECT:/work-orders",
+    );
     expect(projects.remove).not.toHaveBeenCalled();
+    expect(workOrders.setStatus).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", { ...ADMIN, role: "superadmin" } as Profile],
+  ])("lets %s delete a project", async (_who, profile) => {
+    vi.mocked(requireDeleter).mockResolvedValue(profile);
+    await expect(deleteProject(form({ project_id: "p1" }))).rejects.toThrow(
+      "REDIRECT:/projects?flash=Project%20deleted%20%E2%80%94%20its%20work%20order%20is%20pending%20again.",
+    );
+    expect(projects.remove).toHaveBeenCalledWith("p1");
+  });
+
+  it("explains a delete that removed nothing and leaves the work order alone", async () => {
+    projects.remove.mockResolvedValue({
+      error: "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+    });
+    await expect(deleteProject(form({ project_id: "p1" }))).rejects.toThrow(
+      `REDIRECT:/projects/p1?error=${encodeURIComponent(
+        "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+      )}`,
+    );
+    expect(workOrders.setStatus).not.toHaveBeenCalled();
   });
 
   it("returns the work order to pending so it can be approved again", async () => {
@@ -1185,5 +1215,135 @@ describe("deleteProject", () => {
     );
     expect(projects.remove).toHaveBeenCalledWith("p1");
     expect(workOrders.setStatus).toHaveBeenCalledWith("wo1", "pending");
+  });
+});
+
+describe("deleteCoordinatorIncentive", () => {
+  beforeEach(() => {
+    projects.brief.mockResolvedValue(briefWithInstalments());
+  });
+
+  it("is for deleters only: a refused guard deletes nothing", async () => {
+    vi.mocked(requireDeleter).mockRejectedValue(new Error("REDIRECT:/work-orders"));
+    await expect(deleteCoordinatorIncentive("p1", "c1")).rejects.toThrow("REDIRECT:/work-orders");
+    expect(projects.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an admin", ADMIN],
+    ["the Super Admin", { ...ADMIN, role: "superadmin" } as Profile],
+  ])("lets %s delete the amount and every instalment in one call", async (_who, profile) => {
+    vi.mocked(requireDeleter).mockResolvedValue(profile);
+    await expect(deleteCoordinatorIncentive("p1", "c1")).resolves.toEqual({
+      ok: true,
+      data: { message: "Incentive deleted for Ravi Kumar." },
+    });
+    expect(projects.brief).toHaveBeenCalledWith("p1");
+    expect(projects.deleteCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c1");
+    // Never piecemeal: no instalment delete, no amount update of its own.
+    expect(projects.deleteIncentivePayment).not.toHaveBeenCalled();
+    expect(projects.setCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the project, the list and the dashboard", async () => {
+    await deleteCoordinatorIncentive("p1", "c1");
+    expect(vi.mocked(revalidatePath).mock.calls.map(([path]) => path)).toEqual(
+      expect.arrayContaining(["/projects/p1", "/projects", "/"]),
+    );
+  });
+
+  it("deletes an agreed amount with nothing paid yet", async () => {
+    projects.brief.mockResolvedValue(brief());
+    await expect(deleteCoordinatorIncentive("p1", "c1")).resolves.toMatchObject({ ok: true });
+    expect(projects.deleteCoordinatorIncentive).toHaveBeenCalledWith("wo1", "c1");
+  });
+
+  it("deletes instalments left on an incentive whose amount was cleared", async () => {
+    const base = brief();
+    projects.brief.mockResolvedValue({
+      ...base,
+      coordinators: base.coordinators.map((c) =>
+        c.id === "c2"
+          ? {
+              ...c,
+              incentive: {
+                amount: null,
+                paid_on: null,
+                payments: [instalment("pay-9", 1000, "2026-09-01")],
+                paid: 1000,
+              },
+            }
+          : c,
+      ),
+    });
+    await expect(deleteCoordinatorIncentive("p1", "c2")).resolves.toEqual({
+      ok: true,
+      data: { message: "Incentive deleted for Abhijith Nair." },
+    });
+  });
+
+  it("refuses a person with no incentive to delete", async () => {
+    await expect(deleteCoordinatorIncentive("p1", "c2")).resolves.toEqual({
+      ok: false,
+      error: "Abhijith Nair has no incentive on this sale to delete.",
+    });
+    const base = brief();
+    projects.brief.mockResolvedValue({
+      ...base,
+      coordinators: base.coordinators.map((c) => ({ ...c, incentive: null })),
+    });
+    await expect(deleteCoordinatorIncentive("p1", "c1")).resolves.toMatchObject({ ok: false });
+    expect(projects.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it("only deletes the incentive of someone on this project", async () => {
+    await expect(deleteCoordinatorIncentive("p1", "someone-else")).resolves.toEqual({
+      ok: false,
+      error: "That person is not a coordinator on this project.",
+    });
+    expect(projects.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it("says so when the project is gone", async () => {
+    projects.brief.mockResolvedValue(null);
+    await expect(deleteCoordinatorIncentive("p1", "c1")).resolves.toEqual({
+      ok: false,
+      error: "Project not found — it may have been deleted.",
+    });
+    expect(projects.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no project id", "", "c1"],
+    ["a project id that is not text", 7 as unknown as string, "c1"],
+  ])("refuses %s without reading anything", async (_what, projectId, coordinatorId) => {
+    await expect(deleteCoordinatorIncentive(projectId, coordinatorId)).resolves.toEqual({
+      ok: false,
+      error: "Project not found — it may have been deleted.",
+    });
+    expect(projects.brief).not.toHaveBeenCalled();
+  });
+
+  it("refuses a coordinator id that is not text", async () => {
+    await expect(
+      deleteCoordinatorIncentive("p1", { id: "c1" } as unknown as string),
+    ).resolves.toEqual({ ok: false, error: "That person is not a coordinator on this project." });
+    expect(projects.deleteCoordinatorIncentive).not.toHaveBeenCalled();
+  });
+
+  it("returns the database's refusal and refreshes nothing", async () => {
+    projects.deleteCoordinatorIncentive.mockResolvedValue({
+      error: "That incentive was not found — the person may no longer be on this sale.",
+    });
+    await expect(deleteCoordinatorIncentive("p1", "c1")).resolves.toEqual({
+      ok: false,
+      error: "That incentive was not found — the person may no longer be on this sale.",
+    });
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("tells nobody: a delete is not a payment", async () => {
+    await deleteCoordinatorIncentive("p1", "c1");
+    expect(notify).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,5 @@
-import { Trash2, Wallet } from "lucide-react";
-import { deletePayment } from "@/app/(app)/payments/actions";
+import { Wallet } from "lucide-react";
 import { EmptyState, Section } from "@/components/layout";
-import { ConfirmSubmit } from "@/components/confirm-submit";
 import { Separator } from "@/components/ui/separator";
 import { paymentsRepository } from "@/server/data/payments.repository";
 import { workOrdersRepository } from "@/server/data/work-orders.repository";
@@ -16,10 +14,11 @@ import {
   type PaymentSource,
 } from "@/lib/domain/payment";
 import type { ProjectCancellation } from "@/lib/types";
-import { formatCurrency, formatDate, todayISO } from "@/lib/format";
+import { todayISO } from "@/lib/format";
 import { AdvanceLine } from "./advance-line";
 import { ContractSummary } from "./contract-summary";
-import { PaymentLedger, entryName, stageLabel, type StagedPayment } from "./payment-ledger";
+import { LedgerEntryDelete } from "./ledger-entry-delete";
+import { PaymentLedger, entryName, type StagedPayment } from "./payment-ledger";
 import { PaymentFormDialog, type EditablePayment } from "./payment-form-dialog";
 import { WriteOffDialog } from "./write-off-dialog";
 
@@ -54,7 +53,7 @@ export interface ProjectPaymentsSectionProps {
     /** Office staff. */
     canRecord: boolean;
     canEdit: boolean;
-    /** SuperAdmin only. */
+    /** Deleters only (`canDeleteRole`: DELETE_ROLES). */
     canDelete: boolean;
   };
 }
@@ -66,27 +65,6 @@ export const PAYMENTS_ANCHOR = "payments";
 function editable(p: StagedPayment): EditablePayment {
   const { id, amount, paid_on, method, purpose, paid_by_office, reference, notes } = p;
   return { id, amount, paid_on, method, purpose, paid_by_office, reference, notes };
-}
-
-/** What the confirmation calls the entry: a refund and a write-off are not "payments". */
-function noun(p: Pick<StagedPayment, "purpose">): string {
-  return p.purpose === "write_off" ? "write-off" : p.purpose === "refund" ? "refund" : "payment";
-}
-
-/** What deleting an entry does to the books, in the words the confirmation uses. */
-function deleteDescription(p: StagedPayment): string {
-  const head = `${stageLabel(p)} · ${formatCurrency(p.amount)}`;
-  const gone = "It is removed from the ledger for good";
-  switch (p.purpose) {
-    case "refund":
-      return `${head} paid back ${formatDate(p.paid_on)}. ${gone}: the net received goes back up and the balance due falls by the same amount. This cannot be undone.`;
-    case "write_off":
-      return `${head} written off ${formatDate(p.paid_on)}. ${gone} and the ${formatCurrency(p.amount)} becomes due again. This cannot be undone.`;
-    case "kseb_fees":
-      return `${head} ${p.paid_by_office ? "paid by the office" : "received"} ${formatDate(p.paid_on)}. ${gone}. The contract balance is not affected. This cannot be undone.`;
-    default:
-      return `${head} received ${formatDate(p.paid_on)}. ${gone} and the balance due goes back up. This cannot be undone.`;
-  }
 }
 
 export async function ProjectPaymentsSection({
@@ -144,20 +122,7 @@ export async function ProjectPaymentsSection({
             editLabel={`Edit ${entryName(p)}`}
           />
         ))}
-      {viewer.canDelete && (
-        <ConfirmSubmit
-          action={deletePayment}
-          fields={{ id: p.id, work_order_id: workOrderId }}
-          triggerLabel={<Trash2 />}
-          triggerAriaLabel={`Delete ${entryName(p)}`}
-          triggerVariant="ghost"
-          triggerClassName="size-10 p-0 text-destructive hover:text-destructive md:size-8"
-          title={`Delete this ${noun(p)}?`}
-          description={deleteDescription(p)}
-          confirmLabel={`Delete ${noun(p)}`}
-          loadingText="Deleting…"
-        />
-      )}
+      {viewer.canDelete && <LedgerEntryDelete payment={p} workOrderId={workOrderId} />}
     </>
   );
 

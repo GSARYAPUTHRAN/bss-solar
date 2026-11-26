@@ -134,6 +134,42 @@ copy (step 10) never duplicates a payment. So on a DB that was provisioned from
     details, dated refund / write-off / paid-by-office lines and per-coordinator incentive
     instalments. Same signature; the previous build's rows (and the v3 incentive shape) still
     import.
+24. `20261125120000_office_deletes_and_deletion_log.sql` — **office deletes and the deletion
+    log**. What it changes:
+    - adds `can_delete()`, the one database switch for who may delete: true for the Super
+      Admin and, for now, the Admin (its app twin is `DELETE_ROLES` in
+      `src/lib/domain/role.ts`);
+    - **replaces the four Super Admin-only DELETE policies** with ones that ask it:
+      `wo_delete` (work orders, same name), `proj_superadmin_delete` → `proj_delete`,
+      `payment_superadmin_delete` → `payment_delete`, and `profiles_superadmin_delete` →
+      `profiles_delete`, which also refuses the Super Admin's seat (it was not protected
+      there before), deleting yourself, and an admin deleting another admin;
+    - **only the Super Admin changes an admin's role** now (`guard_profile_role()`), so an
+      admin cannot demote another admin and then delete them. An admin can still make
+      someone an admin, and nobody changes their own role (the app already refused that);
+    - adds three RPCs: `delete_work_orders(uuid[])` (the duplicate clean-up's bulk delete —
+      one statement, the caller's own RLS, at most 500 ids),
+      `delete_coordinator_incentive(work_order, coordinator)` (the agreed amount and every
+      instalment, office only; the person stays on the sale) and
+      `recent_deletion_txs(n)` (the latest `n` deletes for *Recently deleted*, at most 200,
+      under the log's own RLS);
+    - adds the **`deleted_records`** table (readable by deleters only, written by no API
+      client), the `log_deletion()` trigger function and nine `t_<table>_log_delete`
+      triggers on `work_orders`, `projects` (BEFORE the delete, so the snapshot can list the
+      project's service tickets as `service_ticket_ids` before they are unlinked),
+      `project_milestones`, `payments`, `service_tickets`, `work_order_coordinators` (only
+      when the sale goes too), `coordinator_incentives`, `coordinator_incentive_payments`
+      and `profiles` — enough to put a deleted sale back whole (*Restoring a deleted sale*
+      below).
+
+    **Safe to apply on live data:** it changes no row and no column. Apart from swapping
+    those four policies (dropped and re-created inside the same transaction, so there is no
+    moment without one) and the stricter role guard, it only adds functions, one empty
+    table, its indexes and the triggers. It is one transaction, idempotent (a re-run
+    replaces what it created), and
+    waits at most 10 seconds for its brief table locks (a policy swap locks its table for
+    that instant), so a long-running transaction makes it fail and change nothing rather
+    than stall the app — re-run it.
 
 Steps 17–20 are **expand-only**: the currently-deployed build keeps working against them
 (see *Behaviour changes* below). A later release removes what they deprecate — the
@@ -152,7 +188,8 @@ build runs against it:
 - Migration 7 makes **DELETE SuperAdmin-only** on `work_orders`, `projects` and
   `profiles`. In the gap an admin using the currently-deployed build can still press
   **Delete** — RLS filters the row out, so nothing is deleted. The new build detects the
-  zero-row delete and reports it instead of showing a false success.
+  zero-row delete and reports it instead of showing a false success. (Migration 24 later
+  opens these deletes to admins again, through `can_delete()`.)
 - Migration 9 makes **the amounts of an approved work order office-only**. A coordinator
   still edits everything on a pending work order and the details of an approved one, but
   changing the advance or the total cost (or, in the old build, a first/second payment)
@@ -184,6 +221,14 @@ build runs against it:
   lost, and refuses any other direct change of a settled paid date — and cannot edit the
   advance's method, date or reference. Do not record refunds or write-offs, or edit incentive
   instalments, until the new build is live.
+- Migration 24 is expand-only. Until the new build is live, the old one still shows Delete
+  to the Super Admin alone (its actions check for the Super Admin, so an admin can delete
+  nothing yet), and everything the Super Admin deletes there is already logged — except a
+  team member, which the old build deletes through the service role without writing the
+  log row the new build writes. Once the new build is live, admins get Delete and *Find
+  duplicates*. Rolling the build back removes the admins' buttons again; the database
+  would still let an admin delete until a migration narrows `can_delete()` (see the
+  README, *Making deletes Super Admin-only again*).
 - **Rolling back** the build after it has gone live keeps every sale, payment and
   incentive row, but it is not entirely hands-off: the old build sees the first coordinator
   as the owner, a shared sale stays visible to its partners, and cancelled projects show no
@@ -396,7 +441,8 @@ There is no public sign-up page. Create the first admin manually:
 4. Use **Team → Add Member** to create coordinator accounts.
 
 5. **Appoint the Super Admin** — the highest privilege, and the only role that can
-   delete users, projects and work orders.
+   delete an admin. (Deleting sales, projects, ledger entries, incentives, coordinators
+   and engineers is shared with admins for now — README → *Deleting records*.)
 
    This role is **not assignable from the app by anyone** (a DB trigger rejects it
    even for the Super Admin), so it is done in SQL:
@@ -430,7 +476,7 @@ There are two scripts. Pick by what you want to keep:
 
 | Script | Deletes | Keeps |
 | ------ | ------- | ----- |
-| [`wipe-business-data.sql`](supabase/scripts/wipe-business-data.sql) | every work order, project, milestone, payment, service ticket, who shares each sale, every coordinator's incentive and its instalments, every notification | **every account** (sign-ins, names, roles) and every push subscription |
+| [`wipe-business-data.sql`](supabase/scripts/wipe-business-data.sql) | every work order, project, milestone, payment, service ticket, who shares each sale, every coordinator's incentive and its instalments, every notification, the deletion log (`deleted_records`) | **every account** (sign-ins, names, roles) and every push subscription |
 | [`reset-business-data.sql`](supabase/scripts/reset-business-data.sql) | the same, **plus every account not in its keep-list** | the accounts you list |
 
 Each has a read-only **preview** next to it. Both are one atomic block: they abort without
@@ -556,7 +602,10 @@ If trial accounts must go too, use the reset instead of the wipe:
 | Work-order edit | Coordinator edits their own order; the project shows the change |
 | Payments | Set a total + partial payments → `Balance` column and badge update |
 | Commissioned · Unpaid | Dashboard KPI links to the filtered project list |
-| Delete | Only the Super Admin sees Delete on team/work orders/projects |
+| Who sees Delete | An admin sees *Delete* on a work order, *Delete project* and *Delete sale* on a project, and the bin on coordinator and engineer rows of Team — not on admin rows or the Super Admin's; the Super Admin also gets it on admin rows; a coordinator sees none and no *Find duplicates* |
+| Delete a sale | Create a test sale, open it, *Delete* → confirm: the *Work order deleted.* toast, it is gone from the list, and *Work orders → Find duplicates → Recently deleted* lists "Sale — …" under your name |
+| Delete a ledger entry and an incentive | On a test project, record a payment and delete it with the bin on its row (the balance goes back up); agree an incentive, record an instalment, *Delete …'s incentive* (*Incentive deleted for ….*, the person stays on the sale); then *Delete sale* |
+| Find duplicates | Enter a test sale twice (same client name and order date): *Find duplicates* shows one group with *Keep* on one copy and the other ticked. **Untick every other group first** — *Delete selected* takes every ticked copy on the page, real duplicates included — until it reads *Delete selected (1)*; confirm with *I understand…* ticked: *1 duplicate sale deleted.*, the group is gone, *Recently deleted* lists it. Delete the remaining test copy afterwards. A coordinator opening `/work-orders/duplicates` is sent back to their work orders |
 | Seat locked | The Super Admin's row shows a badge, not a role dropdown, for everyone |
 | Payments ledger | Record 4+ payments on a project; stages number 1…N and the balance falls |
 | Financing | Set a work order to *Bank loan*; the badge shows on the work order and project |
@@ -593,6 +642,153 @@ Update Supabase **Site URL** and **Redirect URLs** to `https://app.bss-solar.com
 **Estimated total today: ~$0/month** + domain renewal (~$11/year).
 
 Upgrade when you outgrow free limits: Supabase Pro **$25/mo**, Vercel Pro **$20/mo** per seat.
+
+---
+
+## Restoring a deleted sale
+
+There is no restore button. Every delete made in the app is in **`deleted_records`** with a
+full snapshot of each row (README → *Deleting records*), and everything that went with one
+delete shares its `tx`. A sale is put back with SQL in the **SQL Editor**: it runs as
+`postgres`, which bypasses RLS, and with no signed-in user the guards that only apply to
+app users stand aside and nothing new is logged. Do it in one transaction and look at the
+result before `commit`.
+
+**1. Find the delete.** Note the sale's id (`record_id`) and its `tx`:
+
+```sql
+select record_id, tx, deleted_at, deleted_by_name,
+       snapshot->>'client_name' as client, snapshot->>'order_date' as order_date
+from deleted_records
+where table_name = 'work_orders' and snapshot->>'client_name' ilike '%Anil%'
+order by deleted_at desc;
+```
+
+**2. Put it back**, replacing `<tx>` and `<sale id>` (in quotes) throughout:
+
+```sql
+begin;
+
+-- The rows of this sale's delete: the sale, everything that names it, and its project's
+-- milestones. The id filter matters after Find duplicates, which deletes many sales in
+-- one transaction.
+create temp table restore on commit drop as
+  select d.table_name, d.snapshot
+  from deleted_records d
+  where d.tx = <tx>
+    and (d.record_id = '<sale id>'
+         or d.snapshot->>'work_order_id' = '<sale id>'
+         or d.snapshot->>'project_id' in (
+              select p.record_id from deleted_records p
+              where p.tx = <tx> and p.table_name = 'projects'
+                and p.snapshot->>'work_order_id' = '<sale id>'));
+
+-- a) The work order. plant_capacity_kw is generated, so the columns are named. A trigger
+--    adds its first coordinator back (with an empty incentive row); that account must
+--    still exist as a coordinator or office account.
+insert into work_orders (
+  id, coordinator_id, client_name, client_phone, address, plant_capacity, plan_type,
+  advance_amount, advance_method, advance_paid_on, advance_reference, total_cost,
+  order_date, status, consumer_number, notes, kseb_section, financing_type,
+  loan_bank_name, created_at, updated_at)
+select w.id, w.coordinator_id, w.client_name, w.client_phone, w.address, w.plant_capacity,
+  w.plan_type, w.advance_amount, w.advance_method, w.advance_paid_on, w.advance_reference,
+  w.total_cost, w.order_date, w.status, w.consumer_number, w.notes, w.kseb_section,
+  w.financing_type, w.loan_bank_name, w.created_at, w.updated_at
+from restore r, jsonb_populate_record(null::work_orders, r.snapshot) w
+where r.table_name = 'work_orders';
+
+-- b) Everyone who shared the sale, in their order. The first is back already (a), so
+--    this is an upsert; each new member gets an empty incentive row, filled in e).
+insert into work_order_coordinators (work_order_id, coordinator_id, sort_order, added_by, created_at)
+select m.work_order_id, m.coordinator_id, m.sort_order, m.added_by, m.created_at
+from restore r, jsonb_populate_record(null::work_order_coordinators, r.snapshot) m
+where r.table_name = 'work_order_coordinators'
+on conflict (work_order_id, coordinator_id) do update
+  set sort_order = excluded.sort_order,
+      added_by = excluded.added_by,
+      created_at = excluded.created_at;
+
+-- c) The project, without the two deprecated incentive columns (a trigger would copy
+--    them over the real incentive). Inserting the approved work order above does not
+--    create a project (only approving does), so this is its only one. A trigger gives it
+--    a fresh set of pending milestones: swap them for the logged ones (status, notes,
+--    completion dates).
+insert into projects
+select (jsonb_populate_record(null::projects,
+          r.snapshot - 'coordinator_incentive' - 'incentive_paid_on')).*
+from restore r
+where r.table_name = 'projects';
+
+delete from project_milestones m
+using restore r
+where r.table_name = 'projects' and m.project_id = (r.snapshot->>'id')::uuid;
+
+insert into project_milestones
+select (jsonb_populate_record(null::project_milestones, r.snapshot)).*
+from restore r
+where r.table_name = 'project_milestones';
+
+-- d) The ledger: payments, KSEB fees, refunds, write-offs.
+insert into payments
+select (jsonb_populate_record(null::payments, r.snapshot)).*
+from restore r
+where r.table_name = 'payments';
+
+-- e) The agreed incentives, over the empty rows from a) and b), then f) their
+--    instalments (the paid date follows them).
+insert into coordinator_incentives (work_order_id, coordinator_id, amount)
+select i.work_order_id, i.coordinator_id, i.amount
+from restore r, jsonb_populate_record(null::coordinator_incentives, r.snapshot) i
+where r.table_name = 'coordinator_incentives'
+on conflict (work_order_id, coordinator_id) do update set amount = excluded.amount;
+
+insert into coordinator_incentive_payments
+select (jsonb_populate_record(null::coordinator_incentive_payments, r.snapshot)).*
+from restore r
+where r.table_name = 'coordinator_incentive_payments';
+
+-- g) Service tickets were kept but lost their project link; the project's snapshot lists
+--    them (service_ticket_ids). Link back those that are still unlinked (one linked to
+--    another project since, or deleted, is left alone).
+update service_tickets t
+   set project_id = (r.snapshot->>'id')::uuid
+  from restore r, jsonb_array_elements_text(r.snapshot->'service_ticket_ids') linked(id)
+ where r.table_name = 'projects'
+   and t.id = linked.id::uuid
+   and t.project_id is null;
+
+-- Check the sale, then:
+commit;   -- or rollback;
+```
+
+What does not come back, and how to finish in the app:
+
+- **Who cancelled** a cancelled or refunded project is stamped from the session, which is
+  empty here, so it comes back blank (the remarks and date are kept).
+- Notifications are not restored.
+- `jsonb_populate_record` fills the table's *current* columns: a column added since the
+  delete comes back empty, not with its default — set it by hand if an insert refuses it.
+- The log rows stay as history; delete them (`delete from deleted_records where tx = <tx>`)
+  only if they would confuse *Recently deleted*.
+
+Smaller deletes, each in its own transaction:
+
+- **A ledger entry** (its sale must still exist):
+  `insert into payments select (jsonb_populate_record(null::payments, snapshot)).* from deleted_records where id = <log row id>;`
+- **A deleted incentive** (*Delete …'s incentive*; the person is still on the sale):
+  build `restore` from that delete's `tx` (without the id filter) and run e) and f).
+- **A service ticket** (keeps its ticket number; its project, if it had one, and its
+  engineer must still exist):
+  `insert into service_tickets select (jsonb_populate_record(null::service_tickets, snapshot)).* from deleted_records where id = <log row id>;`
+- **A project** deleted with *Delete project*: its sale went back to pending with its
+  ledger and incentives, so approve it again in the app — a fresh project; re-enter the
+  feasibility date and milestones. The log has the old ones (`project_milestones` rows in
+  that delete's `tx`), and the project's snapshot lists the tickets it had; link them to
+  the new project:
+  `update service_tickets set project_id = '<new project id>' where project_id is null and id in (select jsonb_array_elements_text(snapshot->'service_ticket_ids')::uuid from deleted_records where tx = <tx> and table_name = 'projects');`
+- **A team member** cannot be restored with SQL (their sign-in is gone): add them again on
+  Team, then put them back on their sales.
 
 ---
 

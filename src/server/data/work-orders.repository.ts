@@ -23,6 +23,13 @@ import type {
   WorkOrderStatus,
 } from "@/lib/types";
 
+/** A delete that removed no row: already gone, or RLS refused it silently. */
+const NOTHING_DELETED =
+  "Nothing was deleted — it may already be gone, or your role cannot delete it.";
+
+/** Most ids one `.in()` filter carries (36 characters each, in the URL). */
+const IDS_PER_REQUEST = 100;
+
 const WO_SORT_COLUMNS = new Set([
   "order_date",
   "total_cost",
@@ -380,10 +387,11 @@ export const workOrdersRepository = {
   },
 
   /**
-   * Hard-delete (cascades to the project + milestones, the coordinators and
-   * their incentives). A DELETE blocked by RLS removes zero rows *without*
-   * raising, so the affected rows are checked explicitly — otherwise a
-   * non-SuperAdmin would see a false success.
+   * Hard-delete (cascades to the project + milestones, the ledger, the
+   * coordinators and their incentives; service tickets lose their project). A
+   * DELETE blocked by RLS (`wo_delete`: deleters only) removes zero rows
+   * *without* raising, so the affected rows are checked explicitly — otherwise
+   * someone who may not delete would see a false success.
    */
   async remove(id: string): Promise<{ error: string | null }> {
     const supabase = await createClient();
@@ -394,8 +402,41 @@ export const workOrdersRepository = {
       .select("id");
     if (error) return { error: error.message };
     if (!data || data.length === 0) {
-      return { error: "Nothing was deleted — only the SuperAdmin can delete." };
+      return { error: NOTHING_DELETED };
     }
     return { error: null };
+  },
+
+  /**
+   * Hard-delete several sales at once (`delete_work_orders`): one statement, so
+   * all of them go or none do. The RPC runs as the caller, so RLS decides
+   * exactly as for one delete — someone who may not delete removes nothing.
+   * `deleted` is the ids actually removed; one already gone is simply missing.
+   */
+  async removeMany(ids: string[]): Promise<{ deleted: string[]; error: string | null }> {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("delete_work_orders", { p_ids: ids });
+    if (error) return { deleted: [], error: error.message };
+    return { deleted: data ?? [], error: null };
+  },
+
+  /**
+   * Which of `ids` are still work orders the caller can see — for the bulk
+   * delete's check that a copy meant to be kept has not been deleted meanwhile.
+   * Asked a slice at a time: the ids go in the URL, so a long list is split.
+   * Any failed read is an error, never a shorter list.
+   */
+  async existingIds(ids: string[]): Promise<{ ids: string[]; error: string | null }> {
+    const wanted = [...new Set(ids)];
+    if (wanted.length === 0) return { ids: [], error: null };
+    const supabase = await createClient();
+    const found: string[] = [];
+    for (let from = 0; from < wanted.length; from += IDS_PER_REQUEST) {
+      const slice = wanted.slice(from, from + IDS_PER_REQUEST);
+      const { data, error } = await supabase.from("work_orders").select("id").in("id", slice);
+      if (error) return { ids: [], error: error.message };
+      found.push(...(data ?? []).map((row) => row.id));
+    }
+    return { ids: found, error: null };
   },
 };

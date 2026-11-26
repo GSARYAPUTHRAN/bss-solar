@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin, requireSuperAdmin } from "@/lib/auth";
+import { requireAdmin, requireDeleter } from "@/lib/auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { profilesRepository } from "@/server/data";
 import { enumValue, str, text } from "@/server/form";
@@ -16,23 +16,24 @@ import {
   isUserRole,
 } from "@/lib/domain/role";
 import {
+  SUPERADMIN_IMMUTABLE,
   deletionBlocker,
   planTeamEdit,
+  roleChangeAuthority,
   roleChangeBlocker,
+  teamDeleteAuthority,
   type TeamAuthPatch,
   type TeamProfilePatch,
 } from "@/lib/domain/team";
 import type { UserRole } from "@/lib/types";
 
-/**
+/*
  * The SuperAdmin is the top of the hierarchy and is immutable from the app: the
  * seat cannot be granted, revoked, or reassigned here by anyone — not an admin,
- * and not the SuperAdmin themselves. A DB trigger rejects it independently, and a
- * unique index caps the seat at one. Provisioning and recovery are SQL-only; see
- * supabase/production-bootstrap.sql.
+ * and not the SuperAdmin themselves (SUPERADMIN_IMMUTABLE). A DB trigger rejects
+ * it independently, and a unique index caps the seat at one. Provisioning and
+ * recovery are SQL-only; see supabase/production-bootstrap.sql.
  */
-const SUPERADMIN_IMMUTABLE =
-  "The Super Admin role cannot be changed here. It is set directly on the database.";
 
 export async function createTeamMember(formData: FormData) {
   await requireAdmin();
@@ -250,6 +251,12 @@ export async function updateTeamMember(
   return ok({ message: "Saved." });
 }
 
+/**
+ * Change a member's role from the Team page. Whose role the viewer may change at
+ * all is `roleChangeAuthority` (lib/domain/team.ts): never their own or the
+ * Super Admin's, and another admin's only as the Super Admin — judged by the
+ * role the database holds now. What the role may become is `roleChangeBlocker`.
+ */
 export async function updateUserRole(
   userId: string,
   role: UserRole,
@@ -271,6 +278,11 @@ export async function updateUserRole(
   if (isSuperAdminRole(role) || isSuperAdminRole(target.role)) {
     return fail(SUPERADMIN_IMMUTABLE);
   }
+
+  // Only the Super Admin may change an admin's role: otherwise an admin could
+  // demote another admin and then delete them or change their login.
+  const authority = roleChangeAuthority(me, target);
+  if (!authority.allowed) return fail(authority.reason);
 
   // Never strand anything: the last administrator, the sales a coordinator logs
   // or merely shares (a partner on someone else's sale counts), or an
@@ -296,8 +308,18 @@ export async function updateUserRole(
 }
 
 /**
- * Destructive — SuperAdmin only. Removes the auth user; the profile row goes with
- * it via `on delete cascade`.
+ * Destructive — deleters only (DELETE_ROLES), and then only whom
+ * `teamDeleteAuthority` allows: the Super Admin may delete admins, coordinators
+ * and engineers; an admin only coordinators and engineers; nobody themself or
+ * the Super Admin. Removes the auth user; the profile row goes with it via
+ * `on delete cascade`.
+ *
+ * That cascade runs as the service role, which the deletion log's trigger does
+ * not record, so the profile's snapshot is logged here first (`deleted_records`,
+ * with who deleted it). When Auth then reports an error, the profile is looked
+ * up again: still there, the log row is taken back; gone (the answer was lost,
+ * not the delete), the row stays and the delete is reported done; unknown, the
+ * row stays and the user is told to check.
  *
  * A sale's coordinators (`work_order_coordinators`) reference the member with
  * `on delete restrict`, so a member who still owns or shares business cannot be
@@ -306,7 +328,7 @@ export async function updateUserRole(
  * open tickets is refused too, rather than leaving those jobs silently unowned.
  */
 export async function deleteTeamMember(formData: FormData) {
-  const me = await requireSuperAdmin();
+  const me = await requireDeleter();
   const userId = text(formData.get("user_id"));
 
   if (userId === me.id) {
@@ -333,6 +355,13 @@ export async function deleteTeamMember(formData: FormData) {
     );
   }
 
+  // An admin may delete coordinators and engineers, never another admin (the
+  // database's `profiles_delete` policy says the same).
+  const authority = teamDeleteAuthority(me, target);
+  if (!authority.allowed) {
+    redirect(`/team?error=${encodeURIComponent(authority.reason)}`);
+  }
+
   // Refuse up front rather than letting the FK restrict surface as GoTrue's
   // opaque "Database error deleting user" (or, for tickets, silently unassign).
   const blocker = deletionBlocker(
@@ -350,16 +379,71 @@ export async function deleteTeamMember(formData: FormData) {
     );
   }
 
-  const { error } = await admin.auth.admin.deleteUser(userId);
-  if (error) {
+  const logged = await admin
+    .from("deleted_records")
+    .insert({
+      table_name: "profiles",
+      record_id: target.id,
+      snapshot: {
+        id: target.id,
+        full_name: target.full_name,
+        phone: target.phone,
+        role: target.role,
+        created_at: target.created_at,
+      },
+      deleted_by: me.id,
+      deleted_by_name: me.full_name,
+    })
+    .select("id")
+    .single();
+  if (logged.error || !logged.data) {
     redirect(
       `/team?error=${encodeURIComponent(
-        `Could not delete ${target.full_name}: ${error.message}`,
+        `Could not delete ${target.full_name}: the delete could not be logged (${
+          logged.error?.message ?? "no row written"
+        }).`,
       )}`,
     );
   }
 
+  let failure: string | null;
+  try {
+    const { error } = await admin.auth.admin.deleteUser(userId);
+    failure = error ? error.message : null;
+  } catch (e) {
+    failure = e instanceof Error ? e.message : "the sign-in service did not respond";
+  }
+  if (failure !== null) {
+    // Auth may have deleted the account even though its answer was lost (a
+    // gateway timeout, a dropped connection), so ask the database rather than
+    // trust the error. The log row is taken back only when the member is
+    // verifiably still there: it is the one record of who deleted them.
+    const still = await admin.from("profiles").select("id").eq("id", userId).maybeSingle();
+    if (still.error) {
+      redirect(
+        `/team?error=${encodeURIComponent(
+          `The delete of ${target.full_name} may not have finished (${failure}). Reload the team list to check.`,
+        )}`,
+      );
+    }
+    if (still.data) {
+      // Nothing was deleted: the log must not say otherwise.
+      const rollback = await admin.from("deleted_records").delete().eq("id", logged.data.id);
+      redirect(
+        `/team?error=${encodeURIComponent(
+          `Could not delete ${target.full_name}: ${failure}${
+            rollback.error
+              ? ` (its deletion-log entry could not be removed: ${rollback.error.message})`
+              : ""
+          }`,
+        )}`,
+      );
+    }
+    // Gone: the delete went through after all, so the log row stays.
+  }
+
   revalidatePath("/team");
+  revalidatePath("/work-orders/duplicates");
   redirect(
     withFlash(
       "/team",

@@ -24,7 +24,11 @@ interface Recorded {
   calls: Call[];
 }
 
-type Response = { data: unknown; count?: number | null; error: { message: string } | null };
+type Response = {
+  data: unknown;
+  count?: number | null;
+  error: { code?: string; message: string } | null;
+};
 
 let queries: Recorded[];
 let response: Response;
@@ -907,6 +911,53 @@ describe("projectsRepository writes", () => {
     response = { data: [{ id: "p1" }], error: null };
     await projectsRepository.setFeasibilityDate("p1", null);
     expect(written().calls[0]).toEqual(["update", { feasibility_date: null }]);
+  });
+});
+
+describe("projectsRepository deletes", () => {
+  it("remove deletes that project and checks a row went", async () => {
+    response = { data: [{ id: "p1" }], error: null };
+    expect(await projectsRepository.remove("p1")).toEqual({ error: null });
+    const [q] = queries;
+    expect(q.table).toBe("projects");
+    expect(q.calls).toEqual([["delete"], ["eq", "id", "p1"], ["select", "id"]]);
+  });
+
+  it("remove says so when nothing was removed — gone already, or not the caller's to delete", async () => {
+    response = { data: [], error: null };
+    expect(await projectsRepository.remove("p1")).toEqual({
+      error: "Nothing was deleted — it may already be gone, or your role cannot delete it.",
+    });
+  });
+
+  it("remove passes the database's error on", async () => {
+    response = { data: null, error: { message: "permission denied" } };
+    expect(await projectsRepository.remove("p1")).toEqual({ error: "permission denied" });
+  });
+
+  it("deleteCoordinatorIncentive is one call to delete_coordinator_incentive", async () => {
+    response = { data: null, error: null };
+    expect(await projectsRepository.deleteCoordinatorIncentive("wo1", ABHIJITH)).toEqual({
+      error: null,
+    });
+    expect(queries).toEqual([
+      {
+        table: "rpc:delete_coordinator_incentive",
+        calls: [["rpc", { p_work_order_id: "wo1", p_coordinator_id: ABHIJITH }]],
+      },
+    ]);
+  });
+
+  it.each([
+    ["P0002", "That incentive was not found", "That incentive was not found — the person may no longer be on this sale."],
+    ["42501", "Only the office can delete an incentive", "Only Admin or Super Admin can delete an incentive."],
+    ["08006", "connection failure", "connection failure"],
+    [undefined, "fetch failed", "fetch failed"],
+  ])("deleteCoordinatorIncentive words the database's %s refusal", async (code, message, shown) => {
+    response = { data: null, error: { code, message } };
+    expect(await projectsRepository.deleteCoordinatorIncentive("wo1", ABHIJITH)).toEqual({
+      error: shown,
+    });
   });
 });
 

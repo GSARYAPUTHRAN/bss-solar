@@ -3,8 +3,9 @@
  * guard must use.
  *   coordinator       field sales; their own work orders/projects.
  *   service_engineer  field service; only the tickets assigned to them.
- *   admin             office; everything except destructive actions.
- *   superadmin        exactly one; admin + every delete. Immutable from the app.
+ *   admin             office; everything. For now also deletes (DELETE_ROLES):
+ *                     coordinators and engineers, never another admin.
+ *   superadmin        exactly one; admin + may delete admins. Immutable from the app.
  */
 export type UserRole = "admin" | "coordinator" | "superadmin" | "service_engineer";
 export type WorkOrderStatus = "pending" | "approved" | "rejected";

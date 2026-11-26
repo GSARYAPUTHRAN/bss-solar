@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireAdmin, requireSuperAdmin } from "@/lib/auth";
+import { requireAdmin, requireDeleter } from "@/lib/auth";
 import { paymentsRepository } from "@/server/data/payments.repository";
 import type { PaymentInput } from "@/server/data/payments.repository";
 import { loadContract, type LoadedContract } from "@/server/data/contract";
@@ -22,9 +22,10 @@ import type { Profile } from "@/lib/types";
 
 /**
  * The payments ledger. The office records and corrects entries — payments, KSEB
- * fees, refunds and write-offs; only the SuperAdmin deletes one. RLS enforces
- * the same split independently (migration 20261010120200) — these guards exist
- * so a refused write is explained rather than silently filtered out.
+ * fees, refunds and write-offs; deleters (DELETE_ROLES: the Super Admin and, for
+ * now, the Admin) delete one. RLS enforces the same split independently
+ * (migrations 20261010120200 and 20261125120000, `can_delete()`) — these guards
+ * exist so a refused write is explained rather than silently filtered out.
  *
  * Every write goes through `checkLedgerChange`, the one place the caps live:
  * the contract cannot be overpaid, a refund cannot exceed what was collected, a
@@ -170,8 +171,9 @@ export async function updatePayment(
 }
 
 /**
- * Destructive — SuperAdmin only. Lands back on the page that shows the ledger:
- * the project when there is one, else the work order. The posted
+ * Destructive — deleters only (DELETE_ROLES). Lands back on the page that shows
+ * the ledger: the project when there is one, else the work order (whose page
+ * offers the delete while there is no project). The posted
  * `work_order_id` is only a fallback for an entry that is already gone, and is
  * looked up before it is used to build the path.
  *
@@ -180,7 +182,7 @@ export async function updatePayment(
  * the delete is refused if that would leave one of them over its limit.
  */
 export async function deletePayment(formData: FormData) {
-  await requireSuperAdmin();
+  await requireDeleter();
 
   const id = text(formData.get("id"));
   const existing = await paymentsRepository.byId(id);

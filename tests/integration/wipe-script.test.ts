@@ -6,8 +6,8 @@ import { USERS, localDbUrl } from "./helpers";
 
 /**
  * supabase/scripts/wipe-business-data.sql clears every sale — work orders,
- * projects, payments, tickets, who shares each sale, incentives, notifications —
- * and keeps every account, ahead of the client's fresh bulk upload. It must do
+ * projects, payments, tickets, who shares each sale, incentives, notifications,
+ * the deletion log — and keeps every account, ahead of the client's fresh bulk upload. It must do
  * exactly that, refuse to run without the typed phrase, and refuse anything
  * surprising. Every scenario runs the real script text over a direct Postgres
  * connection inside a transaction that is ALWAYS rolled back, so the seed
@@ -36,6 +36,8 @@ const BUSINESS_TABLES = [
   "project_milestones",
   "projects",
   "work_orders",
+  // Snapshots of deleted business rows; last, after every delete that could log.
+  "deleted_records",
 ] as const;
 const KEPT_TABLES = ["profiles", "push_subscriptions"] as const;
 
@@ -133,6 +135,15 @@ async function addPushSubscription(userId: string, endpoint: string): Promise<vo
 
 const deletionNotices = () => notices.filter((n) => / deleted$/.test(n.message));
 
+/** One entry in the deletion log, as the trigger would write it. */
+async function addDeletionLogRow(recordId: string): Promise<void> {
+  await client.query(
+    `insert into public.deleted_records (table_name, record_id, snapshot, deleted_by, deleted_by_name)
+     values ('payments', $1, '{"amount": 1}'::jsonb, $2, 'BSS Admin')`,
+    [recordId, USERS.admin.id],
+  );
+}
+
 describe("wipe-business-data.sql", () => {
   it("ships locked: the confirm phrase is empty, so running it as it is deletes nothing", async () => {
     expect(WIPE_SQL.match(CONFIRM)).toEqual(["confirm constant text := '';"]);
@@ -177,7 +188,10 @@ describe("wipe-business-data.sql", () => {
       );
       await addPushSubscription(USERS.admin.id, "https://push.test/wipe-admin-device");
       await addPushSubscription(USERS.rahul.id, "https://push.test/wipe-coordinator-device");
+      // The deletion log holds snapshots of business rows: it goes too.
+      await addDeletionLogRow("wipe-probe-log-row");
       const before = await snapshot();
+      expect(before.deleted_records).toBeGreaterThan(0);
       expect(before.work_orders).toBeGreaterThan(0);
       expect(before.work_order_coordinators).toBeGreaterThanOrEqual(before.work_orders);
       expect(before.coordinator_incentives).toBe(before.work_order_coordinators);
@@ -266,6 +280,31 @@ describe("wipe-business-data.sql", () => {
       expect(summary.filter((r) => r.kind === "table").map((r) => r.name)).not.toContain(
         "notification_dedupe",
       );
+    });
+  });
+
+  it("leaves the deletion log empty: its own deletes are not logged", async () => {
+    await rolledBack(async () => {
+      await addDeletionLogRow("wipe-probe-earlier-delete");
+      await runScript(confirmed(WIPE_SQL));
+      expect(await count("public.deleted_records")).toBe(0);
+    });
+  });
+
+  it("still ends with an empty log when run inside a signed-in session (the log is emptied last)", async () => {
+    await rolledBack(async () => {
+      // As if an office user's request ran it: every delete below is logged by
+      // the trigger, and the log is emptied after them.
+      await client.query("select set_config('request.jwt.claims', $1, true)", [
+        JSON.stringify({ sub: USERS.admin.id, role: "authenticated" }),
+      ]);
+      const { rows } = await client.query<{ uid: string }>("select auth.uid()::text as uid");
+      expect(rows[0].uid).toBe(USERS.admin.id);
+
+      await runScript(confirmed(WIPE_SQL));
+      for (const table of BUSINESS_TABLES) {
+        expect(await count(`public.${table}`), table).toBe(0);
+      }
     });
   });
 

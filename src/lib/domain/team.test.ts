@@ -9,7 +9,9 @@ import {
   deletionBlocker,
   hasPlaceholderEmail,
   planTeamEdit,
+  roleChangeAuthority,
   roleChangeBlocker,
+  teamDeleteAuthority,
   teamEditAuthority,
   type OwnedWork,
   type TeamEditAccount,
@@ -198,6 +200,132 @@ describe("teamEditAuthority", () => {
     const first = teamEditAuthority(SUPER, ADMIN);
     first.email = false;
     expect(teamEditAuthority(SUPER, ADMIN).email).toBe(true);
+  });
+});
+
+describe("roleChangeAuthority", () => {
+  const YES = { allowed: true };
+  const SELF = { allowed: false, reason: "You cannot change your own role." };
+  const SEAT = {
+    allowed: false,
+    reason: "The Super Admin role cannot be changed here. It is set directly on the database.",
+  };
+  const ADMINS_RESERVED = {
+    allowed: false,
+    reason: "Only the Super Admin can change an admin's role.",
+  };
+  const NOT_OFFICE = { allowed: false, reason: "Only office staff can change roles." };
+  const OTHER_COORDINATOR = { id: "coord-2", role: "coordinator" as const };
+  const OTHER_ENGINEER = { id: "eng-2", role: "service_engineer" as const };
+
+  type Case = { viewer: string; by: Who; target: string; of: Who; expected: object };
+  const MATRIX: Case[] = [
+    // The Super Admin: anyone's but their own — admins included.
+    { viewer: "superadmin", by: SUPER, target: "themself", of: SUPER, expected: SELF },
+    { viewer: "superadmin", by: SUPER, target: "an admin", of: ADMIN, expected: YES },
+    { viewer: "superadmin", by: SUPER, target: "a coordinator", of: COORDINATOR, expected: YES },
+    { viewer: "superadmin", by: SUPER, target: "a service engineer", of: ENGINEER, expected: YES },
+    // An admin: coordinators' and engineers' only.
+    { viewer: "admin", by: ADMIN, target: "the superadmin", of: SUPER, expected: SEAT },
+    { viewer: "admin", by: ADMIN, target: "themself", of: ADMIN, expected: SELF },
+    { viewer: "admin", by: ADMIN, target: "another admin", of: OTHER_ADMIN, expected: ADMINS_RESERVED },
+    { viewer: "admin", by: ADMIN, target: "a coordinator", of: COORDINATOR, expected: YES },
+    { viewer: "admin", by: ADMIN, target: "a service engineer", of: ENGINEER, expected: YES },
+    // Field roles change nobody's, not even their own.
+    { viewer: "coordinator", by: COORDINATOR, target: "the superadmin", of: SUPER, expected: NOT_OFFICE },
+    { viewer: "coordinator", by: COORDINATOR, target: "an admin", of: ADMIN, expected: NOT_OFFICE },
+    { viewer: "coordinator", by: COORDINATOR, target: "themself", of: COORDINATOR, expected: NOT_OFFICE },
+    { viewer: "coordinator", by: COORDINATOR, target: "another coordinator", of: OTHER_COORDINATOR, expected: NOT_OFFICE },
+    { viewer: "coordinator", by: COORDINATOR, target: "a service engineer", of: ENGINEER, expected: NOT_OFFICE },
+    { viewer: "service_engineer", by: ENGINEER, target: "the superadmin", of: SUPER, expected: NOT_OFFICE },
+    { viewer: "service_engineer", by: ENGINEER, target: "an admin", of: ADMIN, expected: NOT_OFFICE },
+    { viewer: "service_engineer", by: ENGINEER, target: "a coordinator", of: COORDINATOR, expected: NOT_OFFICE },
+    { viewer: "service_engineer", by: ENGINEER, target: "themself", of: ENGINEER, expected: NOT_OFFICE },
+    { viewer: "service_engineer", by: ENGINEER, target: "another engineer", of: OTHER_ENGINEER, expected: NOT_OFFICE },
+  ];
+
+  it.each(MATRIX)("a $viewer changing $target", ({ by, of, expected }) => {
+    expect(roleChangeAuthority(by, of)).toEqual(expected);
+  });
+
+  it("covers every viewer role against every target role", () => {
+    const roles: UserRole[] = ["superadmin", "admin", "coordinator", "service_engineer"];
+    const covered = new Set(MATRIX.map(({ by, of }) => `${by.role}>${of.role}`));
+    for (const viewer of roles) {
+      for (const target of roles) {
+        expect(covered.has(`${viewer}>${target}`), `${viewer} > ${target}`).toBe(true);
+      }
+    }
+  });
+
+  it("goes by the id for 'yourself', whatever the role", () => {
+    expect(roleChangeAuthority(SUPER, { id: SUPER.id, role: "coordinator" })).toEqual(SELF);
+  });
+});
+
+describe("teamDeleteAuthority", () => {
+  const YES = { allowed: true };
+  const SELF = { allowed: false, reason: "You cannot delete your own account." };
+  const SEAT = { allowed: false, reason: "The Super Admin account cannot be deleted here." };
+  const NOT_DELETER = {
+    allowed: false,
+    reason: "Only Admin or Super Admin can delete team members.",
+  };
+  const ADMINS_RESERVED = { allowed: false, reason: "Only the Super Admin can delete an admin." };
+  const OTHER_COORDINATOR = { id: "coord-2", role: "coordinator" as const };
+  const OTHER_ENGINEER = { id: "eng-2", role: "service_engineer" as const };
+
+  type Case = { viewer: string; by: Who; target: string; of: Who; expected: object };
+  // Every viewer against every kind of target; matches the `profiles_delete` policy.
+  const MATRIX: Case[] = [
+    // The Super Admin: anyone but themself.
+    { viewer: "superadmin", by: SUPER, target: "themself", of: SUPER, expected: SELF },
+    { viewer: "superadmin", by: SUPER, target: "an admin", of: ADMIN, expected: YES },
+    { viewer: "superadmin", by: SUPER, target: "a coordinator", of: COORDINATOR, expected: YES },
+    { viewer: "superadmin", by: SUPER, target: "a service engineer", of: ENGINEER, expected: YES },
+    // An admin: coordinators and engineers only.
+    { viewer: "admin", by: ADMIN, target: "the superadmin", of: SUPER, expected: SEAT },
+    { viewer: "admin", by: ADMIN, target: "themself", of: ADMIN, expected: SELF },
+    { viewer: "admin", by: ADMIN, target: "another admin", of: OTHER_ADMIN, expected: ADMINS_RESERVED },
+    { viewer: "admin", by: ADMIN, target: "a coordinator", of: COORDINATOR, expected: YES },
+    { viewer: "admin", by: ADMIN, target: "a service engineer", of: ENGINEER, expected: YES },
+    // Field roles delete nobody.
+    { viewer: "coordinator", by: COORDINATOR, target: "the superadmin", of: SUPER, expected: SEAT },
+    { viewer: "coordinator", by: COORDINATOR, target: "an admin", of: ADMIN, expected: NOT_DELETER },
+    { viewer: "coordinator", by: COORDINATOR, target: "themself", of: COORDINATOR, expected: SELF },
+    { viewer: "coordinator", by: COORDINATOR, target: "another coordinator", of: OTHER_COORDINATOR, expected: NOT_DELETER },
+    { viewer: "coordinator", by: COORDINATOR, target: "a service engineer", of: ENGINEER, expected: NOT_DELETER },
+    { viewer: "service_engineer", by: ENGINEER, target: "the superadmin", of: SUPER, expected: SEAT },
+    { viewer: "service_engineer", by: ENGINEER, target: "an admin", of: ADMIN, expected: NOT_DELETER },
+    { viewer: "service_engineer", by: ENGINEER, target: "a coordinator", of: COORDINATOR, expected: NOT_DELETER },
+    { viewer: "service_engineer", by: ENGINEER, target: "themself", of: ENGINEER, expected: SELF },
+    { viewer: "service_engineer", by: ENGINEER, target: "another engineer", of: OTHER_ENGINEER, expected: NOT_DELETER },
+  ];
+
+  it.each(MATRIX)("a $viewer deleting $target", ({ by, of, expected }) => {
+    expect(teamDeleteAuthority(by, of)).toEqual(expected);
+  });
+
+  it("covers every viewer role against every target role", () => {
+    const roles: UserRole[] = ["superadmin", "admin", "coordinator", "service_engineer"];
+    const covered = new Set(MATRIX.map(({ by, of }) => `${by.role}>${of.role}`));
+    for (const viewer of roles) {
+      for (const target of roles) {
+        expect(covered.has(`${viewer}>${target}`), `${viewer} > ${target}`).toBe(true);
+      }
+    }
+  });
+
+  it("never lets anyone delete the Super Admin — not even the Super Admin", () => {
+    for (const by of [SUPER, ADMIN, COORDINATOR, ENGINEER]) {
+      expect(teamDeleteAuthority(by, SUPER).allowed).toBe(false);
+    }
+    // A second Super Admin row (impossible by the unique index) is refused too.
+    expect(teamDeleteAuthority(SUPER, { id: "super-2", role: "superadmin" }).allowed).toBe(false);
+  });
+
+  it("goes by the id for 'yourself', whatever the role", () => {
+    expect(teamDeleteAuthority(ADMIN, { id: ADMIN.id, role: "coordinator" })).toEqual(SELF);
   });
 });
 

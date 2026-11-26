@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireAdmin, requireTicketRole } from "@/lib/auth";
 import { profilesRepository, ticketsRepository } from "@/server/data";
+import { TICKET_ALREADY_DELETED } from "@/server/data/tickets.repository";
 import { notify } from "@/server/notifications";
 import { ticketTotal } from "@/lib/domain/ticket";
 import { isServiceEngineerRole } from "@/lib/domain/role";
@@ -262,13 +263,22 @@ export async function setTicketStatus(
   return ok(undefined);
 }
 
+/**
+ * Destructive — office only: tickets were already admin-deletable before the
+ * other deletes were opened to admins (the database's `ticket_admin_write` says
+ * the same). The engineer it was assigned to is not told.
+ */
 export async function deleteTicket(formData: FormData) {
   await requireAdmin();
   const id = text(formData.get("id"));
 
-  const { error } = await ticketsRepository.remove(id);
+  const { projectId, error } = await ticketsRepository.remove(id);
+  // A ticket already gone has no page to go back to.
+  if (error === TICKET_ALREADY_DELETED) redirect(withFlash("/tickets", error, "error"));
   if (error) redirect(`/tickets/${id}?error=${encodeURIComponent(error)}`);
 
   revalidatePath("/tickets");
+  if (projectId) revalidatePath(`/projects/${projectId}`);
+  revalidatePath("/");
   redirect(withFlash("/tickets", "Ticket deleted."));
 }

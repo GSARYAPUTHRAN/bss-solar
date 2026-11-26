@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   requireAdmin,
-  requireSuperAdmin,
+  requireDeleter,
   requireWorkOrderRole,
 } from "@/lib/auth";
 import {
@@ -29,6 +29,13 @@ import {
   teamAuthority,
 } from "@/lib/domain/coordinators";
 import type { NotificationEvent } from "@/lib/domain/notifications";
+import { isUuid } from "@/lib/domain/notification-input";
+import {
+  STALE_SELECTION,
+  groupsLeftEmpty,
+  parseKeepGroups,
+  parseSaleIds,
+} from "@/lib/domain/duplicate-sales";
 import { canEditContractTerms } from "@/lib/domain/payment";
 import { isOfficeRole } from "@/lib/domain/role";
 
@@ -366,19 +373,97 @@ export async function rejectWorkOrder(formData: FormData) {
   redirect(withFlash(`/work-orders/${id}`, "Work order rejected."));
 }
 
+/** Everything that counts or lists sales, after one or more are deleted. */
+function revalidateDeletedSales() {
+  revalidatePath("/work-orders");
+  revalidatePath("/work-orders/duplicates");
+  revalidatePath("/projects");
+  revalidatePath("/reports");
+  revalidatePath("/");
+}
+
 /**
- * Destructive — SuperAdmin only. Cascades to the project and its milestones,
- * and to the sale's coordinators with their incentives.
+ * Destructive — deleters only (DELETE_ROLES: the Super Admin and, for now, the
+ * Admin). Cascades to the project and its milestones, the ledger, and the
+ * sale's coordinators with their incentives; service tickets stay but lose
+ * their project. Posted with `back=projects` from the project page ("Delete
+ * sale"), it lands on the projects list instead of the work orders.
  */
 export async function deleteWorkOrder(formData: FormData) {
-  await requireSuperAdmin();
+  await requireDeleter();
   const id = text(formData.get("id"));
+  const fromProjects = text(formData.get("back")) === "projects";
+  const projectId = text(formData.get("project_id"));
 
   const { error } = await workOrdersRepository.remove(id);
-  if (error) redirect(withError(`/work-orders/${id}`, error));
+  if (error) {
+    // From the project page, the refusal is shown back on that project.
+    const failedOn =
+      fromProjects && isUuid(projectId) ? `/projects/${projectId}` : `/work-orders/${id}`;
+    redirect(withError(failedOn, error));
+  }
 
-  revalidatePath("/work-orders");
-  revalidatePath("/projects");
-  revalidatePath("/");
-  redirect(withFlash("/work-orders", "Work order deleted."));
+  revalidateDeletedSales();
+  revalidatePath(`/work-orders/${id}`);
+  redirect(
+    fromProjects
+      ? withFlash("/projects", "Sale deleted.")
+      : withFlash("/work-orders", "Work order deleted."),
+  );
+}
+
+/** What a bulk delete answers: how many of the sales asked for went. */
+export type DeleteWorkOrdersResult =
+  | { ok: true; deleted: number; requested: number }
+  | { ok: false; error: string };
+
+/**
+ * Delete several sales at once (the duplicate clean-up) — deleters only. All
+ * of them go in one transaction or none do, each with everything a single
+ * delete takes. Answers instead of redirecting, so the page can say what
+ * happened: `deleted` can be below `requested` when some were already gone.
+ * Deleting none at all is an error — they were all gone, or (the RPC runs as
+ * the caller) the database does not let this role delete.
+ *
+ * `keep` is, for each group the page deletes from, the copies it means to
+ * keep. If any group has none of them left — deleted in another tab or by
+ * someone else since the page loaded — nothing is deleted: the stale selection
+ * would otherwise remove the last copy of a sale without the page's warning.
+ */
+export async function deleteWorkOrders(
+  ids: string[],
+  keep: string[][] = [],
+): Promise<DeleteWorkOrdersResult> {
+  await requireDeleter();
+
+  const parsed = parseSaleIds(ids);
+  if (!parsed.ok) return parsed;
+  const kept = parseKeepGroups(keep);
+  if (!kept.ok) return kept;
+
+  if (kept.data.length > 0) {
+    const existing = await workOrdersRepository.existingIds(kept.data.flat());
+    if (existing.error) {
+      return {
+        ok: false,
+        error: `Nothing was deleted: the copies to keep could not be checked (${existing.error}).`,
+      };
+    }
+    if (groupsLeftEmpty(kept.data, existing.ids, parsed.data).length > 0) {
+      return { ok: false, error: STALE_SELECTION };
+    }
+  }
+
+  const { deleted, error } = await workOrdersRepository.removeMany(parsed.data);
+  if (error) return { ok: false, error: `Nothing was deleted: ${error}` };
+
+  // Even when none went: a page whose sales were already gone must refresh.
+  revalidateDeletedSales();
+  if (deleted.length === 0) {
+    return {
+      ok: false,
+      error: "Nothing was deleted — they may already be gone, or your role cannot delete them.",
+    };
+  }
+  return { ok: true, deleted: deleted.length, requested: parsed.data.length };
 }

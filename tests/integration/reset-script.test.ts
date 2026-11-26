@@ -35,6 +35,7 @@ const BUSINESS_TABLES = [
   "project_milestones",
   "projects",
   "work_orders",
+  "deleted_records",
 ] as const;
 
 // localDbUrl() refuses any non-local host: destructive SQL, even rolled back,
@@ -147,9 +148,16 @@ describe("reset-business-data.sql", () => {
          values ($1, 'feasibility.expiring:reset-probe')`,
         [USERS.admin.id],
       );
+      // So does the deletion log, even an entry made by an account that stays.
+      await client.query(
+        `insert into public.deleted_records (table_name, record_id, snapshot, deleted_by, deleted_by_name)
+         values ('payments', 'reset-probe-log-row', '{"amount": 1}'::jsonb, $1, 'BSS Admin')`,
+        [USERS.admin.id],
+      );
       const before = await snapshotCounts();
       expect(before.work_orders).toBeGreaterThan(0);
       expect(before.notification_dedupe).toBeGreaterThan(0);
+      expect(before.deleted_records).toBeGreaterThan(0);
       // Who shares each sale, and each person's incentive, go with the sales.
       expect(before.work_order_coordinators).toBeGreaterThanOrEqual(before.work_orders);
       expect(before.coordinator_incentives).toBe(before.work_order_coordinators);

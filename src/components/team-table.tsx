@@ -4,12 +4,17 @@ import { Trash2 } from "lucide-react";
 import { DataTable, ServerDataTable } from "@/components/data-table";
 import type { ColumnDef, FilterDef, SearchDef } from "@/components/data-table";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { RoleEditor } from "@/components/role-editor";
+import { RoleBadge, RoleEditor } from "@/components/role-editor";
 import { ConfirmSubmit } from "@/components/confirm-submit";
 import { TeamMemberDialog } from "@/components/team-member-dialog";
 import { deleteTeamMember } from "@/app/(app)/team/actions";
-import { ROLE_LABELS } from "@/lib/domain/role";
-import { hasPlaceholderEmail, type TeamMember } from "@/lib/domain/team";
+import { ROLE_LABELS, canDeleteRole } from "@/lib/domain/role";
+import {
+  hasPlaceholderEmail,
+  roleChangeAuthority,
+  teamDeleteAuthority,
+  type TeamMember,
+} from "@/lib/domain/team";
 import { formatDate } from "@/lib/format";
 import type { UserRole } from "@/lib/types";
 
@@ -25,14 +30,15 @@ function initials(name: string) {
 export function TeamTable({
   profiles,
   viewer,
-  canDelete = false,
   server,
 }: {
   profiles: TeamMember[];
-  /** Who is looking: sets who they may edit (server re-checks) and marks their own row. */
+  /**
+   * Who is looking: sets whose role they may change, and who they may edit and
+   * delete (`roleChangeAuthority`, `teamEditAuthority`, `teamDeleteAuthority` —
+   * the server re-checks all three) and marks their own row.
+   */
   viewer: { id: string; role: UserRole };
-  /** Show the delete action — SuperAdmin only (server re-checks). */
-  canDelete?: boolean;
   server?: { total: number; page: number; pageSize: number };
 }) {
   const columns: ColumnDef<TeamMember>[] = [
@@ -78,25 +84,34 @@ export function TeamTable({
     {
       id: "role",
       header: "Role",
-      cell: (p) => (
-        <RoleEditor userId={p.id} role={p.role} disabled={p.id === viewer.id} />
-      ),
+      // A picker only where the viewer may change the role (the server asks the
+      // same question): an admin sees another admin's role, and their own, as
+      // a plain badge — a demoted admin could otherwise be deleted.
+      cell: (p) => {
+        const change = roleChangeAuthority(viewer, p);
+        return change.allowed ? (
+          <RoleEditor userId={p.id} role={p.role} />
+        ) : (
+          <RoleBadge role={p.role} reason={change.reason} />
+        );
+      },
     },
     {
       id: "actions",
       header: "",
       headerClassName: "w-10",
-      hidden: !canDelete,
-      // Never offer to delete yourself, nor the Super Admin account.
+      hidden: !canDeleteRole(viewer.role),
+      // Only where the viewer may: never themself nor the Super Admin, and an
+      // admin only coordinators and engineers.
       cell: (p) =>
-        p.id === viewer.id || p.role === "superadmin" ? null : (
+        !teamDeleteAuthority(viewer, p).allowed ? null : (
           <ConfirmSubmit
             action={deleteTeamMember}
             fields={{ user_id: p.id }}
             triggerLabel={<Trash2 className="h-4 w-4" />}
             triggerAriaLabel={`Delete ${p.full_name}`}
             triggerVariant="ghost"
-            triggerClassName="text-destructive hover:text-destructive"
+            triggerClassName="size-10 p-0 text-destructive hover:text-destructive md:size-8"
             title={`Delete ${p.full_name}?`}
             description="This permanently removes the staff account and its sign-in. A member who still owns or shares work orders or projects, or still holds open service tickets, cannot be deleted — take them off those sales (Change coordinators on each work order) or reassign the tickets first. This cannot be undone."
             confirmLabel="Delete member"

@@ -2,12 +2,15 @@ import { describe, it, expect } from "vitest";
 import type { UserRole } from "@/lib/types";
 import {
   ASSIGNABLE_ROLES,
+  DELETE_ROLES,
   OFFICE_ROLES,
   ROLE_LABELS,
   TICKET_ROLES,
   WORK_ORDER_OWNER_ROLES,
   WORK_ORDER_ROLES,
+  canDeleteRole,
   canUseWorkOrders,
+  deleteRolesLabel,
   isAssignableRole,
   isOfficeRole,
   isServiceEngineerRole,
@@ -74,6 +77,53 @@ describe("module role sets", () => {
       expect(WORK_ORDER_ROLES).toContain(role);
       expect(TICKET_ROLES).toContain(role);
     }
+  });
+});
+
+describe("DELETE_ROLES — who may delete", () => {
+  it("is the Super Admin and, for now, the Admin", () => {
+    expect(DELETE_ROLES).toEqual(["admin", "superadmin"]);
+  });
+
+  it("never includes a field role", () => {
+    expect(DELETE_ROLES).not.toContain("coordinator");
+    expect(DELETE_ROLES).not.toContain("service_engineer");
+  });
+
+  it("is office staff only", () => {
+    for (const role of DELETE_ROLES) expect(isOfficeRole(role)).toBe(true);
+  });
+
+  it.each(ALL_ROLES)("canDeleteRole agrees with the list for %s", (role) => {
+    expect(canDeleteRole(role)).toBe(DELETE_ROLES.includes(role));
+  });
+
+  it("always keeps the Super Admin a deleter", () => {
+    expect(canDeleteRole("superadmin")).toBe(true);
+  });
+});
+
+describe("deleteRolesLabel", () => {
+  it("names who may delete today", () => {
+    expect(deleteRolesLabel()).toBe("Admin or Super Admin");
+  });
+
+  it("follows the list once admins lose it", () => {
+    expect(deleteRolesLabel(["superadmin"])).toBe("Super Admin");
+  });
+
+  it("joins a longer list with commas and a final 'or'", () => {
+    expect(deleteRolesLabel(["coordinator", "admin", "superadmin"])).toBe(
+      "Coordinator, Admin or Super Admin",
+    );
+  });
+
+  it("is empty for nobody", () => {
+    expect(deleteRolesLabel([])).toBe("");
+  });
+
+  it("uses the registry's labels", () => {
+    expect(deleteRolesLabel(["service_engineer"])).toBe(ROLE_LABELS.service_engineer);
   });
 });
 

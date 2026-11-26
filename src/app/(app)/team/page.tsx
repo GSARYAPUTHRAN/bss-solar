@@ -6,7 +6,7 @@ import { parsePageParams } from "@/lib/pagination";
 import { Page, PageHeader, FormError } from "@/components/layout";
 import { TeamTable } from "@/components/team-table";
 import { Button } from "@/components/ui/button";
-import { isSuperAdminRole } from "@/lib/domain/role";
+import { canDeleteRole, deleteRolesLabel } from "@/lib/domain/role";
 import type { TeamMember } from "@/lib/domain/team";
 
 export const metadata = { title: "Team" };
@@ -30,7 +30,6 @@ export default async function TeamPage({
     profilesRepository.page(params),
     profilesRepository.accounts(),
   ]);
-  const isSuperAdmin = isSuperAdminRole(me.role);
 
   // Login e-mails live in Auth, not on the profile: join them on for the Edit
   // dialog, which prefills them and tells accounts with no sign-in yet.
@@ -65,7 +64,6 @@ export default async function TeamPage({
       <TeamTable
         profiles={members}
         viewer={{ id: me.id, role: me.role }}
-        canDelete={isSuperAdmin}
         server={{
           total: pageResult.total,
           page: pageResult.page,
@@ -73,7 +71,10 @@ export default async function TeamPage({
         }}
       />
       <div className="space-y-1 text-xs text-muted-foreground">
-        <p>You cannot change your own role to avoid accidental lock-out.</p>
+        <p>
+          You cannot change your own role to avoid accidental lock-out. Only the
+          Super Admin can change an admin&apos;s role.
+        </p>
         <p>
           Use the pencil beside a name to correct a member&apos;s name, phone,
           e-mail or password — a member created with a placeholder e-mail has no
@@ -91,10 +92,17 @@ export default async function TeamPage({
           changes or the account is deleted.
         </p>
         <p>
+          <strong>Deleting</strong> team members, sales, projects and payments is
+          for {deleteRolesLabel()} only, and cannot be undone.{" "}
+          {canDeleteRole("admin") &&
+            "Admins can delete coordinators and service engineers; only the Super Admin can delete an admin. "}
+          Nobody can delete the Super Admin, and nobody can delete their own
+          account.
+        </p>
+        <p>
           There is exactly one <strong>Super Admin</strong> — the highest
-          privilege, and the only role that can delete users, projects and work
-          orders. That role is <strong>not editable here by anyone</strong>: it is
-          set directly on the database, so it cannot be granted, revoked or
+          privilege. That role is <strong>not editable here by anyone</strong>: it
+          is set directly on the database, so it cannot be granted, revoked or
           reassigned from the app.
         </p>
       </div>

@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { PAYMENT_LIMITS } from "@/lib/domain/payment-limits";
+import { deleteRolesLabel } from "@/lib/domain/role";
 import { formatCurrency } from "@/lib/format";
 import type { Payment } from "@/lib/types";
 import { usePaymentAction } from "./use-payment-action";
@@ -209,7 +210,7 @@ function WriteOffForm({
         className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-500/10 dark:text-amber-200"
       >
         This closes {typed ?? "this amount"} of the balance for good. It will no longer be collected, and once nothing
-        is left the sale shows as settled. Only the SuperAdmin can undo it, by deleting the entry.
+        is left the sale shows as settled. Only {deleteRolesLabel()} can undo it, by deleting the entry.
       </p>
 
       <DialogFooter>
